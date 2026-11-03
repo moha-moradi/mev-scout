@@ -1,0 +1,913 @@
+//! Forensic explorer dashboard: read-only SQLite → snapshot → HTML/JSON.
+//!
+//! Never migrates. Adaptive projection so stale schema files still render.
+
+pub mod caps;
+pub mod evidence;
+pub mod reduce;
+pub mod render;
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use rusqlite::OptionalExtension;
+use serde::Serialize;
+
+use crate::explorer::store::{ExplorerStore, SCHEMA_HEAD};
+
+use caps::StoreCaps;
+use reduce::{reject_ladder, reduce, ReducedPanels, RejectRow, TruncationInfo};
+
+/// Envelope API version embedded in every artifact.
+pub const API_VERSION: u32 = 1;
+
+/// Build options for [`build`].
+#[derive(Debug, Clone)]
+pub struct BuildOptions {
+    pub db_path: PathBuf,
+    pub window: WindowSpec,
+    pub max_ops: usize,
+    pub max_evidence: usize,
+    pub budget_mb: usize,
+    pub with_gaps: bool,
+    pub gap_block_limit: u64,
+}
+
+impl Default for BuildOptions {
+    fn default() -> Self {
+        Self {
+            db_path: PathBuf::from("cache/explorer-avalanche.sqlite"),
+            window: WindowSpec::all(),
+            max_ops: 5_000,
+            max_evidence: 200,
+            budget_mb: 8,
+            with_gaps: false,
+            gap_block_limit: 10_000,
+        }
+    }
+}
+
+/// Time window for the dashboard.
+#[derive(Debug, Clone, Serialize)]
+pub struct WindowSpec {
+    pub label: String,
+    pub since_ts: i64,
+    pub until_ts: i64,
+}
+
+impl WindowSpec {
+    /// Cover everything present (since 0 → now+skew).
+    pub fn all() -> Self {
+        let now = now_secs();
+        Self {
+            label: "all".into(),
+            since_ts: 0,
+            until_ts: now + 3600,
+        }
+    }
+
+    /// Trailing duration ending at `now`.
+    pub fn trailing(label: &str, duration_secs: i64) -> Self {
+        let now = now_secs();
+        Self {
+            label: label.into(),
+            since_ts: now.saturating_sub(duration_secs),
+            until_ts: now + 60,
+        }
+    }
+
+    /// Parse `all` | `Nh` | `Nd` | `Nw` (same spirit as explorer report windows).
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        let s = s.trim();
+        if s.eq_ignore_ascii_case("all") {
+            return Ok(Self::all());
+        }
+        let (num, unit) = s.split_at(
+            s.find(|c: char| !c.is_ascii_digit())
+                .ok_or_else(|| anyhow::anyhow!("invalid window '{s}' (expected Nh|Nd|Nw|all)"))?,
+        );
+        let n: i64 = num
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid window number in '{s}'"))?;
+        anyhow::ensure!(n > 0, "window duration must be > 0");
+        let secs = match unit {
+            "h" | "H" => n.saturating_mul(3600),
+            "d" | "D" => n.saturating_mul(86400),
+            "w" | "W" => n.saturating_mul(7 * 86400),
+            "s" | "S" => n,
+            other => anyhow::bail!("invalid window unit '{other}' in '{s}' (use h|d|w)"),
+        };
+        Ok(Self::trailing(s, secs))
+    }
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// One op row with optional columns mapped to `None` when absent from schema.
+#[derive(Debug, Clone)]
+pub struct OpRecord {
+    pub id: i64,
+    pub block_number: u64,
+    pub tx_index: Option<u64>,
+    pub tx_hash: String,
+    pub ts: u64,
+    pub kind: String,
+    pub kind_raw: String,
+    pub eoa: String,
+    pub contract: Option<String>,
+    pub confidence: String,
+    pub canonical_id: Option<String>,
+    pub profit_token: Option<String>,
+    pub profit_amount: Option<String>,
+    pub profit_usd: Option<f64>,
+    pub gas_cost_usd: Option<f64>,
+    pub flashloan_fee_usd: Option<f64>,
+    pub volume_usd: Option<f64>,
+    pub net_profit_usd: Option<f64>,
+    pub route_json: Option<String>,
+    pub victim_hashes: Option<String>,
+    pub details_json: Option<String>,
+    pub detector: String,
+    pub created_at: u64,
+    pub subkind: Option<String>,
+    pub excluded_from_net: Option<bool>,
+    pub usd_approximate: Option<bool>,
+    pub native_unpriced: Option<bool>,
+    pub multi_asset_pricing: Option<bool>,
+    pub pricing_clamped: Option<bool>,
+    pub flash_fee_unpriced: Option<bool>,
+}
+
+impl OpRecord {
+    pub fn competitor(&self) -> String {
+        self.contract
+            .as_ref()
+            .filter(|c| !c.is_empty())
+            .cloned()
+            .unwrap_or_else(|| self.eoa.clone())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DbMeta {
+    pub path: String,
+    pub chain_label: String,
+    pub chain_id: Option<u64>,
+    pub size_bytes: u64,
+    pub user_version: i64,
+    pub schema_head: i64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CoveragePanel {
+    pub head: Option<u64>,
+    pub indexed_to: Option<u64>,
+    pub last_indexed_at: Option<u64>,
+    pub blocks_in_window: i64,
+    pub ops_in_window: i64,
+    pub min_block_ts: Option<i64>,
+    pub max_block_ts: Option<i64>,
+    pub gap_count: Option<i64>,
+    pub first_gap: Option<u64>,
+    pub last_gap: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Semantics {
+    pub null_usd_means: &'static str,
+    pub usd_columns_are: &'static str,
+    pub net_excludes: &'static str,
+    pub amounts_are: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncStateRow {
+    pub chain_id: u64,
+    pub head: u64,
+    pub indexed_to: u64,
+    pub last_indexed_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JitOpenRow {
+    pub pool: String,
+    pub owner: String,
+    pub tick_lower: i32,
+    pub tick_upper: i32,
+    pub opened_block: u64,
+    pub liquidity: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OracleFeedRow {
+    pub feed: String,
+    pub answers: i64,
+    pub last_block: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PriceRow {
+    pub token: String,
+    pub hour: i64,
+    pub price_usd: f64,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TableCount {
+    pub table: String,
+    pub rows: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RejectPanel {
+    pub recording_empty: bool,
+    pub total: i64,
+    pub ladder: Vec<RejectRow>,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GeneratorMeta {
+    pub version: String,
+    pub generated_at: i64,
+}
+
+/// Versioned dashboard artifact (HTML embeds this as JSON).
+#[derive(Debug, Clone, Serialize)]
+pub struct DashboardSnapshot {
+    pub api_version: u32,
+    pub generator: GeneratorMeta,
+    pub db: DbMeta,
+    pub caps: StoreCaps,
+    pub window: WindowSpec,
+    pub semantics: Semantics,
+    pub coverage: CoveragePanel,
+    pub panels: ReducedPanels,
+    pub rejects: RejectPanel,
+    pub jit_open: Vec<JitOpenRow>,
+    pub oracle_feeds: Vec<OracleFeedRow>,
+    pub prices: Vec<PriceRow>,
+    pub storage: Vec<TableCount>,
+    pub truncation: TruncationInfo,
+}
+
+/// Open read-only, probe caps, load ops, reduce, return snapshot.
+pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
+    let store = open_with_wal_retry(&opts.db_path)?;
+    let caps = StoreCaps::probe(store.connection())?;
+    let size_bytes = std::fs::metadata(&opts.db_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let chain_label = chain_label_from_path(&opts.db_path);
+
+    // Single consistent read snapshot.
+    let tx = store.connection().unchecked_transaction()?;
+
+    let sync = load_sync_state(&tx)?;
+    let ops = load_ops_window(&tx, &caps, opts.window.since_ts, opts.window.until_ts)?;
+    let mut sorted_blocks =
+        load_block_timestamps(&tx, opts.window.since_ts, opts.window.until_ts)?;
+    let blocks_in_window = sorted_blocks.len() as i64;
+    sorted_blocks.sort_unstable();
+    let min_block_ts = sorted_blocks.first().copied();
+    let max_block_ts = sorted_blocks.last().copied();
+
+    let labels = load_labels(&tx)?;
+    let catalogue_tags = load_catalogue_tags();
+    let mut panels = reduce(
+        &ops,
+        &caps,
+        &opts.window,
+        &sorted_blocks,
+        &labels,
+        &catalogue_tags,
+        opts.max_ops,
+        opts.max_evidence,
+    );
+
+    // Soft byte budget: drop evidence first, then trim events.
+    let budget = opts.budget_mb.saturating_mul(1024 * 1024);
+    enforce_budget(&mut panels, budget);
+
+    let reject_counts = load_reject_counts(&tx, opts.window.since_ts, opts.window.until_ts)?;
+    let reject_total: i64 = reject_counts.values().sum();
+    let rejects = RejectPanel {
+        recording_empty: reject_total == 0,
+        total: reject_total,
+        ladder: reject_ladder(&reject_counts),
+        note: if reject_total == 0 {
+            "No rejected_candidates rows in window — recording may be off (record_rejections default false), not proof of zero rejects.".into()
+        } else {
+            "Counts from rejected_candidates in window.".into()
+        },
+    };
+
+    let jit_open = load_jit_open(&tx)?;
+    let oracle_feeds = load_oracle_feeds(&tx)?;
+    let prices = load_prices(&tx)?;
+    let storage = load_table_counts(&tx, &caps.tables)?;
+
+    let (gap_count, first_gap, last_gap) = if opts.with_gaps {
+        summarize_gaps(&store, sync.as_ref(), opts.gap_block_limit)?
+    } else {
+        (None, None, None)
+    };
+
+    // End read txn (commit is a no-op for writes; keeps snapshot consistent).
+    tx.commit()?;
+
+    let chain_id = sync.as_ref().map(|s| s.chain_id);
+    let coverage = CoveragePanel {
+        head: sync.as_ref().map(|s| s.head),
+        indexed_to: sync.as_ref().map(|s| s.indexed_to),
+        last_indexed_at: sync.as_ref().map(|s| s.last_indexed_at),
+        blocks_in_window,
+        ops_in_window: ops.len() as i64,
+        min_block_ts,
+        max_block_ts,
+        gap_count,
+        first_gap,
+        last_gap,
+    };
+
+    let truncation = panels.truncation.clone();
+    Ok(DashboardSnapshot {
+        api_version: API_VERSION,
+        generator: GeneratorMeta {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            generated_at: now_secs(),
+        },
+        db: DbMeta {
+            path: opts.db_path.display().to_string(),
+            chain_label,
+            chain_id,
+            size_bytes,
+            user_version: caps.user_version,
+            schema_head: SCHEMA_HEAD,
+            status: caps.status_label().to_string(),
+        },
+        caps,
+        window: opts.window.clone(),
+        semantics: Semantics {
+            null_usd_means: "not priceable — never zero",
+            usd_columns_are: "f64 approximations; prefix ≈; never balances",
+            net_excludes: "rows with excluded_from_net=1 (when column present)",
+            amounts_are: "raw U256 decimal strings; humanize only with known decimals",
+        },
+        coverage,
+        panels,
+        rejects,
+        jit_open,
+        oracle_feeds,
+        prices,
+        storage,
+        truncation,
+    })
+}
+
+fn open_with_wal_retry(path: &Path) -> anyhow::Result<ExplorerStore> {
+    match ExplorerStore::open_read_only(path) {
+        Ok(s) => Ok(s),
+        Err(e) => {
+            let msg = format!("{e:#}");
+            if msg.contains("disk I/O") || msg.contains("locked") || msg.contains("busy") {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                ExplorerStore::open_read_only(path)
+                    .map_err(|e2| anyhow::anyhow!("read-only open retry failed: {e2:#} (first: {msg})"))
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+fn chain_label_from_path(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    stem.strip_prefix("explorer-")
+        .or_else(|| stem.strip_prefix("oracle-"))
+        .unwrap_or(stem)
+        .to_string()
+}
+
+fn load_ops_window(
+    conn: &rusqlite::Connection,
+    caps: &StoreCaps,
+    since: i64,
+    until: i64,
+) -> anyhow::Result<Vec<OpRecord>> {
+    let mut cols = vec![
+        "id",
+        "block_number",
+        "tx_index",
+        "tx_hash",
+        "ts",
+        "kind",
+        "eoa",
+        "contract",
+        "confidence",
+        "canonical_id",
+        "profit_token",
+        "profit_amount",
+        "profit_usd",
+        "gas_cost_usd",
+        "net_profit_usd",
+        "route_json",
+        "victim_hashes",
+        "details_json",
+        "detector",
+        "created_at",
+    ];
+    if caps.has_flashloan_fee_usd {
+        cols.push("flashloan_fee_usd");
+    }
+    if caps.has_volume_usd {
+        cols.push("volume_usd");
+    }
+    if caps.has_excluded_from_net {
+        cols.push("excluded_from_net");
+    }
+    if caps.has_subkind {
+        cols.push("subkind");
+    }
+    if caps.has_pricing_flags {
+        cols.extend_from_slice(&[
+            "usd_approximate",
+            "native_unpriced",
+            "multi_asset_pricing",
+            "pricing_clamped",
+            "flash_fee_unpriced",
+        ]);
+    }
+    let sql = format!(
+        "SELECT {} FROM mev_ops WHERE ts >= ?1 AND ts <= ?2
+         ORDER BY block_number ASC, tx_index ASC, id ASC",
+        cols.join(", ")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let col_index: HashMap<String, usize> = cols
+        .iter()
+        .enumerate()
+        .map(|(i, c)| ((*c).to_string(), i))
+        .collect();
+    let idx = |name: &str| -> anyhow::Result<usize> {
+        col_index
+            .get(name)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("missing projected column {name}"))
+    };
+    // Required base columns always present in projection.
+    let i_id = idx("id")?;
+    let i_bn = idx("block_number")?;
+    let i_th = idx("tx_hash")?;
+    let i_ts = idx("ts")?;
+    let i_kind = idx("kind")?;
+    let i_eoa = idx("eoa")?;
+    let i_conf = idx("confidence")?;
+    let i_det = idx("detector")?;
+    let i_ca = idx("created_at")?;
+    let opt = |name: &str| -> Option<usize> { col_index.get(name).copied() };
+    let i_txi = opt("tx_index");
+    let i_contract = opt("contract");
+    let i_cid = opt("canonical_id");
+    let i_pt = opt("profit_token");
+    let i_pa = opt("profit_amount");
+    let i_pusd = opt("profit_usd");
+    let i_gas = opt("gas_cost_usd");
+    let i_net = opt("net_profit_usd");
+    let i_route = opt("route_json");
+    let i_victims = opt("victim_hashes");
+    let i_details = opt("details_json");
+    let i_flash = opt("flashloan_fee_usd");
+    let i_vol = opt("volume_usd");
+    let i_excl = opt("excluded_from_net");
+    let i_sub = opt("subkind");
+    let i_approx = opt("usd_approximate");
+    let i_native = opt("native_unpriced");
+    let i_multi = opt("multi_asset_pricing");
+    let i_clamp = opt("pricing_clamped");
+    let i_ffu = opt("flash_fee_unpriced");
+
+    let rows = stmt.query_map(rusqlite::params![since, until], |r| {
+        let opt_i64 = |i: Option<usize>| -> rusqlite::Result<Option<i64>> {
+            match i {
+                Some(i) => r.get(i),
+                None => Ok(None),
+            }
+        };
+        let opt_f64 = |i: Option<usize>| -> rusqlite::Result<Option<f64>> {
+            match i {
+                Some(i) => r.get(i),
+                None => Ok(None),
+            }
+        };
+        let opt_str = |i: Option<usize>| -> rusqlite::Result<Option<String>> {
+            match i {
+                Some(i) => r.get(i),
+                None => Ok(None),
+            }
+        };
+        let opt_bool = |i: Option<usize>| -> rusqlite::Result<Option<bool>> {
+            match i {
+                Some(i) => Ok(r.get::<_, Option<i64>>(i)?.map(|x| x != 0)),
+                None => Ok(None),
+            }
+        };
+        let kind_raw: String = r.get(i_kind)?;
+        let kind = if kind_raw == "unknown" {
+            "utility".to_string()
+        } else {
+            kind_raw.clone()
+        };
+        Ok(OpRecord {
+            id: r.get(i_id)?,
+            block_number: r.get::<_, i64>(i_bn)? as u64,
+            tx_index: opt_i64(i_txi)?.map(|v| v as u64),
+            tx_hash: r.get(i_th)?,
+            ts: r.get::<_, i64>(i_ts)? as u64,
+            kind,
+            kind_raw,
+            eoa: r.get(i_eoa)?,
+            contract: opt_str(i_contract)?,
+            confidence: r.get(i_conf)?,
+            canonical_id: opt_str(i_cid)?,
+            profit_token: opt_str(i_pt)?,
+            profit_amount: opt_str(i_pa)?,
+            profit_usd: opt_f64(i_pusd)?,
+            gas_cost_usd: opt_f64(i_gas)?,
+            flashloan_fee_usd: opt_f64(i_flash)?,
+            volume_usd: opt_f64(i_vol)?,
+            net_profit_usd: opt_f64(i_net)?,
+            route_json: opt_str(i_route)?,
+            victim_hashes: opt_str(i_victims)?,
+            details_json: opt_str(i_details)?,
+            detector: r.get(i_det)?,
+            created_at: r.get::<_, i64>(i_ca)? as u64,
+            subkind: opt_str(i_sub)?,
+            excluded_from_net: opt_bool(i_excl)?,
+            usd_approximate: opt_bool(i_approx)?,
+            native_unpriced: opt_bool(i_native)?,
+            multi_asset_pricing: opt_bool(i_multi)?,
+            pricing_clamped: opt_bool(i_clamp)?,
+            flash_fee_unpriced: opt_bool(i_ffu)?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn load_block_timestamps(
+    conn: &rusqlite::Connection,
+    since: i64,
+    until: i64,
+) -> anyhow::Result<Vec<i64>> {
+    let mut stmt = conn.prepare("SELECT ts FROM blocks WHERE ts >= ?1 AND ts <= ?2")?;
+    let rows = stmt.query_map(rusqlite::params![since, until], |r| r.get::<_, i64>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn load_sync_state(conn: &rusqlite::Connection) -> anyhow::Result<Option<SyncStateRow>> {
+    let row = conn
+        .query_row(
+            "SELECT chain_id, head, indexed_to, last_indexed_at FROM sync_state LIMIT 1",
+            [],
+            |r| {
+                Ok(SyncStateRow {
+                    chain_id: r.get::<_, i64>(0)? as u64,
+                    head: r.get::<_, i64>(1)? as u64,
+                    indexed_to: r.get::<_, i64>(2)? as u64,
+                    last_indexed_at: r.get::<_, i64>(3)? as u64,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
+fn load_labels(conn: &rusqlite::Connection) -> anyhow::Result<HashMap<String, String>> {
+    let mut map = HashMap::new();
+    let Ok(mut stmt) = conn.prepare("SELECT address, COALESCE(name, entity, kind, address) FROM labels")
+    else {
+        return Ok(map);
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (addr, label) = row?;
+        map.insert(addr, label);
+    }
+    Ok(map)
+}
+
+fn load_catalogue_tags() -> HashSet<String> {
+    let raw = include_str!("../../../data/explorer_tags.json");
+    let mut set = HashSet::new();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+        if let Some(arr) = v.as_array() {
+            for item in arr {
+                if let Some(s) = item.as_str() {
+                    set.insert(s.to_string());
+                } else if let Some(s) = item.get("tag").and_then(|t| t.as_str()) {
+                    set.insert(s.to_string());
+                } else if let Some(s) = item.get("name").and_then(|t| t.as_str()) {
+                    set.insert(s.to_string());
+                }
+            }
+        } else if let Some(obj) = v.as_object() {
+            for key in obj.keys() {
+                set.insert(key.clone());
+            }
+        }
+    }
+    set
+}
+
+fn load_reject_counts(
+    conn: &rusqlite::Connection,
+    since: i64,
+    until: i64,
+) -> anyhow::Result<HashMap<String, i64>> {
+    let mut map = HashMap::new();
+    let sql = "SELECT r.reject_reason, COUNT(*)
+               FROM rejected_candidates r
+               LEFT JOIN blocks b ON b.block_number = r.block_number
+               WHERE COALESCE(b.ts, r.created_at) >= ?1
+                 AND COALESCE(b.ts, r.created_at) <= ?2
+               GROUP BY r.reject_reason";
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return Ok(map);
+    };
+    let rows = stmt.query_map(rusqlite::params![since, until], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (reason, n) = row?;
+        map.insert(reason, n);
+    }
+    Ok(map)
+}
+
+fn load_jit_open(conn: &rusqlite::Connection) -> anyhow::Result<Vec<JitOpenRow>> {
+    let mut out = Vec::new();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT pool, owner, tick_lower, tick_upper, opened_block, liquidity
+         FROM jit_open_positions ORDER BY opened_block DESC LIMIT 200",
+    ) else {
+        return Ok(out);
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(JitOpenRow {
+            pool: r.get(0)?,
+            owner: r.get(1)?,
+            tick_lower: r.get(2)?,
+            tick_upper: r.get(3)?,
+            opened_block: r.get::<_, i64>(4)? as u64,
+            liquidity: r.get::<_, String>(5)?,
+        })
+    })?;
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn load_oracle_feeds(conn: &rusqlite::Connection) -> anyhow::Result<Vec<OracleFeedRow>> {
+    let mut out = Vec::new();
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT feed, COUNT(*), MAX(block_number) FROM oracle_answers GROUP BY feed ORDER BY COUNT(*) DESC LIMIT 50",
+    ) else {
+        return Ok(out);
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(OracleFeedRow {
+            feed: r.get(0)?,
+            answers: r.get(1)?,
+            last_block: r.get(2)?,
+        })
+    })?;
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn load_prices(conn: &rusqlite::Connection) -> anyhow::Result<Vec<PriceRow>> {
+    let mut out = Vec::new();
+    let Ok(mut stmt) =
+        conn.prepare("SELECT token, hour, usd, COALESCE(source, '') FROM prices ORDER BY hour DESC LIMIT 50")
+    else {
+        return Ok(out);
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(PriceRow {
+            token: r.get(0)?,
+            hour: r.get(1)?,
+            price_usd: r.get(2)?,
+            source: r.get(3)?,
+        })
+    })?;
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+fn load_table_counts(
+    conn: &rusqlite::Connection,
+    tables: &[String],
+) -> anyhow::Result<Vec<TableCount>> {
+    let mut out = Vec::new();
+    for table in tables {
+        // table names come from sqlite_master; still quote via identity check
+        if !table
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        let n: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap_or(0);
+        out.push(TableCount {
+            table: table.clone(),
+            rows: n,
+        });
+    }
+    out.sort_by(|a, b| b.rows.cmp(&a.rows).then(a.table.cmp(&b.table)));
+    Ok(out)
+}
+
+fn summarize_gaps(
+    store: &ExplorerStore,
+    sync: Option<&SyncStateRow>,
+    limit: u64,
+) -> anyhow::Result<(Option<i64>, Option<u64>, Option<u64>)> {
+    let Some(s) = sync else {
+        return Ok((Some(0), None, None));
+    };
+    let to = s.indexed_to;
+    let from = to.saturating_sub(limit);
+    let gaps = store.unclassified_blocks(from, to)?;
+    Ok((
+        Some(gaps.len() as i64),
+        gaps.first().copied(),
+        gaps.last().copied(),
+    ))
+}
+
+fn enforce_budget(panels: &mut ReducedPanels, budget: usize) {
+    if budget == 0 {
+        return;
+    }
+    let measure = |p: &ReducedPanels| {
+        serde_json::to_vec(p)
+            .map(|v| v.len())
+            .unwrap_or(usize::MAX)
+    };
+    if measure(panels) <= budget {
+        return;
+    }
+    panels.evidence.clear();
+    panels.truncation.evidence_emitted = 0;
+    panels.truncation.hit_budget = true;
+    if measure(panels) <= budget {
+        return;
+    }
+    while panels.events.len() > 50 && measure(panels) > budget {
+        let keep = panels.events.len() / 2;
+        panels.events.truncate(keep);
+        panels.truncation.ops_emitted = panels.events.len();
+        panels.truncation.hit_budget = true;
+    }
+}
+
+/// Render snapshot as HTML or return JSON string.
+pub fn render_html(snapshot: &DashboardSnapshot) -> anyhow::Result<String> {
+    render::to_html(snapshot)
+}
+
+pub fn render_json(snapshot: &DashboardSnapshot) -> anyhow::Result<String> {
+    Ok(serde_json::to_string_pretty(snapshot)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::explorer::store::ExplorerStore;
+
+    #[test]
+    fn window_parse_all_and_day() {
+        let w = WindowSpec::parse("all").expect("all");
+        assert_eq!(w.label, "all");
+        let d = WindowSpec::parse("7d").expect("7d");
+        assert!(d.until_ts - d.since_ts >= 7 * 86400 - 1);
+    }
+
+    #[test]
+    fn build_from_memory_via_temp_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "mev_dash_build_{}_{}",
+            std::process::id(),
+            now_secs()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("explorer-avalanche.sqlite");
+        {
+            let store = ExplorerStore::open(&path).expect("create");
+            store
+                .set_sync_state(43114, 100, 100)
+                .expect("sync");
+            let _ = store;
+        }
+        let snap = build(&BuildOptions {
+            db_path: path.clone(),
+            window: WindowSpec::all(),
+            ..BuildOptions::default()
+        })
+        .expect("build");
+        assert_eq!(snap.api_version, API_VERSION);
+        assert_eq!(snap.db.chain_label, "avalanche");
+        assert_eq!(snap.db.user_version, SCHEMA_HEAD);
+        assert_eq!(snap.coverage.head, Some(100));
+        let html = render_html(&snap).expect("html");
+        assert!(html.contains("snapshot"));
+        assert!(!html.contains("</script><script>"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reducer_reconciles_with_report_window_overview() {
+        let dir = std::env::temp_dir().join(format!(
+            "mev_dash_recon_{}_{}",
+            std::process::id(),
+            now_secs()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("explorer-avalanche.sqlite");
+        let since = 1_700_000_000i64;
+        {
+            let store = ExplorerStore::open(&path).expect("create");
+            store.set_sync_state(43114, 10, 10).expect("sync");
+            store
+                .connection()
+                .execute(
+                    "INSERT INTO blocks(block_number, block_hash, ts, indexed_at)
+                     VALUES(1, '0xbk', ?1, ?1)",
+                    [since],
+                )
+                .expect("block");
+            store
+                .connection()
+                .execute(
+                    "INSERT INTO mev_ops(
+                       block_number, tx_index, tx_hash, ts, kind, eoa, confidence,
+                       profit_usd, gas_cost_usd, net_profit_usd, volume_usd, flashloan_fee_usd,
+                       detector, created_at, subkind, excluded_from_net,
+                       usd_approximate, native_unpriced, multi_asset_pricing, pricing_clamped, flash_fee_unpriced
+                     ) VALUES(1, 0, '0xrecon', ?1, 'arb_atomic', '0xee', 'exact',
+                       5.0, 0.5, 4.5, 100.0, 0.0, 't', ?1, NULL, 0, 0, 0, 0, 0, 0)",
+                    [since],
+                )
+                .expect("op");
+            let overview = store
+                .report_window_overview(since as u64, None, None)
+                .expect("overview");
+            assert_eq!(overview.ops, 1);
+            assert!((overview.net_usd - 4.5).abs() < 1e-9);
+            assert!((overview.gross_usd - 5.0).abs() < 1e-9);
+        }
+        let snap = build(&BuildOptions {
+            db_path: path,
+            window: WindowSpec {
+                label: "recon".into(),
+                since_ts: since - 10,
+                until_ts: since + 10,
+            },
+            ..BuildOptions::default()
+        })
+        .expect("build");
+        assert_eq!(snap.panels.kpi.ops, 1);
+        assert!((snap.panels.kpi.net_usd - 4.5).abs() < 1e-9);
+        assert!((snap.panels.kpi.gross_usd - 5.0).abs() < 1e-9);
+        assert!((snap.panels.kpi.volume_usd - 100.0).abs() < 1e-9);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

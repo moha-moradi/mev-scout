@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>mev-scout explorer dashboard</title>
+<style>
+:root {
+  --bg: #0e1116; --bg2: #161b22; --bg3: #1c2330; --fg: #e6edf3; --muted: #8b949e;
+  --accent: #3fb950; --warn: #d29922; --bad: #f85149; --border: #30363d;
+  --mono: "JetBrains Mono", "Cascadia Code", "SF Mono", Consolas, monospace;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 13px/1.45 var(--mono);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 10% -20%, #1a3a2a55, transparent),
+    linear-gradient(180deg, #0e1116 0%, #0b0e13 100%);
+  min-height: 100vh;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.layout { display: grid; grid-template-columns: 200px 1fr; min-height: 100vh; }
+nav {
+  position: sticky; top: 0; align-self: start; height: 100vh; overflow: auto;
+  background: var(--bg2); border-right: 1px solid var(--border); padding: 12px 8px;
+}
+nav .brand { font-family: var(--sans); font-weight: 700; font-size: 14px; margin: 0 8px 12px; letter-spacing: .02em; }
+nav a {
+  display: block; padding: 5px 8px; color: var(--muted); border-radius: 4px; margin-bottom: 2px;
+}
+nav a:hover, nav a.active { background: var(--bg3); color: var(--fg); text-decoration: none; }
+main { padding: 0 20px 48px; max-width: 1200px; }
+.top {
+  position: sticky; top: 0; z-index: 5; background: #0e1116ee; backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--border); padding: 10px 0; margin: 0 -4px 16px;
+}
+.top .row { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: baseline; }
+.banner {
+  margin-top: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg2); color: var(--muted); font-size: 12px;
+}
+.banner.warn { border-color: var(--warn); color: var(--warn); }
+.banner.bad { border-color: var(--bad); color: var(--bad); }
+h2 {
+  font-family: var(--sans); font-size: 15px; font-weight: 600; margin: 28px 0 8px;
+  border-bottom: 1px solid var(--border); padding-bottom: 4px;
+}
+h2 .basis { font-family: var(--mono); font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 8px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.kpi {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 10px;
+}
+.kpi .label { color: var(--muted); font-size: 11px; }
+.kpi .val { font-size: 16px; margin-top: 4px; }
+.kpi .cov { color: var(--muted); font-size: 10px; margin-top: 2px; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; position: sticky; top: 42px; background: var(--bg); }
+tr:hover td { background: var(--bg3); }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.null { color: var(--muted); }
+.chip {
+  display: inline-block; padding: 1px 6px; border-radius: 3px; background: var(--bg3);
+  border: 1px solid var(--border); margin: 0 2px 2px 0; font-size: 11px; cursor: pointer;
+}
+.chip.on { border-color: var(--accent); color: var(--accent); }
+.filters { margin: 8px 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+input[type=search], select {
+  background: var(--bg2); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 3px; padding: 4px 8px; font: inherit;
+}
+.svg-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 8px; overflow-x: auto; }
+svg text { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
+.panel { margin-bottom: 8px; }
+.muted { color: var(--muted); }
+.leg-registry { color: var(--accent); }
+.leg-transfer { color: #58a6ff; }
+.leg-proximity { color: var(--warn); }
+.detail {
+  display: none; background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 12px; margin: 8px 0; white-space: pre-wrap; word-break: break-all; max-height: 480px; overflow: auto;
+}
+.detail.show { display: block; }
+@media (max-width: 800px) {
+  .layout { grid-template-columns: 1fr; }
+  nav { position: relative; height: auto; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav id="nav">
+  <div class="brand">mev-scout · explorer</div>
+  <a href="#p0">P0 reality</a>
+  <a href="#p1">P1 coverage</a>
+  <a href="#p3">P3 KPIs</a>
+  <a href="#p4">P4 quality</a>
+  <a href="#p5">P5 series</a>
+  <a href="#p6">P6 kinds</a>
+  <a href="#p7">P7 actors</a>
+  <a href="#p8">P8 pools</a>
+  <a href="#p8t">P8 tokens</a>
+  <a href="#p9">P9 events</a>
+  <a href="#p10">P10 drill-down</a>
+  <a href="#p11">P11 facets</a>
+  <a href="#p12">P12 rejects</a>
+  <a href="#p13">P13 JIT</a>
+  <a href="#p14">P14 oracles</a>
+  <a href="#p15">P15 storage</a>
+</nav>
+<main>
+  <div class="top" id="top"></div>
+  <div class="filters" id="filters"></div>
+  <section class="panel" id="p0"></section>
+  <section class="panel" id="p1"></section>
+  <section class="panel" id="p3"></section>
+  <section class="panel" id="p4"></section>
+  <section class="panel" id="p5"></section>
+  <section class="panel" id="p6"></section>
+  <section class="panel" id="p7"></section>
+  <section class="panel" id="p8"></section>
+  <section class="panel" id="p8t"></section>
+  <section class="panel" id="p9"></section>
+  <section class="panel" id="p10"><h2>P10 Op drill-down <span class="basis">#/op/&lt;tx_hash&gt;</span></h2><div id="drill" class="detail"></div></section>
+  <section class="panel" id="p11"></section>
+  <section class="panel" id="p12"></section>
+  <section class="panel" id="p13"></section>
+  <section class="panel" id="p14"></section>
+  <section class="panel" id="p15"></section>
+</main>
+</div>
+<script id="snapshot" type="application/json">/*__SNAPSHOT__*/</script>
+<script>
+(function () {
+  const raw = document.getElementById("snapshot").textContent;
+  const S = JSON.parse(raw);
+  const P = S.panels;
+  const state = { kind: "", confidence: "", q: "", pricedOnly: false };
+
+  function $(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function usd(v) {
+    if (v == null || Number.isNaN(v)) return '<span class="null">—</span>';
+    return "≈" + Number(v).toFixed(4);
+  }
+  function cov(priced, total) {
+    return priced + "/" + total + " priced";
+  }
+  function parseHash() {
+    const h = location.hash || "";
+    const m = h.match(/^#\/op\/(0x[a-fA-F0-9]+)/);
+    if (m) return { op: m[1].toLowerCase() };
+    const params = {};
+    h.replace(/^#\/?/, "").split("&").forEach(function (pair) {
+      const kv = pair.split("=");
+      if (kv[0]) params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || "");
+    });
+    return params;
+  }
+  function writeHash() {
+    if (state._op) {
+      location.hash = "#/op/" + state._op;
+      return;
+    }
+    const parts = [];
+    if (state.kind) parts.push("kind=" + encodeURIComponent(state.kind));
+    if (state.confidence) parts.push("confidence=" + encodeURIComponent(state.confidence));
+    if (state.q) parts.push("q=" + encodeURIComponent(state.q));
+    if (state.pricedOnly) parts.push("priced=1");
+    location.hash = parts.length ? "#/" + parts.join("&") : "#/";
+  }
+
+  function kpi(label, val, coverage) {
+    return '<div class="kpi"><div class="label">' + esc(label) + '</div><div class="val">' + val +
+      '</div>' + (coverage ? '<div class="cov">' + esc(coverage) + '</div>' : '') + '</div>';
+  }
+
+  function renderTop() {
+    const age = Math.max(0, Math.floor(Date.now() / 1000) - (S.generator.generated_at || 0));
+    const span = (S.coverage.max_block_ts != null && S.coverage.min_block_ts != null)
+      ? (S.coverage.max_block_ts - S.coverage.min_block_ts) : null;
+    let banners = "";
+    if (S.db.status !== "at_head") {
+      banners += '<div class="banner warn">schema ' + S.db.user_version + " / head " + S.db.schema_head +
+        " (" + esc(S.db.status) + ") — panels degrade via StoreCaps; DB was NOT migrated</div>";
+    }
+    if (span != null && span < 3600) {
+      banners += '<div class="banner warn">indexed wall span ≈ ' + span +
+        "s — do not read short windows as multi-day revenue</div>";
+    }
+    if (S.truncation && S.truncation.hit_budget) {
+      banners += '<div class="banner bad">truncation: events ' + S.truncation.ops_emitted +
+        "/" + S.truncation.ops_total + ", evidence " + S.truncation.evidence_emitted +
+        "/" + S.truncation.max_evidence + "</div>";
+    }
+    if (!S.caps.has_excluded_from_net) {
+      banners += '<div class="banner warn">schema: net-gating unavailable (no excluded_from_net)</div>';
+    }
+    $("top").innerHTML =
+      '<div class="row"><strong>' + esc(S.db.chain_label) + '</strong>' +
+      '<span class="muted">' + esc(S.db.path) + '</span>' +
+      '<span>v' + S.db.user_version + "/" + S.db.schema_head + '</span>' +
+      '<span>window ' + esc(S.window.label) + '</span>' +
+      '<span>generated_at ' + S.generator.generated_at + ' (age ' + age + 's)</span>' +
+      '<span>api ' + S.api_version + '</span></div>' + banners;
+  }
+
+  function renderFilters() {
+    $("filters").innerHTML =
+      '<span class="muted">client filters</span>' +
+      '<select id="fKind"><option value="">kind: all</option></select>' +
+      '<select id="fConf"><option value="">confidence: all</option>' +
+      '<option value="exact">exact</option><option value="inferred">inferred</option></select>' +
+      '<label><input type="checkbox" id="fPriced"/> priced only</label>' +
+      '<input type="search" id="fQ" placeholder="search tx/eoa/pool" style="min-width:180px"/>';
+    const kinds = {};
+    (P.events || []).forEach(function (e) { kinds[e.kind] = 1; });
+    Object.keys(kinds).sort().forEach(function (k) {
+      const o = document.createElement("option");
+      o.value = k; o.textContent = k;
+      $("fKind").appendChild(o);
+    });
+    $("fKind").value = state.kind;
+    $("fConf").value = state.confidence;
+    $("fPriced").checked = state.pricedOnly;
+    $("fQ").value = state.q;
+    $("fKind").onchange = function () { state.kind = this.value; state._op = null; writeHash(); renderAll(); };
+    $("fConf").onchange = function () { state.confidence = this.value; state._op = null; writeHash(); renderAll(); };
+    $("fPriced").onchange = function () { state.pricedOnly = this.checked; state._op = null; writeHash(); renderAll(); };
+    $("fQ").oninput = function () { state.q = this.value.trim(); state._op = null; writeHash(); renderAll(); };
+  }
+
+  function filteredEvents() {
+    return (P.events || []).filter(function (e) {
+      if (state.kind && e.kind !== state.kind) return false;
+      if (state.confidence && e.confidence !== state.confidence) return false;
+      if (state.pricedOnly && e.profit_usd == null) return false;
+      if (state.q) {
+        const q = state.q.toLowerCase();
+        const blob = (e.tx_hash + " " + e.eoa + " " + (e.contract || "")).toLowerCase();
+        if (blob.indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderP0() {
+    $("p0").innerHTML = "<h2>P0 Data reality <span class=\"basis\">file · schema · window</span></h2>" +
+      "<table><tbody>" +
+      row("path", S.db.path) +
+      row("chain", S.db.chain_label + (S.db.chain_id != null ? " (" + S.db.chain_id + ")" : "")) +
+      row("size_bytes", S.db.size_bytes) +
+      row("user_version", S.db.user_version + " / SCHEMA_HEAD " + S.db.schema_head) +
+      row("status", S.db.status) +
+      row("window", S.window.label + " [" + S.window.since_ts + " .. " + S.window.until_ts + "]") +
+      row("semantics.null_usd", S.semantics.null_usd_means) +
+      row("unknown→utility", P.unknown_rewritten) +
+      "</tbody></table>";
+  }
+  function row(k, v) {
+    return "<tr><th>" + esc(k) + "</th><td>" + esc(v) + "</td></tr>";
+  }
+
+  function renderP1() {
+    const c = S.coverage;
+    $("p1").innerHTML = "<h2>P1 Coverage / sync <span class=\"basis\">before USD</span></h2>" +
+      '<div class="grid">' +
+      kpi("head", c.head != null ? c.head : "—") +
+      kpi("indexed_to", c.indexed_to != null ? c.indexed_to : "—") +
+      kpi("blocks_in_window", c.blocks_in_window) +
+      kpi("ops_in_window", c.ops_in_window) +
+      kpi("block_ts_span", (c.min_block_ts != null && c.max_block_ts != null)
+        ? (c.max_block_ts - c.min_block_ts) + "s" : "—") +
+      kpi("gaps", c.gap_count != null ? c.gap_count : "n/a (--with-gaps)") +
+      "</div>";
+  }
+
+  function renderP3() {
+    const k = P.kpi;
+    $("p3").innerHTML = "<h2>P3 KPI grid <span class=\"basis\">reducer · coverage fractions</span></h2>" +
+      '<div class="grid">' +
+      kpi("ops", k.ops) +
+      kpi("gross USD", usd(k.gross_usd), cov(k.gross_priced, k.ops)) +
+      kpi("net USD", usd(k.net_usd), cov(k.net_priced, k.ops) + (k.net_gating_available ? "" : " · ungated")) +
+      kpi("gas USD", usd(k.gas_usd), cov(k.gas_priced, k.ops)) +
+      kpi("flash fee", usd(k.flash_fee_usd), cov(k.flash_fee_priced, k.ops)) +
+      kpi("volume", usd(k.volume_usd), cov(k.volume_priced, k.ops)) +
+      kpi("peak single", usd(k.highest_single_usd)) +
+      kpi("searchers", k.searchers) +
+      kpi("competitors", k.competitors) +
+      "</div>";
+  }
+
+  function renderP4() {
+    const q = P.kpi.quality;
+    $("p4").innerHTML = "<h2>P4 Pricing quality <span class=\"basis\">never collapse</span></h2>" +
+      '<div class="grid">' +
+      kpi("priced", q.ops_priced) +
+      kpi("unpriced", q.ops_unpriced) +
+      kpi("coverage %", q.pricing_coverage_pct.toFixed(1)) +
+      kpi("exact", q.ops_exact) +
+      kpi("inferred", q.ops_inferred) +
+      kpi("net exact", usd(q.net_usd_exact)) +
+      kpi("net inferred", usd(q.net_usd_inferred)) +
+      kpi("approx", q.ops_approx) +
+      kpi("native_unpriced", q.ops_native_unpriced) +
+      kpi("multi_asset", q.ops_multi_asset) +
+      kpi("clamped", q.ops_pricing_clamped) +
+      kpi("flash_fee_unpriced", q.ops_flash_fee_unpriced) +
+      kpi("excluded_from_net", q.ops_excluded_from_net) +
+      kpi("flags avail", q.pricing_flags_available ? "yes" : "no") +
+      "</div>";
+  }
+
+  function linePath(pts, x0, y0, w, h, ymin, ymax) {
+    if (!pts.length) return "";
+    const n = pts.length;
+    return pts.map(function (p, i) {
+      const x = x0 + (n === 1 ? w / 2 : (i / (n - 1)) * w);
+      const t = ymax === ymin ? 0.5 : (p - ymin) / (ymax - ymin);
+      const y = y0 + h - t * h;
+      return (i ? "L" : "M") + x.toFixed(1) + "," + y.toFixed(1);
+    }).join(" ");
+  }
+
+  function renderP5() {
+    const series = P.series || [];
+    const W = 640, H = 160, pad = 28;
+    const ops = series.map(function (s) { return s.ops; });
+    const nets = series.map(function (s) { return s.net_usd; });
+    const maxOps = Math.max(1, Math.max.apply(null, ops.concat([1])));
+    const minNet = Math.min.apply(null, nets.concat([0]));
+    const maxNet = Math.max.apply(null, nets.concat([0]));
+    const pathOps = linePath(ops, pad, 10, W - pad * 2, H - 40, 0, maxOps);
+    const pathNet = linePath(nets, pad, 10, W - pad * 2, H - 40, minNet, maxNet === minNet ? minNet + 1 : maxNet);
+    let bars = "";
+    series.forEach(function (s, i) {
+      const n = series.length;
+      const x = pad + (n === 1 ? (W - pad * 2) / 2 : (i / (n - 1)) * (W - pad * 2));
+      const bh = s.blocks_indexed ? Math.min(20, 4 + s.blocks_indexed) : 0;
+      if (bh) bars += '<rect x="' + (x - 2) + '" y="' + (H - 8 - bh) + '" width="4" height="' + bh +
+        '" fill="#30363d" opacity="0.7"><title>blocks ' + s.blocks_indexed + "</title></rect>";
+    });
+    $("p5").innerHTML = "<h2>P5 Time series <span class=\"basis\">bucket " + P.bucket_secs +
+      "s · ops + net · block coverage band</span></h2>" +
+      '<div class="svg-wrap"><svg viewBox="0 0 ' + W + " " + H + '" width="100%" height="' + H + '">' +
+      bars +
+      '<path d="' + pathOps + '" fill="none" stroke="#3fb950" stroke-width="1.5"/>' +
+      '<path d="' + pathNet + '" fill="none" stroke="#58a6ff" stroke-width="1.2" stroke-dasharray="4 2"/>' +
+      '<text x="8" y="14">ops</text><text x="40" y="14" fill="#58a6ff">net</text>' +
+      "</svg></div>";
+  }
+
+  function renderP6() {
+    const cells = P.kind_matrix || [];
+    let html = "<h2>P6 Kind × subkind × confidence <span class=\"basis\">zeros kept · unknown→utility " +
+      P.unknown_rewritten + "</span></h2><table><thead><tr><th>kind</th><th>subkind</th><th>conf</th>" +
+      "<th class=\"num\">ops</th><th class=\"num\">gross</th><th class=\"num\">net</th></tr></thead><tbody>";
+    cells.forEach(function (c) {
+      html += "<tr><td>" + esc(c.kind) + "</td><td>" + esc(c.subkind || "—") + "</td><td>" +
+        esc(c.confidence) + "</td><td class=\"num\">" + c.ops + "</td><td class=\"num\">" +
+        usd(c.gross_usd) + "</td><td class=\"num\">" + usd(c.net_usd) + "</td></tr>";
+    });
+    $("p6").innerHTML = html + "</tbody></table>";
+  }
+
+  function renderTable(id, title, basis, headers, rowsHtml) {
+    $(id).innerHTML = "<h2>" + title + " <span class=\"basis\">" + basis + "</span></h2><table><thead><tr>" +
+      headers.map(function (h) { return "<th" + (h.num ? " class=\"num\"" : "") + ">" + esc(h.t) + "</th>"; }).join("") +
+      "</tr></thead><tbody>" + rowsHtml + "</tbody></table>";
+  }
+
+  function renderP7() {
+    let body = "";
+    (P.actors || []).forEach(function (a) {
+      body += "<tr><td>" + esc(a.competitor) + "</td><td>" + esc(a.label || "—") +
+        "</td><td class=\"num\">" + a.ops + "</td><td class=\"num\">" + usd(a.gross_usd) +
+        "</td><td class=\"num\">" + usd(a.net_usd) + "</td><td class=\"num\">" + a.excluded_ops + "</td></tr>";
+    });
+    renderTable("p7", "P7 Actors", "competitor = COALESCE(contract,eoa)", [
+      { t: "competitor" }, { t: "label" }, { t: "ops", num: 1 }, { t: "gross", num: 1 },
+      { t: "net", num: 1 }, { t: "excluded", num: 1 }
+    ], body || "<tr><td colspan=\"6\" class=\"muted\">none</td></tr>");
+  }
+
+  function renderP8() {
+    let body = "";
+    (P.pools || []).forEach(function (p) {
+      const mix = Object.keys(p.amm_mix || {}).map(function (k) { return k + ":" + p.amm_mix[k]; }).join(" ");
+      body += "<tr><td>" + esc(p.pool) + "</td><td class=\"num\">" + p.ops +
+        "</td><td class=\"num\">" + usd(p.net_usd) + "</td><td class=\"num\">" + usd(p.gross_usd) +
+        "</td><td class=\"num\">" + p.priced_ops + "/" + p.ops +
+        "</td><td>" + esc(mix) + "</td><td class=\"num\">" + p.unique_competitors +
+        "</td><td>" + esc(p.top_kind || "—") + "</td></tr>";
+    });
+    renderTable("p8", "P8 Pools", "rank: net → gross → ops", [
+      { t: "pool" }, { t: "ops", num: 1 }, { t: "net", num: 1 }, { t: "gross", num: 1 },
+      { t: "priced", num: 1 }, { t: "amm_mix" }, { t: "comps", num: 1 }, { t: "top_kind" }
+    ], body || "<tr><td colspan=\"8\" class=\"muted\">none</td></tr>");
+  }
+
+  function renderP8t() {
+    let body = "";
+    (P.tokens || []).forEach(function (t) {
+      body += "<tr><td>" + esc(t.token) + "</td><td class=\"num\">" + t.ops +
+        "</td><td class=\"num\">" + usd(t.net_usd) + "</td><td class=\"num\">" + usd(t.gross_usd) +
+        "</td><td class=\"num\">" + t.priced_ops + "/" + t.ops + "</td></tr>";
+    });
+    renderTable("p8t", "P8 Tokens", "profit_token", [
+      { t: "token" }, { t: "ops", num: 1 }, { t: "net", num: 1 }, { t: "gross", num: 1 }, { t: "priced", num: 1 }
+    ], body || "<tr><td colspan=\"5\" class=\"muted\">none</td></tr>");
+  }
+
+  function renderP9() {
+    const ev = filteredEvents();
+    let body = "";
+    ev.forEach(function (e) {
+      body += "<tr><td>" + e.block_number + "</td><td><a href=\"#/op/" + esc(e.tx_hash) + "\">" +
+        esc(e.tx_hash.slice(0, 10)) + "…</a></td><td>" + esc(e.kind) +
+        (e.subkind ? "/" + esc(e.subkind) : "") + "</td><td>" + esc(e.confidence) +
+        "</td><td class=\"num\">" + usd(e.profit_usd) + "</td><td class=\"num\">" + usd(e.net_profit_usd) +
+        "</td><td>" + esc(e.pnl_basis || "—") + "</td><td>" + esc(e.detector) + "</td></tr>";
+    });
+    renderTable("p9", "P9 Events", "sample " + ev.length + " · client filters", [
+      { t: "block" }, { t: "tx" }, { t: "kind" }, { t: "conf" },
+      { t: "gross", num: 1 }, { t: "net", num: 1 }, { t: "pnl_basis" }, { t: "detector" }
+    ], body || "<tr><td colspan=\"8\" class=\"muted\">none</td></tr>");
+  }
+
+  function renderP10() {
+    const drill = $("drill");
+    const h = parseHash();
+    if (!h.op) {
+      drill.className = "detail";
+      drill.textContent = "Select an event or set #/op/<tx_hash>";
+      return;
+    }
+    state._op = h.op;
+    const ev = (P.evidence || []).find(function (e) { return e.tx_hash.toLowerCase() === h.op; });
+    drill.className = "detail show";
+    if (!ev) {
+      drill.textContent = "No evidence blob for " + h.op + " (budget/truncation).";
+      return;
+    }
+    let routes = (ev.route || []).map(function (leg) {
+      const cls = "leg-" + (leg.token_source || "unknown");
+      return "  pool=" + (leg.pool || "?") + " amm=" + (leg.amm || "?") +
+        " " + (leg.token_in || "?") + "→" + (leg.token_out || "?") +
+        " source=" + (leg.token_source || "?");
+    }).join("\n");
+    drill.textContent =
+      "tx " + ev.tx_hash + "\nblock " + ev.block_number + " kind " + ev.kind +
+      (ev.subkind ? "/" + ev.subkind : "") + " conf " + ev.confidence +
+      "\nprofit " + (ev.profit_usd != null ? "≈" + ev.profit_usd : "—") +
+      " net " + (ev.net_profit_usd != null ? "≈" + ev.net_profit_usd : "—") +
+      "\npnl_basis " + (ev.pnl_basis || "—") +
+      "\ntags " + (ev.tags || []).join(",") +
+      "\nreasons " + (ev.reasons || []).join(",") +
+      "\nroute:\n" + (routes || "  (none)") +
+      "\nvictims " + (ev.victim_hashes || []).join(",") +
+      "\namount human " + (ev.profit_amount_human || "raw only (decimals unknown)") +
+      "\n\n" + JSON.stringify(ev.details, null, 2);
+  }
+
+  function renderP11() {
+    function facetTable(title, rows) {
+      let b = "";
+      (rows || []).forEach(function (r) {
+        b += "<tr><td>" + esc(r.value) + (r.out_of_catalogue ? " <span class=\"chip\">out-of-catalogue</span>" : "") +
+          "</td><td class=\"num\">" + r.ops + "</td><td class=\"num\">" + usd(r.gross_usd) +
+          "</td><td class=\"num\">" + usd(r.net_usd) + "</td></tr>";
+      });
+      return "<h3>" + title + "</h3><table><thead><tr><th>value</th><th class=\"num\">ops</th>" +
+        "<th class=\"num\">gross</th><th class=\"num\">net</th></tr></thead><tbody>" +
+        (b || "<tr><td colspan=\"4\" class=\"muted\">none</td></tr>") + "</tbody></table>";
+    }
+    $("p11").innerHTML = "<h2>P11 Facets <span class=\"basis\">from data</span></h2>" +
+      facetTable("tags", P.tag_facets) + facetTable("reasons", P.reason_facets);
+  }
+
+  function renderP12() {
+    const r = S.rejects;
+    let body = "";
+    (r.ladder || []).forEach(function (x) {
+      body += "<tr><td>" + esc(x.reason) + "</td><td class=\"num\">" + x.count + "</td></tr>";
+    });
+    $("p12").innerHTML = "<h2>P12 Reject funnel <span class=\"basis\">" + esc(r.note) +
+      "</span></h2><div class=\"banner" + (r.recording_empty ? " warn" : "") + "\">total " +
+      r.total + (r.recording_empty ? " — empty means recording off, not zero rejects" : "") +
+      "</div><table><thead><tr><th>reason</th><th class=\"num\">count</th></tr></thead><tbody>" +
+      body + "</tbody></table>";
+  }
+
+  function renderP13() {
+    let body = "";
+    (S.jit_open || []).forEach(function (j) {
+      body += "<tr><td>" + esc(j.pool) + "</td><td>" + esc(j.owner) +
+        "</td><td class=\"num\">" + j.tick_lower + "</td><td class=\"num\">" + j.tick_upper +
+        "</td><td class=\"num\">" + j.opened_block + "</td><td>" + esc(j.liquidity) + "</td></tr>";
+    });
+    const jitOps = (P.events || []).filter(function (e) { return e.kind === "jit" || e.kind === "jit_arb"; });
+    $("p13").innerHTML = "<h2>P13 JIT lifecycle <span class=\"basis\">detector state ≠ chain truth</span></h2>" +
+      "<p class=\"muted\">realized jit/jit_arb events in sample: " + jitOps.length +
+      " · open positions (detector): " + (S.jit_open || []).length + "</p>" +
+      "<table><thead><tr><th>pool</th><th>owner</th><th class=\"num\">tick_lo</th>" +
+      "<th class=\"num\">tick_hi</th><th class=\"num\">opened</th><th>liq</th></tr></thead><tbody>" +
+      (body || "<tr><td colspan=\"6\" class=\"muted\">none</td></tr>") + "</tbody></table>";
+  }
+
+  function renderP14() {
+    let feeds = "";
+    (S.oracle_feeds || []).forEach(function (f) {
+      feeds += "<tr><td>" + esc(f.feed) + "</td><td class=\"num\">" + f.answers +
+        "</td><td class=\"num\">" + (f.last_block != null ? f.last_block : "—") + "</td></tr>";
+    });
+    let prices = "";
+    (S.prices || []).forEach(function (p) {
+      prices += "<tr><td>" + esc(p.token) + "</td><td class=\"num\">" + p.hour +
+        "</td><td class=\"num\">" + usd(p.price_usd) + "</td><td>" + esc(p.source) + "</td></tr>";
+    });
+    $("p14").innerHTML = "<h2>P14 Oracles / prices <span class=\"basis\">prices.hour is hourly bucket (ts/3600)</span></h2>" +
+      "<h3>oracle_answers</h3><table><thead><tr><th>feed</th><th class=\"num\">n</th><th class=\"num\">last_block</th></tr></thead><tbody>" +
+      (feeds || "<tr><td colspan=\"3\" class=\"muted\">none</td></tr>") + "</tbody></table>" +
+      "<h3>prices</h3><table><thead><tr><th>token</th><th class=\"num\">hour</th><th class=\"num\">usd</th><th>source</th></tr></thead><tbody>" +
+      (prices || "<tr><td colspan=\"4\" class=\"muted\">none</td></tr>") + "</tbody></table>";
+  }
+
+  function renderP15() {
+    let body = "";
+    (S.storage || []).forEach(function (t) {
+      body += "<tr><td>" + esc(t.table) + "</td><td class=\"num\">" + t.rows + "</td></tr>";
+    });
+    $("p15").innerHTML = "<h2>P15 Storage health <span class=\"basis\">table counts</span></h2>" +
+      "<p class=\"muted\">Dead / unpopulated on logs-only path: blocks.producer, swaps.dex, swaps.sender, transfers.is_native</p>" +
+      "<table><thead><tr><th>table</th><th class=\"num\">rows</th></tr></thead><tbody>" + body + "</tbody></table>";
+  }
+
+  function renderAll() {
+    renderTop();
+    renderFilters();
+    renderP0(); renderP1(); renderP3(); renderP4(); renderP5();
+    renderP6(); renderP7(); renderP8(); renderP8t(); renderP9();
+    renderP10(); renderP11(); renderP12(); renderP13(); renderP14(); renderP15();
+  }
+
+  // hydrate state from hash
+  (function init() {
+    const h = parseHash();
+    if (h.op) state._op = h.op;
+    if (h.kind) state.kind = h.kind;
+    if (h.confidence) state.confidence = h.confidence;
+    if (h.q) state.q = h.q;
+    if (h.priced === "1") state.pricedOnly = true;
+    renderAll();
+  })();
+  window.addEventListener("hashchange", function () {
+    const h = parseHash();
+    state._op = h.op || null;
+    if (!h.op) {
+      if (h.kind != null) state.kind = h.kind || "";
+      if (h.confidence != null) state.confidence = h.confidence || "";
+      if (h.q != null) state.q = h.q || "";
+      state.pricedOnly = h.priced === "1";
+    }
+    renderAll();
+  });
+})();
+</script>
+</body>
+</html>

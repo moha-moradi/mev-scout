@@ -380,6 +380,7 @@ flowchart TB
     A["resolve_chain + init_rpc"] --> B["ExplorerStore::open<br/>(explorer-{chain}.sqlite, WAL)"]
     B --> C{"subcommand"}
     C -- "bare / none" --> R["revenue report:<br/>cost · profit · volume per window"]
+    C -- "dashboard" --> D["static HTML/JSON<br/>read-only · no migrate"]
     C -- "index no --loop" --> BF["ingest: historical range<br/>(default trailing 7 days)"]
     C -- "index --loop" --> E["ingest: live stream<br/>(head − confirmations)<br/>idempotent · reorg-aware · classify-in-stream"]
     BF --> F["decode → classify → profit<br/>(balance-delta accounting + gas + USD)"]
@@ -422,6 +423,32 @@ mev-scout explorer index --loop --duration 15m
 ```
 
 Ingest tuning lives in TOML `[explorer]`: `confirmations`, `poll_interval_ms`.
+
+#### 3.6.3 `explorer dashboard` — static forensic HTML/JSON
+
+Read-only snapshot of an explorer SQLite file. **Never migrates** the DB
+(`ExplorerStore::open_read_only`). With `--db`, no live RPC / `mev-scout.toml`
+is required. Open the HTML via `file://` (no server).
+
+```powershell
+mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --window all --out results/dash.html
+mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --format json --out results/dash.json
+mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --with-gaps --repeat 60s
+```
+
+| Flag | Effect |
+|---|---|
+| `--db PATH` | Offline DB path (skips `validate_live`) |
+| `--window` | `all` \| `Nh` \| `Nd` \| `Nw` (default `24h`) |
+| `--out` | Output path (default `results/dash.html`) |
+| `--format` | `html` \| `json` |
+| `--max-ops` / `--evidence` | Artifact size caps |
+| `--with-gaps` | Sample unclassified-block gaps near tip |
+| `--repeat DURATION` | Atomic rewrite every N seconds |
+
+Artifact embeds coverage fractions next to every USD sum; `NULL` USD is `—`,
+never zero. Schema capability banners appear when columns (e.g. `excluded_from_net`)
+are missing on legacy files.
 
 #### Classifier-change replay recipe (wipe + reindex)
 

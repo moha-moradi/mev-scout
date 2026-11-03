@@ -92,6 +92,11 @@ pub enum ExplorerCommand {
     /// 7 days) and exits. With `--loop` it streams tip blocks until Ctrl+C
     /// (or `--duration`). Idempotent, resumable, reorg-aware.
     Index(IndexArgs),
+    /// Emit a forensic static HTML/JSON dashboard from explorer SQLite.
+    ///
+    /// Opens the DB read-only (never migrates). With `--db`, no live RPC or
+    /// `mev-scout.toml` is required.
+    Dashboard(DashboardArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -154,6 +159,45 @@ impl ExplorerArgs {
     pub fn resolved_top(&self) -> usize {
         self.top.unwrap_or(DEFAULT_EXPLORER_TOP)
     }
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct DashboardArgs {
+    /// Explorer SQLite path (offline). Default: config per-chain path.
+    #[arg(long, value_name = "PATH")]
+    pub db: Option<std::path::PathBuf>,
+
+    /// Rolling window (`24h`, `7d`, `2w`) or `all` (default `24h`).
+    #[arg(long, value_name = "WINDOW", default_value = "24h")]
+    pub window: String,
+
+    /// Output path (`.html` or `.json` depending on `--format`).
+    #[arg(long, value_name = "PATH", default_value = "results/dash.html")]
+    pub out: std::path::PathBuf,
+
+    /// `html` (default) or `json`.
+    #[arg(long, value_name = "FMT", default_value = "html", value_parser = ["html", "json"])]
+    pub format: String,
+
+    /// Cap ops / events rows embedded in the snapshot.
+    #[arg(long, value_name = "N", default_value_t = 2000)]
+    pub max_ops: usize,
+
+    /// Cap evidence blobs for `#/op/` drill-down.
+    #[arg(long, value_name = "N", default_value_t = 500)]
+    pub evidence: usize,
+
+    /// Soft JSON/HTML byte budget in MiB (trim evidence, then events).
+    #[arg(long, value_name = "MB", default_value_t = 8)]
+    pub budget_mb: usize,
+
+    /// Include sampled unclassified-block gaps near tip.
+    #[arg(long)]
+    pub with_gaps: bool,
+
+    /// Rewrite the output every N seconds (atomic). Accepts humantime (`30s`).
+    #[arg(long, value_name = "DURATION")]
+    pub repeat: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

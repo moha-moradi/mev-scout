@@ -11,7 +11,7 @@ mod report;
 
 pub use config::cmd_config;
 pub use discover::cmd_discover;
-pub use explorer::{cmd_backfill, cmd_explorer_report, cmd_index};
+pub use explorer::{cmd_backfill, cmd_explorer_report, cmd_index, run_dashboard};
 pub use live::cmd_live;
 pub use report::cmd_report;
 
@@ -19,6 +19,7 @@ pub use report::cmd_report;
 /// Uses `?Send` because some commands (e.g. discover) hold non-Send types
 /// like `Option<&dyn Fn -> bool>` across await points; embedding hosts run
 /// the returned future via their own `Runtime::block_on`.
+#[allow(clippy::double_must_use)] // async_trait Future is already must_use
 #[async_trait(?Send)]
 pub trait CliCommand {
     async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()>;
@@ -83,6 +84,10 @@ impl CliCommand for ExplorerArgs {
                     cmd_backfill(config, a.days, a.from_block, a.to_block, progress).await?;
                     Ok(())
                 }
+            }
+            Some(ExplorerCommand::Dashboard(a)) => {
+                let _ = progress;
+                run_dashboard(config, a).await
             }
         }
     }

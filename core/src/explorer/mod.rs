@@ -30,6 +30,7 @@
 pub(crate) mod benqi_liq;
 pub(crate) mod canonical;
 pub(crate) mod classify;
+pub mod dashboard;
 pub(crate) mod decode;
 #[cfg(any(test, feature = "test-util"))]
 pub(crate) mod golden;

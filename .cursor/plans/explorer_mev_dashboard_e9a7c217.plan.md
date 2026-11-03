@@ -4,25 +4,25 @@ overview: Ship a forensic, read-only static HTML/JSON dashboard as `mev-scout ex
 todos:
   - id: m0-readonly
     content: Add SCHEMA_HEAD, open_read_only, StoreCaps; sha256 no-write tests
-    status: pending
+    status: completed
   - id: m1-envelope
     content: DashboardSnapshot + --format json + offline --db path
-    status: pending
+    status: completed
   - id: m2-reducer
     content: "Rust reducer: KPI, series, kind matrix, actors, pools, facets"
-    status: pending
+    status: completed
   - id: m3-html
     content: dashboard_template.html + SVG + hash filters + escape
-    status: pending
+    status: completed
   - id: m4-drilldown
     content: "Events table, evidence budget, #/op deep-links"
-    status: pending
+    status: completed
   - id: m5-extra-panels
     content: JIT, oracles, reject funnel empty-state, storage health
-    status: pending
+    status: completed
   - id: m6-polish
     content: "--window/--with-gaps/--repeat, docs, reconcile vs report"
-    status: pending
+    status: completed
 isProject: false
 ---
 

@@ -27,6 +27,8 @@ mod reprice;
 mod schema;
 mod sync;
 
+pub use schema::SCHEMA_HEAD;
+
 use alloy::primitives::{Address, B256, U256};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -120,8 +122,8 @@ pub(super) fn merge_details_json<const N: usize>(
 }
 
 impl ExplorerStore {
-    /// Shared connection for extension modules (e.g. paper tables).
-    pub(crate) fn connection(&self) -> &Connection {
+    /// Shared connection for extension modules (dashboard, paper tables).
+    pub fn connection(&self) -> &Connection {
         &self.conn
     }
 }

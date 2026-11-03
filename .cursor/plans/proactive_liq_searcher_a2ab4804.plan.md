@@ -171,3 +171,48 @@ Flash-loan debt → `liquidationCall`/`absorb`/… → swap collateral → repay
 - unit: HF fixtures per family (مقادیر ثابت)
 - integration: روی بلاک‌های golden checklist (مثلاً AVAX aave_v3 / benqi، Polygon aave_v2، BSC venus) — scout باید قبل از tx لیق، همان user را در watch/liquidatable set داشته باشد اگر از N بلاک قبل bootstrap شده
 - config: `liquidation` دیگر فقط retired drop نباشد؛ برای job جدید valid، برای `live` strategies همچنان reject/empty-guard حفظ شود مگر صریحاً از لیست live جدا بماند
+
+---
+
+## Sources / مراجع صنعت
+
+الگوی proactive (index + Multicall HF + oracle backrun) از این‌ها گرفته شده؛ پیاده‌سازی روی کدبیس خودمان است، نه کپی مستقیم:
+
+### عمومی (cross-chain)
+
+- [BoltRPC — Liquidation Bot RPC Infrastructure Guide](https://boltrpc.io/blog/liquidation-bot-rpc-guide) — Multicall3 `getUserAccountData`، scan per-block، phases scanning/detection/execution
+- [marketmaker.cc — Liquidations on-chain (Aave/Compound)](https://marketmaker.cc/en/blog/post/onchain-liquidations-aave-compound/) — event-backfill position index، HF با قیمت آیندهٔ oracle، priority روی فاصله تا `HF=1`
+- [MEVDAO — Liquidation Bot (Compound/Morpho/Spark)](https://mevdao.org/blog/liquidation-bot-development-compound-morpho-spark) — Comet absorb+buyCollateral، oracle backrun با mempool + builder bundles
+- [WabiSabikk/flash-loan-liquidator-public](https://github.com/WabiSabikk/flash-loan-liquidator-public) — in-memory PositionStore، CEX/sequencer/Chainlink confidence tiers، speculative vs confirmed fire
+- [haydenshively/Nantucket](https://github.com/haydenshively/nantucket/) / [Compound-Liquidation-Bot](https://github.com/haydenshively/Compound-Liquidation-Bot) — Compound account API + per-block recheck روی hot-set، revenue filter
+- [Compound V2 Comptroller — getAccountLiquidity](https://docs.compound.xyz/v2/comptroller/) — `(error, liquidity, shortfall)`؛ shortfall>0 = liquidatable (همان API که Benqi/Venus reuse می‌کنند)
+- [marktoda/artemis-aave-v3-liquidator](https://github.com/marktoda/artemis-aave-v3-liquidator) / [seamless-protocol/liquidator](https://github.com/seamless-protocol/liquidator) — Artemis-style Aave V3 liquidator (Base؛ الگو قابل پورت به Avalanche pools)
+- [ChainScore — Aave Liquidation Bot Operations](https://chainscorelabs.com/protocol/aave/operations-and-releases/aave-liquidation-bot-operations) — multi-chain ops notes (شامل Avalanche)، eMode، mempool/MEV
+
+### Avalanche-specific (Aave + Benqi)
+
+- [BENQI — Health & Liquidations](https://docs.benqi.fi/benqi-markets/health-and-liquidations) — Health<1، close factor، liquidation incentive (~10%)
+- [BENQI — Protocol Parameters](https://docs.benqi.fi/benqi-markets/protocol-parameters) — collateral/close factor / incentive
+- [BENQI FAQ — How do you create a liquidator bot?](https://docs.benqi.fi/developers/faq) — ارجاع رسمی به Compound V2 liquidation guide
+- [BENQI — Core Markets contracts](https://docs.benqi.fi/resources/contracts/core-markets) — Comptroller `0x486Af3…AD9b4`، qiToken addresses
+- [ChainScore — Blockchain Integration for Benqi](https://chainscorelabs.com/integration/defi-lending-protocols/blockchain-integration-for-benqi) — `Comptroller.getAccountLiquidity` / `getHypotheticalAccountLiquidity`، `QiToken.liquidateBorrow`، Chainlink oracle روی Avalanche
+- [smartcontractkit/ccip-liquidation-protector](https://github.com/smartcontractkit/ccip-liquidation-protector) — مثال monitoring بدهی Benqi روی Avalanche (جهت حفاظت، نه searcher؛ الگوی Automation+HF)
+- [palmcivet7/cross-chain-liquidator](https://github.com/palmcivet7/cross-chain-liquidator) — hackathon Avalanche Frontier؛ CCIP initiator روی AVAX (الگوی کمتر مرتبط برای scout محلی)
+
+**نکتهٔ AVAX:** mempool عمومی مثل ETH/Flashbots نیست؛ latency بلاک ~1s و رقابت اغلب مستقیم روی RPC/sequencer-like inclusion است. P3 oracle-backrun باید با واقعیت C-Chain تنظیم شود، نه کپی کور Flashbots.
+
+### لنگرهای داخل ریپو (آدرس‌ها + calibration)
+
+بله — آدرس lending روی Avalanche همین الان در explorer config است، نه فقط docs:
+
+- [`core/data/chains.toml`](core/data/chains.toml) `[avalanche]`:
+  - `aave_v3_pool = 0x69FA688f1Dc47d4B5d8029D5a35FB7a548E0B9b0`
+  - `aave_v2_pool = 0x4F01AeD16D97E3aB5ab2B501154DC9bb0F1A5A2C`
+  - `[avalanche.liquidation_protocol_aliases]` — ۲۲ qiToken → `"benqi"`
+  - `[avalanche.c_token_underlyings]` — qiToken → underlying برای PnL
+  - `[avalanche.chainlink_feeds]` — AVAX/BTC/ETH/USDC/…
+  - کامنت همان فایل: Benqi core comptroller `0x486Af39519B4Dc9a7fCcd318217352830E8AD9b4` و isolated unitroller `0xD7c4006d33DA2A0A8525791ed212bbCD7Aca763F` (هنوز فیلد first-class نیستند؛ برای scout باید به config اضافه شوند)
+- [`core/src/explorer/decode/liquidation.rs`](core/src/explorer/decode/liquidation.rs) — topic0 و labels
+- [`core/src/explorer/benqi_liq.rs`](core/src/explorer/benqi_liq.rs) — `exchangeRateStored` برای تبدیل seizeTokens
+- [`docs/explorer_strategy_checklist.md`](docs/explorer_strategy_checklist.md) — corpus AVAX baseline / P0.2 benqi
+- [`core/src/types/strategy.rs`](core/src/types/strategy.rs) — retirement فعلی `liquidation` از execution path

@@ -38,6 +38,12 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v11_paper_fill_verification,
 ];
 
+/// Current schema head (`PRAGMA user_version` after a full migrate).
+///
+/// Dashboard and other read-only consumers compare a file's `user_version`
+/// against this without opening for write / running migrations.
+pub const SCHEMA_HEAD: i64 = MIGRATIONS.len() as i64;
+
 fn configure_connection(conn: &Connection) -> anyhow::Result<()> {
     // `:memory:` stays `journal_mode=memory` (SQLite will not put WAL on a
     // memory database) but still accepts `synchronous` and `busy_timeout`,
@@ -566,6 +572,29 @@ impl ExplorerStore {
         migrate(&conn)?;
         Ok(ExplorerStore { conn })
     }
+    /// Open an existing explorer DB read-only. Does **not** migrate, create
+    /// parent dirs, or set `journal_mode=WAL` (that pragma fails on a
+    /// read-only connection). Only `busy_timeout` is applied.
+    ///
+    /// Use this for forensic dashboards and any path that must leave a stale
+    /// `user_version` untouched.
+    pub fn open_read_only(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            anyhow::bail!("explorer database not found: {}", path.display());
+        }
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| anyhow::anyhow!("open read-only {}: {e}", path.display()))?;
+        conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
+        Ok(ExplorerStore { conn })
+    }
+    /// `PRAGMA user_version` of the open connection.
+    pub fn user_version(&self) -> anyhow::Result<i64> {
+        let v: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        Ok(v)
+    }
     /// Open an in-memory database (tests). Same pragmas as [`Self::open`]
     /// except that SQLite keeps `journal_mode=memory`.
     pub fn open_in_memory() -> anyhow::Result<Self> {
@@ -799,7 +828,8 @@ mod tests {
     #[test]
     fn fresh_store_is_at_head_and_sets_busy_timeout() {
         let store = ExplorerStore::open_in_memory().unwrap();
-        assert_eq!(user_version(&store), super::MIGRATIONS.len() as i64);
+        assert_eq!(user_version(&store), super::SCHEMA_HEAD);
+        assert_eq!(super::SCHEMA_HEAD, super::MIGRATIONS.len() as i64);
         let timeout: i64 = store
             .connection()
             .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
