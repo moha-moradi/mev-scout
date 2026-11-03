@@ -90,6 +90,36 @@ fn dashboard_html_offline_no_config() {
 }
 
 #[test]
+fn dashboard_csv_offline_report_header() {
+    let ws = std::env::temp_dir().join(format!("mev_cli_dash_csv_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&ws);
+    fs::create_dir_all(ws.join("cache")).expect("ws");
+    let db = ws.join("cache").join("explorer-avalanche.sqlite");
+    seed_db(&db);
+    let out = ws.join("dash.csv");
+
+    let r = run(&[
+        "explorer",
+        "dashboard",
+        "--db",
+        db.to_str().expect("utf8"),
+        "--window",
+        "all",
+        "--out",
+        out.to_str().expect("utf8"),
+        "--format",
+        "csv",
+    ]);
+    assert!(r.success, "{}", r.combined());
+    let csv = fs::read_to_string(&out).expect("csv");
+    assert!(csv.starts_with(
+        "window,section,label,ops,volume_usd,gross_usd,gas_usd,flash_fee_usd,net_usd"
+    ));
+    assert!(csv.contains(",overview,total,"));
+    let _ = fs::remove_dir_all(&ws);
+}
+
+#[test]
 fn dashboard_json_offline() {
     let ws = std::env::temp_dir().join(format!("mev_cli_dash_json_{}", std::process::id()));
     let _ = fs::remove_dir_all(&ws);

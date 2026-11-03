@@ -433,6 +433,7 @@ is required. Open the HTML via `file://` (no server).
 ```powershell
 mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --window all --out results/dash.html
 mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --format json --out results/dash.json
+mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --format csv --out results/dash.csv
 mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --with-gaps --repeat 60s
 ```
 
@@ -441,9 +442,10 @@ mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --with-gaps --
 | `--db PATH` | Offline DB path (skips `validate_live`) |
 | `--window` | `all` \| `Nh` \| `Nd` \| `Nw` (default `24h`) |
 | `--out` | Output path (default `results/dash.html`) |
-| `--format` | `html` \| `json` |
+| `--format` | `html` \| `json` \| `csv` (same columns as bare `explorer` CSV) |
 | `--max-ops` / `--evidence` | Artifact size caps |
-| `--with-gaps` | Sample unclassified-block gaps near tip |
+| `--budget-mb` | Soft JSON size budget before truncation |
+| `--with-gaps` | P2 unclassified-block gap sample near tip |
 | `--repeat DURATION` | Atomic rewrite every N seconds |
 
 Artifact embeds coverage fractions next to every USD sum; `NULL` USD is `—`,

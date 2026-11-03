@@ -2983,6 +2983,7 @@ dependencies = [
  "ruzstd",
  "serde",
  "serde_json",
+ "sha2",
  "strum 0.26.3",
  "thiserror 1.0.69",
  "tokio",

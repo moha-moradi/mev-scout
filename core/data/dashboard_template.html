@@ -97,6 +97,7 @@ svg text { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
   <div class="brand">mev-scout · explorer</div>
   <a href="#p0">P0 reality</a>
   <a href="#p1">P1 coverage</a>
+  <a href="#p2">P2 gaps</a>
   <a href="#p3">P3 KPIs</a>
   <a href="#p4">P4 quality</a>
   <a href="#p5">P5 series</a>
@@ -117,6 +118,7 @@ svg text { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
   <div class="filters" id="filters"></div>
   <section class="panel" id="p0"></section>
   <section class="panel" id="p1"></section>
+  <section class="panel" id="p2"></section>
   <section class="panel" id="p3"></section>
   <section class="panel" id="p4"></section>
   <section class="panel" id="p5"></section>
@@ -278,8 +280,39 @@ svg text { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
       kpi("ops_in_window", c.ops_in_window) +
       kpi("block_ts_span", (c.min_block_ts != null && c.max_block_ts != null)
         ? (c.max_block_ts - c.min_block_ts) + "s" : "—") +
-      kpi("gaps", c.gap_count != null ? c.gap_count : "n/a (--with-gaps)") +
+      kpi("gaps", c.gap_count != null ? c.gap_count : "n/a (see P2)") +
       "</div>";
+  }
+
+  function renderP2() {
+    const g = S.gaps || { enabled: false, note: "gaps payload missing", ranges: [], sample: [] };
+    let body = "";
+    if (!g.enabled) {
+      body = '<div class="banner warn">' + esc(g.note || "Pass --with-gaps") + "</div>";
+    } else {
+      body = '<div class="grid">' +
+        kpi("gap_count", g.gap_count) +
+        kpi("scan", (g.scanned_from != null && g.scanned_to != null)
+          ? (g.scanned_from + ".." + g.scanned_to) : "—") +
+        kpi("first_gap", g.first_gap != null ? g.first_gap : "—") +
+        kpi("last_gap", g.last_gap != null ? g.last_gap : "—") +
+        "</div><p class=\"muted\">" + esc(g.note || "") + "</p>";
+      let ranges = "";
+      (g.ranges || []).forEach(function (r) {
+        ranges += "<tr><td class=\"num\">" + r.from + "</td><td class=\"num\">" + r.to +
+          "</td><td class=\"num\">" + r.len + "</td></tr>";
+      });
+      body += "<h3>ranges (capped)</h3><table><thead><tr><th class=\"num\">from</th>" +
+        "<th class=\"num\">to</th><th class=\"num\">len</th></tr></thead><tbody>" +
+        (ranges || "<tr><td colspan=\"3\" class=\"muted\">none</td></tr>") + "</tbody></table>";
+      let sample = "";
+      (g.sample || []).forEach(function (b) {
+        sample += "<tr><td class=\"num\">" + b + "</td></tr>";
+      });
+      body += "<h3>sample blocks (first/last)</h3><table><thead><tr><th class=\"num\">block</th></tr></thead><tbody>" +
+        (sample || "<tr><td class=\"muted\">none</td></tr>") + "</tbody></table>";
+    }
+    $("p2").innerHTML = "<h2>P2 Index gaps <span class=\"basis\">--with-gaps · unclassified_blocks</span></h2>" + body;
   }
 
   function renderP3() {
@@ -545,7 +578,7 @@ svg text { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
   function renderAll() {
     renderTop();
     renderFilters();
-    renderP0(); renderP1(); renderP3(); renderP4(); renderP5();
+    renderP0(); renderP1(); renderP2(); renderP3(); renderP4(); renderP5();
     renderP6(); renderP7(); renderP8(); renderP8t(); renderP9();
     renderP10(); renderP11(); renderP12(); renderP13(); renderP14(); renderP15();
   }

@@ -3,6 +3,7 @@
 //! Never migrates. Adaptive projection so stale schema files still render.
 
 pub mod caps;
+pub mod csv;
 pub mod evidence;
 pub mod reduce;
 pub mod render;
@@ -179,6 +180,45 @@ pub struct CoveragePanel {
     pub last_gap: Option<u64>,
 }
 
+/// P2 index gaps (opt-in via `--with-gaps`).
+#[derive(Debug, Clone, Serialize)]
+pub struct GapsPanel {
+    pub enabled: bool,
+    pub scanned_from: Option<u64>,
+    pub scanned_to: Option<u64>,
+    pub gap_count: i64,
+    pub first_gap: Option<u64>,
+    pub last_gap: Option<u64>,
+    /// Collapsed consecutive runs, capped.
+    pub ranges: Vec<GapRange>,
+    /// First/last sample of individual gap blocks (deduped, capped).
+    pub sample: Vec<u64>,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GapRange {
+    pub from: u64,
+    pub to: u64,
+    pub len: u64,
+}
+
+impl GapsPanel {
+    fn disabled() -> Self {
+        Self {
+            enabled: false,
+            scanned_from: None,
+            scanned_to: None,
+            gap_count: 0,
+            first_gap: None,
+            last_gap: None,
+            ranges: Vec::new(),
+            sample: Vec::new(),
+            note: "Pass --with-gaps to sample unclassified blocks near tip (expensive CTE).".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Semantics {
     pub null_usd_means: &'static str,
@@ -250,6 +290,7 @@ pub struct DashboardSnapshot {
     pub window: WindowSpec,
     pub semantics: Semantics,
     pub coverage: CoveragePanel,
+    pub gaps: GapsPanel,
     pub panels: ReducedPanels,
     pub rejects: RejectPanel,
     pub jit_open: Vec<JitOpenRow>,
@@ -315,10 +356,10 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
     let prices = load_prices(&tx)?;
     let storage = load_table_counts(&tx, &caps.tables)?;
 
-    let (gap_count, first_gap, last_gap) = if opts.with_gaps {
+    let gaps = if opts.with_gaps {
         summarize_gaps(&store, sync.as_ref(), opts.gap_block_limit)?
     } else {
-        (None, None, None)
+        GapsPanel::disabled()
     };
 
     // End read txn (commit is a no-op for writes; keeps snapshot consistent).
@@ -333,9 +374,13 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
         ops_in_window: ops.len() as i64,
         min_block_ts,
         max_block_ts,
-        gap_count,
-        first_gap,
-        last_gap,
+        gap_count: if gaps.enabled {
+            Some(gaps.gap_count)
+        } else {
+            None
+        },
+        first_gap: gaps.first_gap,
+        last_gap: gaps.last_gap,
     };
 
     let truncation = panels.truncation.clone();
@@ -363,6 +408,7 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
             amounts_are: "raw U256 decimal strings; humanize only with known decimals",
         },
         coverage,
+        gaps,
         panels,
         rejects,
         jit_open,
@@ -759,18 +805,82 @@ fn summarize_gaps(
     store: &ExplorerStore,
     sync: Option<&SyncStateRow>,
     limit: u64,
-) -> anyhow::Result<(Option<i64>, Option<u64>, Option<u64>)> {
+) -> anyhow::Result<GapsPanel> {
     let Some(s) = sync else {
-        return Ok((Some(0), None, None));
+        return Ok(GapsPanel {
+            enabled: true,
+            scanned_from: None,
+            scanned_to: None,
+            gap_count: 0,
+            first_gap: None,
+            last_gap: None,
+            ranges: Vec::new(),
+            sample: Vec::new(),
+            note: "No sync_state row — cannot scan gaps.".into(),
+        });
     };
     let to = s.indexed_to;
     let from = to.saturating_sub(limit);
     let gaps = store.unclassified_blocks(from, to)?;
-    Ok((
-        Some(gaps.len() as i64),
-        gaps.first().copied(),
-        gaps.last().copied(),
-    ))
+    let ranges = collapse_gap_ranges(&gaps, 50);
+    let sample = sample_gaps(&gaps, 20);
+    Ok(GapsPanel {
+        enabled: true,
+        scanned_from: Some(from),
+        scanned_to: Some(to),
+        gap_count: gaps.len() as i64,
+        first_gap: gaps.first().copied(),
+        last_gap: gaps.last().copied(),
+        ranges,
+        sample,
+        note: format!(
+            "Unclassified blocks in [{from}..{to}] (cap {limit}). \
+             Ranges/sample truncated for artifact size; count is exact for the scan window."
+        ),
+    })
+}
+
+fn collapse_gap_ranges(gaps: &[u64], max_ranges: usize) -> Vec<GapRange> {
+    let mut out = Vec::new();
+    if gaps.is_empty() {
+        return out;
+    }
+    let mut start = gaps[0];
+    let mut prev = gaps[0];
+    for &b in &gaps[1..] {
+        if b == prev + 1 {
+            prev = b;
+            continue;
+        }
+        out.push(GapRange {
+            from: start,
+            to: prev,
+            len: prev - start + 1,
+        });
+        if out.len() >= max_ranges {
+            return out;
+        }
+        start = b;
+        prev = b;
+    }
+    if out.len() < max_ranges {
+        out.push(GapRange {
+            from: start,
+            to: prev,
+            len: prev - start + 1,
+        });
+    }
+    out
+}
+
+fn sample_gaps(gaps: &[u64], each_end: usize) -> Vec<u64> {
+    if gaps.len() <= each_end * 2 {
+        return gaps.to_vec();
+    }
+    let mut out = Vec::with_capacity(each_end * 2);
+    out.extend_from_slice(&gaps[..each_end]);
+    out.extend_from_slice(&gaps[gaps.len() - each_end..]);
+    out
 }
 
 fn enforce_budget(panels: &mut ReducedPanels, budget: usize) {
@@ -799,13 +909,18 @@ fn enforce_budget(panels: &mut ReducedPanels, budget: usize) {
     }
 }
 
-/// Render snapshot as HTML or return JSON string.
+/// Render snapshot as HTML or return JSON/CSV string.
 pub fn render_html(snapshot: &DashboardSnapshot) -> anyhow::Result<String> {
     render::to_html(snapshot)
 }
 
 pub fn render_json(snapshot: &DashboardSnapshot) -> anyhow::Result<String> {
     Ok(serde_json::to_string_pretty(snapshot)?)
+}
+
+/// Report-compatible CSV (`window,section,label,ops,...`).
+pub fn render_csv(snapshot: &DashboardSnapshot) -> String {
+    csv::render_csv(snapshot)
 }
 
 #[cfg(test)]
@@ -854,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn reducer_reconciles_with_report_window_overview() {
+    fn reducer_reconciles_with_report_overview_and_by_kind() {
         let dir = std::env::temp_dir().join(format!(
             "mev_dash_recon_{}_{}",
             std::process::id(),
@@ -863,7 +978,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("explorer-avalanche.sqlite");
         let since = 1_700_000_000i64;
-        {
+        let (overview_ops, overview_net, overview_gross, by_kind) = {
             let store = ExplorerStore::open(&path).expect("create");
             store.set_sync_state(43114, 10, 10).expect("sync");
             store
@@ -874,26 +989,43 @@ mod tests {
                     [since],
                 )
                 .expect("block");
-            store
-                .connection()
-                .execute(
-                    "INSERT INTO mev_ops(
-                       block_number, tx_index, tx_hash, ts, kind, eoa, confidence,
-                       profit_usd, gas_cost_usd, net_profit_usd, volume_usd, flashloan_fee_usd,
-                       detector, created_at, subkind, excluded_from_net,
-                       usd_approximate, native_unpriced, multi_asset_pricing, pricing_clamped, flash_fee_unpriced
-                     ) VALUES(1, 0, '0xrecon', ?1, 'arb_atomic', '0xee', 'exact',
-                       5.0, 0.5, 4.5, 100.0, 0.0, 't', ?1, NULL, 0, 0, 0, 0, 0, 0)",
-                    [since],
-                )
-                .expect("op");
+            for (i, (kind, gross, net)) in [
+                ("arb_atomic", 5.0_f64, 4.5_f64),
+                ("jit", 2.0, 1.5),
+                ("arb_atomic", 1.0, 0.8),
+            ]
+            .iter()
+            .enumerate()
+            {
+                store
+                    .connection()
+                    .execute(
+                        "INSERT INTO mev_ops(
+                           block_number, tx_index, tx_hash, ts, kind, eoa, confidence,
+                           profit_usd, gas_cost_usd, net_profit_usd, volume_usd, flashloan_fee_usd,
+                           detector, created_at, subkind, excluded_from_net,
+                           usd_approximate, native_unpriced, multi_asset_pricing, pricing_clamped, flash_fee_unpriced
+                         ) VALUES(1, ?1, ?2, ?3, ?4, '0xee', 'exact',
+                           ?5, 0.1, ?6, 10.0, 0.0, 't', ?3, NULL, 0, 0, 0, 0, 0, 0)",
+                        rusqlite::params![
+                            i as i64,
+                            format!("0xrecon{i}"),
+                            since,
+                            kind,
+                            gross,
+                            net
+                        ],
+                    )
+                    .expect("op");
+            }
             let overview = store
                 .report_window_overview(since as u64, None, None)
                 .expect("overview");
-            assert_eq!(overview.ops, 1);
-            assert!((overview.net_usd - 4.5).abs() < 1e-9);
-            assert!((overview.gross_usd - 5.0).abs() < 1e-9);
-        }
+            let kinds = store
+                .report_by_kind(since as u64, None, None)
+                .expect("by_kind");
+            (overview.ops, overview.net_usd, overview.gross_usd, kinds)
+        };
         let snap = build(&BuildOptions {
             db_path: path,
             window: WindowSpec {
@@ -904,10 +1036,36 @@ mod tests {
             ..BuildOptions::default()
         })
         .expect("build");
-        assert_eq!(snap.panels.kpi.ops, 1);
-        assert!((snap.panels.kpi.net_usd - 4.5).abs() < 1e-9);
-        assert!((snap.panels.kpi.gross_usd - 5.0).abs() < 1e-9);
-        assert!((snap.panels.kpi.volume_usd - 100.0).abs() < 1e-9);
+        assert_eq!(snap.panels.kpi.ops, overview_ops);
+        assert!((snap.panels.kpi.net_usd - overview_net).abs() < 1e-9);
+        assert!((snap.panels.kpi.gross_usd - overview_gross).abs() < 1e-9);
+
+        // Roll kind_matrix to kind-only totals and match report_by_kind.
+        let mut dash_by_kind: std::collections::BTreeMap<String, (i64, f64, f64)> =
+            std::collections::BTreeMap::new();
+        for cell in &snap.panels.kind_matrix {
+            if cell.ops == 0 && cell.gross_usd == 0.0 && cell.net_usd == 0.0 {
+                continue;
+            }
+            let e = dash_by_kind.entry(cell.kind.clone()).or_insert((0, 0.0, 0.0));
+            e.0 += cell.ops;
+            e.1 += cell.gross_usd;
+            e.2 += cell.net_usd;
+        }
+        for row in &by_kind {
+            let d = dash_by_kind
+                .get(&row.label)
+                .unwrap_or_else(|| panic!("missing kind {}", row.label));
+            assert_eq!(d.0, row.ops, "ops {}", row.label);
+            assert!((d.1 - row.gross_usd).abs() < 1e-9, "gross {}", row.label);
+            assert!((d.2 - row.net_usd).abs() < 1e-9, "net {}", row.label);
+        }
+        let csv = render_csv(&snap);
+        assert!(csv.starts_with(
+            "window,section,label,ops,volume_usd,gross_usd,gas_usd,flash_fee_usd,net_usd"
+        ));
+        assert!(csv.contains(",by_kind,arb_atomic,"));
+        assert!(csv.contains(",by_kind,jit,"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

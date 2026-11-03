@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use mev_scout_core::config::Config;
 use mev_scout_core::explorer::dashboard::{
-    build, render_html, render_json, BuildOptions, WindowSpec,
+    build, render_csv, render_html, render_json, BuildOptions, WindowSpec,
 };
 use mev_scout_core::types::ChainName;
 
@@ -54,7 +54,8 @@ fn emit_once(config: &Config, args: &DashboardArgs) -> anyhow::Result<()> {
     let body = match args.format.as_str() {
         "json" => render_json(&snap)?,
         "html" => render_html(&snap)?,
-        other => anyhow::bail!("unsupported --format '{other}' (html|json)"),
+        "csv" => render_csv(&snap),
+        other => anyhow::bail!("unsupported --format '{other}' (html|json|csv)"),
     };
     atomic_write(&args.out, body.as_bytes())?;
     tracing::info!(

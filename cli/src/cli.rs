@@ -175,8 +175,8 @@ pub struct DashboardArgs {
     #[arg(long, value_name = "PATH", default_value = "results/dash.html")]
     pub out: std::path::PathBuf,
 
-    /// `html` (default) or `json`.
-    #[arg(long, value_name = "FMT", default_value = "html", value_parser = ["html", "json"])]
+    /// `html` (default), `json`, or `csv` (report-compatible columns).
+    #[arg(long, value_name = "FMT", default_value = "html", value_parser = ["html", "json", "csv"])]
     pub format: String,
 
     /// Cap ops / events rows embedded in the snapshot.

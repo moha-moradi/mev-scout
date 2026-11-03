@@ -1,16 +1,28 @@
 //! Guard: dashboard path must never migrate or mutate the explorer DB file.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 
 use mev_scout_core::explorer::dashboard::caps::StoreCaps;
 use mev_scout_core::explorer::dashboard::{build, BuildOptions, WindowSpec};
 use mev_scout_core::explorer::store::{ExplorerStore, SCHEMA_HEAD};
 
-fn content_fingerprint(path: &Path) -> anyhow::Result<Vec<u8>> {
-    Ok(fs::read(path)?)
+fn sha256_file(path: &Path) -> anyhow::Result<[u8; 32]> {
+    let mut f = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().into())
 }
 
 fn temp_db(tag: &str) -> PathBuf {
@@ -129,7 +141,7 @@ fn dashboard_build_leaves_file_bytes_unchanged() {
         )
         .expect("op");
     }
-    let before = content_fingerprint(&path).expect("fp1");
+    let before = sha256_file(&path).expect("sha1");
     let before_meta = fs::metadata(&path).expect("meta").len();
 
     let snap = build(&BuildOptions {
@@ -145,9 +157,10 @@ fn dashboard_build_leaves_file_bytes_unchanged() {
     assert_eq!(snap.db.user_version, SCHEMA_HEAD);
     assert_eq!(snap.coverage.ops_in_window, 1);
     assert!((snap.panels.kpi.net_usd - 1.4).abs() < 1e-9);
+    assert!(!snap.gaps.enabled);
 
-    let after = content_fingerprint(&path).expect("fp2");
-    assert_eq!(before, after, "DB bytes must be unchanged");
+    let after = sha256_file(&path).expect("sha2");
+    assert_eq!(before, after, "DB sha256 must be unchanged");
     assert_eq!(before_meta, fs::metadata(&path).expect("meta2").len());
     let _ = fs::remove_dir_all(path.parent().expect("parent"));
 }
@@ -196,10 +209,12 @@ fn build_works_on_legacy_schema_v0() {
         )
         .expect("ddl");
     }
-    let before = content_fingerprint(&path).expect("fp");
+    let before = sha256_file(&path).expect("sha1");
     let snap = build(&BuildOptions {
         db_path: path.clone(),
         window: WindowSpec::all(),
+        with_gaps: true,
+        gap_block_limit: 100,
         ..BuildOptions::default()
     })
     .expect("build legacy");
@@ -208,6 +223,7 @@ fn build_works_on_legacy_schema_v0() {
     assert_eq!(snap.panels.unknown_rewritten, 1);
     assert!(!snap.caps.has_excluded_from_net);
     assert_eq!(snap.coverage.ops_in_window, 1);
-    assert_eq!(content_fingerprint(&path).expect("fp2"), before);
+    assert!(snap.gaps.enabled);
+    assert_eq!(sha256_file(&path).expect("sha2"), before);
     let _ = fs::remove_dir_all(path.parent().expect("parent"));
 }
