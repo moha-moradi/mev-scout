@@ -40,11 +40,9 @@ pub fn execute_ledger(
     ctx: &mut ExecContext,
 ) -> anyhow::Result<LedgerResult> {
     match ctx.mode {
-        ExecMode::None => Ok(if sim == SimMode::StateSim {
-            policy.apply(opps)
-        } else {
-            policy.apply(opps)
-        }),
+        ExecMode::None => {
+            anyhow::bail!("execute_ledger is only for revm, anvil, or testnet")
+        }
         ExecMode::Revm => Ok(run_revm(policy, opps, sim, replayer, pools, ctx)),
         ExecMode::Anvil => run_anvil(policy, opps, sim, pools, ctx),
         ExecMode::Testnet => run_testnet(policy, opps, sim, pools, ctx),

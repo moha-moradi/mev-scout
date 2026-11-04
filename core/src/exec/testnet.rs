@@ -155,13 +155,13 @@ impl TestnetSender {
             .sign_hash_sync(&tx.signature_hash())
             .map_err(|e| anyhow::anyhow!("sign: {e}"))?;
         let raw = tx.into_signed(sig).encoded_2718();
-        self.nonce = self.nonce.saturating_add(1);
         let v = rpc(
             &self.url,
             "eth_sendRawTransaction",
             json!([format!("0x{}", hex::encode(raw))]),
         )
         .await?;
+        self.nonce = self.nonce.saturating_add(1);
         v.as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow::anyhow!("eth_sendRawTransaction returned {v}"))

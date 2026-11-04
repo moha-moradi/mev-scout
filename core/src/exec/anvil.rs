@@ -29,9 +29,18 @@ impl AnvilNode {
         Ok(Self { url, child: None })
     }
 
+    /// Dev chain, no fork. Used by the deploy smoke test.
+    pub fn spawn_dev(bin: &str) -> anyhow::Result<Self> {
+        Self::start(bin, None, None)
+    }
+
     pub fn spawn(bin: &str, fork_url: &str, block: u64) -> anyhow::Result<Self> {
+        Self::start(bin, Some(fork_url), Some(block))
+    }
+
+    fn start(bin: &str, fork_url: Option<&str>, block: Option<u64>) -> anyhow::Result<Self> {
         let port = pick_port();
-        let args = anvil_args(bin, Some(fork_url), Some(block), port);
+        let args = anvil_args(bin, fork_url, block, port);
         let mut cmd = Command::new(&args[0]);
         cmd.args(&args[1..])
             .stdin(Stdio::null())
@@ -282,5 +291,39 @@ mod tests {
     fn remote_anvil_url_is_refused() {
         let err = AnvilNode::attach("http://1.2.3.4:8545".into());
         assert!(err.is_err());
+    }
+
+    /// Spawns a local Anvil, deploys the executor, and checks code is present.
+    /// Returns immediately when `anvil` is not on PATH (or `ANVIL_BIN`).
+    #[test]
+    fn deploys_executor_when_anvil_is_installed() {
+        let bin = std::env::var("ANVIL_BIN").unwrap_or_else(|_| "anvil".to_string());
+        if std::process::Command::new(&bin)
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let node = AnvilNode::spawn_dev(&bin).expect("spawn");
+            node.wait_ready().await.expect("ready");
+            let from = super::super::ANVIL_DEFAULT_ADDRESS;
+            impersonate_and_fund(&node.url, from).await.expect("fund");
+            let deployed = deploy_executor(&node.url, from).await.expect("deploy");
+            let code = rpc(
+                &node.url,
+                "eth_getCode",
+                json!([format!("{deployed:#x}"), "latest"]),
+            )
+            .await
+            .expect("code");
+            let text = code.as_str().unwrap_or("0x");
+            assert!(text.len() > 4, "executor has no code: {text}");
+        });
     }
 }

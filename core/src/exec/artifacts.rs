@@ -36,3 +36,23 @@ fn decode_hex(raw: &str) -> anyhow::Result<Bytes> {
     let bytes = hex::decode(compact).map_err(|e| anyhow::anyhow!("executor artifact hex: {e}"))?;
     Ok(Bytes::from(bytes))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_bytecode_is_a_contract() {
+        let deployed = match deployed_bytecode() {
+            Ok(b) => b,
+            Err(e) => panic!("deployed artifact: {e}"),
+        };
+        let creation = match creation_bytecode() {
+            Ok(b) => b,
+            Err(e) => panic!("creation artifact: {e}"),
+        };
+        assert!(deployed.len() > 64, "deployed bytecode missing");
+        assert!(creation.len() > deployed.len(), "creation bytecode missing");
+        assert_eq!(ABI_VERSION, 1);
+    }
+}
