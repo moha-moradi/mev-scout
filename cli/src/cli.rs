@@ -341,6 +341,11 @@ pub struct LiveArgs {
     /// Overrides [paper].sim.
     #[arg(long = "sim", value_name = "MODE", help_heading = "Ledger")]
     pub sim: Option<String>,
+
+    /// Virtual execution backend: `none` (default), `revm`, `anvil`, or `testnet`.
+    /// Overrides [paper].exec. Never broadcasts to mainnet.
+    #[arg(long = "exec", value_name = "MODE", help_heading = "Ledger")]
+    pub exec: Option<String>,
 }
 
 impl Default for LiveArgs {
@@ -355,6 +360,7 @@ impl Default for LiveArgs {
             initial_balance: None,
             reserve: None,
             sim: None,
+            exec: None,
         }
     }
 }

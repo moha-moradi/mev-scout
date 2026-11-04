@@ -5,6 +5,7 @@ pub mod config;
 pub mod data;
 pub mod dex_type;
 pub mod error;
+pub mod exec;
 pub mod explorer;
 pub mod fetch;
 pub mod jobs;

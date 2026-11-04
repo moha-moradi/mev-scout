@@ -92,7 +92,7 @@ fn live_help_lists_ledger_flags() {
     let ws = temp_ws("args_live_ledger_help");
     let out = run(&ws, &["live", "--help"]);
     expect_ok(&out, "live --help");
-    for flag in ["--initial-balance", "--reserve"] {
+    for flag in ["--initial-balance", "--reserve", "--exec", "--sim"] {
         assert!(
             out.stdout.contains(flag),
             "live --help missing ledger flag '{flag}'"

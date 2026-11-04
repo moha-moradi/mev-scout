@@ -68,6 +68,12 @@ output = "table"
 # starting_gas_wei = "10000000000000000000"  # 10 native
 # reserve_wei = "0"
 # max_fills_per_block = 32
+# sim = "assumed"            # assumed | state
+# exec = "none"              # none | revm | anvil | testnet
+# exec_key = ""              # or env MEV_SCOUT_EXEC_KEY; testnet requires one
+# executor_address = ""      # testnet: set after the first deploy
+# anvil_bin = "anvil"
+# anvil_url = ""             # loopback only; empty spawns anvil
 
 # ── Per-chain public RPC overrides ─────────────────────────────────
 # Switching chains in this file just works — every chain gets its

@@ -153,6 +153,7 @@ pub async fn cmd_live(
         native_usd: None,
         sim: args.sim.clone(),
         sim_max_candidates_per_block: None,
+        exec: args.exec.clone(),
     };
 
     match job_live(config, &opts, progress).await? {

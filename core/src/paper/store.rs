@@ -79,8 +79,9 @@ impl ExplorerStore {
                session_id, chain, mode, linked_run_id, start_block, end_block,
                starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
                net_profit_wei, max_drawdown_wei, created_at,
-               sim_mode, replay_blocks, log_only_blocks
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+               sim_mode, replay_blocks, log_only_blocks,
+               exec_mode, exec_ok, exec_revert
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
             rusqlite::params![
                 session_id,
                 chain,
@@ -99,6 +100,9 @@ impl ExplorerStore {
                 ledger.sim_mode.as_str(),
                 ledger.replay_blocks as i64,
                 ledger.log_only_blocks as i64,
+                ledger.exec_mode.as_str(),
+                ledger.exec_ok as i64,
+                ledger.exec_revert as i64,
             ],
         )?;
         for f in &ledger.fills {
@@ -119,8 +123,9 @@ impl ExplorerStore {
                session_id, block_number, tx_index, canonical_id, strategy,
                gross_wei, gas_wei, net_wei, wallet_before, wallet_after,
                pools_json, mempool_only,
-               sim_mode, sim_gross_wei, sim_net_wei, borrowed_wei, repay_ok, state_drift
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+               sim_mode, sim_gross_wei, sim_net_wei, borrowed_wei, repay_ok, state_drift,
+               exec_mode, exec_status, exec_gas_used, exec_net_wei, tx_hash
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
             rusqlite::params![
                 session_id,
                 f.block_number as i64,
@@ -140,6 +145,11 @@ impl ExplorerStore {
                 f.borrowed_wei.to_string(),
                 if f.repay_ok { 1i64 } else { 0i64 },
                 if f.state_drift { 1i64 } else { 0i64 },
+                f.exec_mode.as_deref(),
+                f.exec_status.as_deref(),
+                f.exec_gas_used.map(|v| v as i64),
+                f.exec_net_wei.map(|v| v.to_string()),
+                f.tx_hash.as_deref(),
             ],
         )?;
         Ok(())
@@ -152,7 +162,8 @@ impl ExplorerStore {
             "SELECT session_id, chain, mode, linked_run_id, start_block, end_block,
                     starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
                     net_profit_wei, max_drawdown_wei, created_at,
-                    sim_mode, replay_blocks, log_only_blocks
+                    sim_mode, replay_blocks, log_only_blocks,
+                    exec_mode, exec_ok, exec_revert
              FROM paper_sessions WHERE session_id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![session_id])?;
@@ -174,7 +185,8 @@ impl ExplorerStore {
             "SELECT session_id, chain, mode, linked_run_id, start_block, end_block,
                     starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
                     net_profit_wei, max_drawdown_wei, created_at,
-                    sim_mode, replay_blocks, log_only_blocks
+                    sim_mode, replay_blocks, log_only_blocks,
+                    exec_mode, exec_ok, exec_revert
              FROM paper_sessions
              WHERE linked_run_id = ?1
              ORDER BY created_at DESC
@@ -199,7 +211,8 @@ impl ExplorerStore {
             "SELECT session_id, chain, mode, linked_run_id, start_block, end_block,
                     starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
                     net_profit_wei, max_drawdown_wei, created_at,
-                    sim_mode, replay_blocks, log_only_blocks
+                    sim_mode, replay_blocks, log_only_blocks,
+                    exec_mode, exec_ok, exec_revert
              FROM paper_sessions
              WHERE created_at >= ?1
              ORDER BY created_at DESC
@@ -222,7 +235,8 @@ impl ExplorerStore {
             "SELECT block_number, tx_index, canonical_id, strategy,
                     gross_wei, gas_wei, net_wei, wallet_before, wallet_after,
                     pools_json, mempool_only,
-                    sim_mode, sim_gross_wei, sim_net_wei, borrowed_wei, repay_ok, state_drift
+                    sim_mode, sim_gross_wei, sim_net_wei, borrowed_wei, repay_ok, state_drift,
+                    exec_mode, exec_status, exec_gas_used, exec_net_wei, tx_hash
              FROM paper_fills
              WHERE session_id = ?1
              ORDER BY block_number, tx_index",
@@ -277,6 +291,13 @@ impl ExplorerStore {
                 borrowed_wei,
                 repay_ok,
                 state_drift,
+                exec_mode: r.get(17)?,
+                exec_status: r.get(18)?,
+                exec_gas_used: r.get::<_, Option<i64>>(19)?.map(|v| v as u64),
+                exec_net_wei: r
+                    .get::<_, Option<String>>(20)?
+                    .and_then(|s| s.parse().ok()),
+                tx_hash: r.get(21)?,
             })
         })?;
         let mut out = Vec::new();
@@ -306,6 +327,9 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<PaperSession> {
         sim_mode: r.get(14)?,
         replay_blocks: r.get::<_, Option<i64>>(15)?.map(|v| v as u64),
         log_only_blocks: r.get::<_, Option<i64>>(16)?.map(|v| v as u64),
+        exec_mode: r.get(17)?,
+        exec_ok: r.get::<_, Option<i64>>(18)?.map(|v| v as u64),
+        exec_revert: r.get::<_, Option<i64>>(19)?.map(|v| v as u64),
     })
 }
 

@@ -36,6 +36,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v9_report_indexes,
     migrate_v10_pricing_flags,
     migrate_v11_paper_fill_verification,
+    migrate_v12_paper_exec,
 ];
 
 /// Current schema head (`PRAGMA user_version` after a full migrate).
@@ -295,6 +296,19 @@ fn migrate_v11_paper_fill_verification(conn: &Connection) -> anyhow::Result<()> 
         "state_drift",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
+    Ok(())
+}
+
+/// Execution columns for `--exec revm|anvil|testnet`. Assumed/state fills leave them null.
+fn migrate_v12_paper_exec(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_column(conn, "paper_sessions", "exec_mode", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "paper_sessions", "exec_ok", "INTEGER")?;
+    ExplorerStore::ensure_column(conn, "paper_sessions", "exec_revert", "INTEGER")?;
+    ExplorerStore::ensure_column(conn, "paper_fills", "exec_mode", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "paper_fills", "exec_status", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "paper_fills", "exec_gas_used", "INTEGER")?;
+    ExplorerStore::ensure_column(conn, "paper_fills", "exec_net_wei", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "paper_fills", "tx_hash", "TEXT")?;
     Ok(())
 }
 

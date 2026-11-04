@@ -4,7 +4,7 @@ overview: "P0–P3 state-sim تمام شده و از این پلن حذف می�
 todos:
   - id: e0-foundry-executor
     content: "E0: Foundry contracts/ + FlashArbExecutor (Balancer callback, V2/V3 legs) + forge fork tests"
-    status: pending
+    status: in_progress
   - id: e1-bundle-builder
     content: "E1: core/src/exec calldata/plan/artifacts from MevOpportunity → Balancer flash bundle"
     status: pending

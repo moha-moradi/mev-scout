@@ -243,9 +243,9 @@ pre.raw {
   <div class="details-bar">
     <h2>Details</h2>
     <p class="lede">reality · coverage · gaps · quality · kinds · tokens · facets · rejects · jit · oracles · storage</p>
-    <button class="details-toggle" id="details-toggle" type="button" aria-expanded="false" aria-controls="drawer">Show</button>
+    <button class="details-toggle" id="details-toggle" type="button" aria-expanded="false" aria-controls="details">Show</button>
   </div>
-  <div class="drawer" id="drawer"><div class="drawer-inner" id="drawer-inner"></div></div>
+  <div class="drawer" id="details"><div class="drawer-inner" id="drawer-inner"></div></div>
 </div>
 <div class="backdrop" id="backdrop"></div>
 <aside class="drill" id="drill" aria-hidden="true"></aside>
@@ -789,7 +789,19 @@ pre.raw {
   function renderDetailsBar() {
     $("details-toggle").setAttribute("aria-expanded", state.details ? "true" : "false");
     $("details-toggle").textContent = state.details ? "Hide" : "Show";
-    $("drawer").className = state.details ? "drawer open" : "drawer";
+    $("details").className = state.details ? "drawer open" : "drawer";
+  }
+
+  /* Close returns to the filter hash. #/op/<tx> stays the drill URL; filters live in state. */
+  function closeOp() {
+    if (!state.op) return;
+    state.op = null;
+    var want = hashFor(state);
+    if (location.hash !== want) location.hash = want;
+    else {
+      renderLive();
+      renderDrill();
+    }
   }
 
   /* ---------- drill-down slide-over ---------- */
@@ -855,16 +867,16 @@ pre.raw {
         "<h4>Raw details</h4><pre class=\"raw\">" + esc(JSON.stringify(ev.details, null, 2)) + "</pre></div>";
     }
     var close = $("drill-close");
-    if (close) close.onclick = function () { location.hash = "#/"; };
+    if (close) close.onclick = closeOp;
   }
 
   $("details-toggle").onclick = function () {
     state.details = !state.details;
     renderDetailsBar();
   };
-  $("backdrop").onclick = function () { location.hash = "#/"; };
+  $("backdrop").onclick = closeOp;
   document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && state.op) location.hash = "#/";
+    if (ev.key === "Escape" && state.op) closeOp();
   });
 
   renderMasthead();

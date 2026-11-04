@@ -266,6 +266,11 @@ mod tests {
             borrowed_wei: 0,
             repay_ok: true,
             state_drift: false,
+            exec_mode: None,
+            exec_status: None,
+            exec_gas_used: None,
+            exec_net_wei: None,
+            tx_hash: None,
         }
     }
 
@@ -290,6 +295,9 @@ mod tests {
             seed_budget: 0,
             seeds_recorded: 0,
             seeds_capped: 0,
+            exec_mode: "none".to_string(),
+            exec_ok: 0,
+            exec_revert: 0,
         }
     }
 

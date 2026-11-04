@@ -171,10 +171,34 @@ pub struct PaperConfig {
     /// Seed budget per block when capturing pool snapshots (not fill cap).
     #[serde(default = "default_paper_sim_max_candidates")]
     pub sim_max_candidates_per_block: usize,
+    /// Execution backend: `none` (default), `revm`, `anvil`, or `testnet`.
+    #[serde(default = "default_paper_exec")]
+    pub exec: String,
+    /// Hex private key for the virtual searcher. Empty uses `MEV_SCOUT_EXEC_KEY`,
+    /// then the Anvil dev account for `revm` / `anvil` only.
+    #[serde(default)]
+    pub exec_key: String,
+    /// Already-deployed executor on a testnet. Empty deploys once per session.
+    #[serde(default)]
+    pub executor_address: String,
+    /// Anvil binary name or path. Default `anvil`.
+    #[serde(default = "default_anvil_bin")]
+    pub anvil_bin: String,
+    /// Attach to a loopback Anvil instead of spawning one.
+    #[serde(default)]
+    pub anvil_url: String,
 }
 
 fn default_paper_sim() -> String {
     "assumed".to_string()
+}
+
+fn default_paper_exec() -> String {
+    "none".to_string()
+}
+
+fn default_anvil_bin() -> String {
+    "anvil".to_string()
 }
 
 fn default_paper_sim_max_candidates() -> usize {
@@ -226,6 +250,15 @@ impl PaperConfig {
         })
     }
 
+    pub fn exec_mode(&self) -> anyhow::Result<crate::exec::ExecMode> {
+        crate::exec::ExecMode::parse(&self.exec).ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid paper.exec '{}': expected 'none', 'revm', 'anvil', or 'testnet'",
+                self.exec
+            )
+        })
+    }
+
     pub fn sim_policy(&self) -> anyhow::Result<crate::paper::SimPolicy> {
         Ok(crate::paper::SimPolicy {
             mode: self.sim_mode()?,
@@ -245,6 +278,11 @@ impl Default for PaperConfig {
             sim: default_paper_sim(),
             sim_flash_loan: default_true(),
             sim_max_candidates_per_block: default_paper_sim_max_candidates(),
+            exec: default_paper_exec(),
+            exec_key: String::new(),
+            executor_address: String::new(),
+            anvil_bin: default_anvil_bin(),
+            anvil_url: String::new(),
         }
     }
 }

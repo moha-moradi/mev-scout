@@ -83,6 +83,16 @@ fn dashboard_html_offline_no_config() {
     assert!(out.exists(), "html missing");
     let html = fs::read_to_string(&out).expect("read html");
     assert!(html.contains("id=\"snapshot\""));
+    assert!(html.contains("id=\"hero\""));
+    assert!(html.contains("id=\"live\""));
+    assert!(html.contains("id=\"activity\""));
+    assert!(html.contains("id=\"pools\""));
+    assert!(html.contains("id=\"searchers\""));
+    assert!(html.contains("id=\"details\""));
+    assert!(html.contains("Fraunces"));
+    assert!(html.contains("#F7F4EF"));
+    assert!(html.contains("#E84142"));
+    assert!(!html.contains("id=\"nav\""));
     assert!(html.contains("avalanche") || html.contains("explorer-avalanche"));
     assert!(!html.contains("</script><script>alert"));
     assert_eq!(fs::read(&db).expect("after"), before, "db mutated");

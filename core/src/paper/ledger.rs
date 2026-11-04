@@ -9,7 +9,9 @@ use alloy::primitives::{Address, U256};
 use crate::paper::sim::{
     commit_outcome, pools_of_opp, simulate_candidate, SimPolicy, SimSeeds,
 };
-use crate::paper::types::{FillSkipReason, LedgerResult, PaperFill, PaperSkip, SimMode};
+use crate::paper::types::{
+    ExecAttempt, FillSkipReason, LedgerResult, PaperFill, PaperSkip, SimMode,
+};
 use crate::types::{MevOpportunity, Strategy};
 
 /// Hard safety cap so a pathological block cannot produce a huge session.
@@ -60,6 +62,22 @@ fn net_wei(opp: &MevOpportunity) -> i128 {
     let gross = u256_to_u128(opp.expected_profit) as i128;
     let gas = opp.gas_cost_wei as i128;
     gross - gas
+}
+
+fn exec_skip(
+    block: u64,
+    tx_index: Option<usize>,
+    cid: &Option<String>,
+    strategy: &str,
+    reason: FillSkipReason,
+) -> PaperSkip {
+    PaperSkip {
+        block_number: block,
+        tx_index,
+        canonical_id: cid.clone(),
+        strategy: strategy.to_string(),
+        reason,
+    }
 }
 
 fn pools_of(opp: &MevOpportunity) -> Vec<Address> {
@@ -238,6 +256,11 @@ impl LedgerPolicy {
                         borrowed_wei: 0,
                         repay_ok: true,
                         state_drift: false,
+                        exec_mode: None,
+                        exec_status: None,
+                        exec_gas_used: None,
+                        exec_net_wei: None,
+                        tx_hash: None,
                     },
                 );
                 gross_total = gross_total.saturating_add(gross);
@@ -268,6 +291,9 @@ impl LedgerPolicy {
             seed_budget: 0,
             seeds_recorded: 0,
             seeds_capped: 0,
+            exec_mode: "none".to_string(),
+            exec_ok: 0,
+            exec_revert: 0,
         }
     }
 
@@ -421,6 +447,11 @@ impl LedgerPolicy {
                     borrowed_wei: outcome.borrowed_wei,
                     repay_ok: outcome.repay_ok,
                     state_drift: outcome.state_drift,
+                    exec_mode: None,
+                    exec_status: None,
+                    exec_gas_used: None,
+                    exec_net_wei: None,
+                    tx_hash: None,
                 });
                 gross_total = gross_total.saturating_add(gross);
                 gas_total = gas_total.saturating_add(gas);
@@ -450,6 +481,225 @@ impl LedgerPolicy {
             seed_budget: 0,
             seeds_recorded: 0,
             seeds_capped: 0,
+            exec_mode: "none".to_string(),
+            exec_ok: 0,
+            exec_revert: 0,
+        }
+    }
+
+    /// Book fills from an execution backend.
+    ///
+    /// Consideration order matches [`Self::apply`] (net-descending per block).
+    /// Pool-conflict is not a pre-skip: `run` is invoked sequentially so the
+    /// backend's committed state is what makes a later candidate revert or
+    /// earn less. `run` is called only after the strategy, claimed-net, fill
+    /// cap, and gas-wallet gates pass.
+    pub fn apply_executed<F>(
+        &self,
+        opportunities: &[MevOpportunity],
+        sim_mode: SimMode,
+        exec_mode: &str,
+        mut run: F,
+    ) -> LedgerResult
+    where
+        F: FnMut(&MevOpportunity) -> ExecAttempt,
+    {
+        let max_fills = self.max_fills_per_block.clamp(1, HARD_MAX_FILLS_PER_BLOCK);
+        let mut wallet = self.starting_gas_wei;
+        let mut peak = wallet;
+        let mut max_drawdown: u128 = 0;
+        let mut fills: Vec<PaperFill> = Vec::new();
+        let mut skips: Vec<PaperSkip> = Vec::new();
+        let mut gross_total: u128 = 0;
+        let mut gas_total: u128 = 0;
+        let mut net_total: i128 = 0;
+        let mut best_net: i128 = 0;
+        let mut start_block: Option<u64> = None;
+        let mut end_block: Option<u64> = None;
+        let mut exec_ok: u64 = 0;
+        let mut exec_revert: u64 = 0;
+
+        let mut by_block: BTreeMap<u64, Vec<&MevOpportunity>> = BTreeMap::new();
+        for opp in opportunities {
+            by_block.entry(opp.block_number).or_default().push(opp);
+            start_block = Some(start_block.map_or(opp.block_number, |b| b.min(opp.block_number)));
+            end_block = Some(end_block.map_or(opp.block_number, |b| b.max(opp.block_number)));
+        }
+
+        for (block, mut opps) in by_block {
+            opps.sort_by(|a, b| {
+                sort_key(b)
+                    .0
+                    .cmp(&sort_key(a).0)
+                    .then_with(|| sort_key(a).1.cmp(&sort_key(b).1))
+                    .then_with(|| sort_key(a).2.cmp(&sort_key(b).2))
+                    .then_with(|| sort_key(a).3.cmp(&sort_key(b).3))
+            });
+            let mut fills_this_block = 0usize;
+
+            for opp in opps {
+                let strategy = opp.strategy.to_string();
+                let cid = opp.canonical_id.clone();
+                let tx_index = if opp.mempool_only {
+                    None
+                } else {
+                    Some(opp.tx_index)
+                };
+
+                if !crate::paper::sim::SimPolicy::is_simulatable(opp.strategy) {
+                    skips.push(exec_skip(
+                        block,
+                        tx_index,
+                        &cid,
+                        &strategy,
+                        FillSkipReason::ExecStrategyUnsupported,
+                    ));
+                    continue;
+                }
+                if !is_native_eligible(opp.strategy) {
+                    skips.push(exec_skip(
+                        block,
+                        tx_index,
+                        &cid,
+                        &strategy,
+                        FillSkipReason::NotNativeUnit,
+                    ));
+                    continue;
+                }
+                if net_wei(opp) <= 0 {
+                    skips.push(exec_skip(
+                        block,
+                        tx_index,
+                        &cid,
+                        &strategy,
+                        FillSkipReason::NonPositiveNet,
+                    ));
+                    continue;
+                }
+                if fills_this_block >= max_fills {
+                    skips.push(exec_skip(
+                        block,
+                        tx_index,
+                        &cid,
+                        &strategy,
+                        FillSkipReason::MaxFillsPerBlock,
+                    ));
+                    continue;
+                }
+                let surplus = wallet.saturating_sub(self.reserve_wei);
+                if opp.gas_cost_wei > surplus {
+                    skips.push(exec_skip(
+                        block,
+                        tx_index,
+                        &cid,
+                        &strategy,
+                        FillSkipReason::InsufficientGas,
+                    ));
+                    continue;
+                }
+
+                let attempt = run(opp);
+                if let Some(reason) = attempt.fail {
+                    if reason == FillSkipReason::ExecRevert {
+                        exec_revert += 1;
+                    }
+                    skips.push(exec_skip(block, tx_index, &cid, &strategy, reason));
+                    continue;
+                }
+                if !attempt.status {
+                    exec_revert += 1;
+                    skips.push(exec_skip(
+                        block,
+                        tx_index,
+                        &cid,
+                        &strategy,
+                        FillSkipReason::ExecRevert,
+                    ));
+                    continue;
+                }
+                if attempt.net_wei <= 0 {
+                    skips.push(exec_skip(
+                        block,
+                        tx_index,
+                        &cid,
+                        &strategy,
+                        FillSkipReason::NonPositiveNet,
+                    ));
+                    continue;
+                }
+
+                let net = attempt.net_wei;
+                let gas = attempt.gas_wei;
+                let gross = (net as u128).saturating_add(gas);
+                let wallet_before = wallet;
+                wallet = wallet.saturating_add(net as u128);
+                let wallet_after = wallet;
+                if wallet_after > peak {
+                    peak = wallet_after;
+                } else {
+                    let dd = peak.saturating_sub(wallet_after);
+                    if dd > max_drawdown {
+                        max_drawdown = dd;
+                    }
+                }
+                fills_this_block += 1;
+                exec_ok += 1;
+                let pools = pools_of(opp);
+                fills.push(PaperFill {
+                    block_number: block,
+                    tx_index,
+                    canonical_id: cid,
+                    strategy,
+                    gross_wei: gross,
+                    gas_wei: gas,
+                    net_wei: net,
+                    wallet_before,
+                    wallet_after,
+                    pools,
+                    mempool_only: opp.mempool_only,
+                    sim_mode,
+                    sim_gross_wei: gross,
+                    sim_net_wei: net,
+                    borrowed_wei: u256_to_u128(opp.input_amount),
+                    repay_ok: true,
+                    state_drift: fills_this_block > 1,
+                    exec_mode: Some(exec_mode.to_string()),
+                    exec_status: Some("ok".to_string()),
+                    exec_gas_used: Some(attempt.gas_used),
+                    exec_net_wei: Some(net),
+                    tx_hash: attempt.tx_hash,
+                });
+                gross_total = gross_total.saturating_add(gross);
+                gas_total = gas_total.saturating_add(gas);
+                net_total += net;
+                if net > best_net {
+                    best_net = net;
+                }
+            }
+        }
+
+        LedgerResult {
+            starting_gas_wei: self.starting_gas_wei,
+            ending_gas_wei: wallet,
+            reserve_wei: self.reserve_wei,
+            max_drawdown_wei: max_drawdown,
+            fills,
+            skips,
+            gross_wei: gross_total,
+            gas_wei: gas_total,
+            net_profit_wei: net_total,
+            best_net_wei: best_net,
+            start_block,
+            end_block,
+            sim_mode,
+            replay_blocks: 0,
+            log_only_blocks: 0,
+            seed_budget: 0,
+            seeds_recorded: 0,
+            seeds_capped: 0,
+            exec_mode: exec_mode.to_string(),
+            exec_ok,
+            exec_revert,
         }
     }
 }

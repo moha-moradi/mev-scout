@@ -393,6 +393,11 @@ impl BacktestRunner {
         &self.pool_manager
     }
 
+    /// Replayer used by `--exec revm` to open a historical state database.
+    pub fn replayer(&self) -> &crate::replay::BlockReplayer {
+        &self.replayer
+    }
+
     /// Last block number processed by the runner.
     pub fn last_processed_block(&self) -> u64 {
         self.last_processed_block

@@ -51,6 +51,8 @@ pub struct LiveOpts {
     pub sim: Option<String>,
     /// Override `[paper].sim_max_candidates_per_block`.
     pub sim_max_candidates_per_block: Option<usize>,
+    /// Override `[paper].exec` (`none` | `revm` | `anvil` | `testnet`).
+    pub exec: Option<String>,
 }
 
 pub struct LiveOneShotOutcome {
@@ -1376,6 +1378,9 @@ mod tests {
             seed_budget: 0,
             seeds_recorded: 0,
             seeds_capped: 0,
+            exec_mode: "none".to_string(),
+            exec_ok: 0,
+            exec_revert: 0,
         };
         let text = render_ledger_summary(&ledger, None);
         assert!(

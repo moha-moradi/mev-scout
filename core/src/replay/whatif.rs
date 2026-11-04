@@ -47,6 +47,9 @@ pub struct WhatIfRun {
     /// revm gas used. For a degraded (invalid-tx) run this is the full
     /// `gas_limit` the caller would have burned.
     pub gas_used: u64,
+    /// `true` when the tx was committed into the database (success or revert).
+    /// Invalid txs (intrinsic gas, etc.) leave the database unchanged.
+    pub committed: bool,
     /// Per-address native balance deltas (post − pre) for accounts touched by
     /// this tx, coinbase excluded. Zero deltas are dropped.
     pub deltas: Vec<(Address, i128)>,
@@ -58,6 +61,15 @@ impl WhatIfRun {
     /// native; positive ⇒ it captured native value.
     pub fn net_wei(&self) -> i128 {
         self.deltas.iter().map(|(_, d)| *d).sum()
+    }
+
+    /// Native balance delta of one account. Missing accounts are zero (untouched).
+    pub fn delta_of(&self, addr: Address) -> i128 {
+        self.deltas
+            .iter()
+            .find(|(a, _)| *a == addr)
+            .map(|(_, d)| *d)
+            .unwrap_or(0)
     }
 }
 
@@ -101,7 +113,7 @@ pub fn execute_whatif(
     cfg: CfgEnv,
     block: BlockEnv,
     txs: &[TxEnv],
-) -> anyhow::Result<Vec<WhatIfRun>> {
+) -> anyhow::Result<(Vec<WhatIfRun>, CacheDB<CachedRpcDb>)> {
     let beneficiary = block.beneficiary;
     let mut evm = Context::mainnet()
         .with_db(db)
@@ -123,6 +135,7 @@ pub fn execute_whatif(
                     index: i,
                     status: false,
                     gas_used: tx.gas_limit,
+                    committed: false,
                     deltas: Vec::new(),
                 });
                 continue;
@@ -147,10 +160,12 @@ pub fn execute_whatif(
             index: i,
             status,
             gas_used,
+            committed: true,
             deltas,
         });
     }
-    Ok(runs)
+    let db = evm.ctx.journaled_state.database;
+    Ok((runs, db))
 }
 
 /// Pre-tx balance of `addr` from revm's un-committed database.
@@ -194,12 +209,13 @@ impl BlockReplayer {
         txs: &[TxEnv],
     ) -> anyhow::Result<Vec<WhatIfRun>> {
         let (block, _txs) = self.load_block_data(block_num)?;
-        execute_whatif(
+        Ok(execute_whatif(
             db,
             self.build_cfg_env(block_num),
             self.build_block_env(&block),
             txs,
-        )
+        )?
+        .0)
     }
 
     /// Execute a hypothetical bundle against the pre-block state.
@@ -264,6 +280,7 @@ impl BlockReplayer {
                             index: i,
                             status: false,
                             gas_used: tx.gas_limit,
+                            committed: false,
                             deltas: Vec::new(),
                         },
                     ));
@@ -291,6 +308,7 @@ impl BlockReplayer {
                     index: i,
                     status,
                     gas_used,
+                    committed: true,
                     deltas,
                 },
             ));
@@ -429,7 +447,7 @@ mod tests {
 
     #[test]
     fn value_transfer_measures_caller_and_recipient_deltas() {
-        let runs = execute_whatif(
+        let (runs, _) = execute_whatif(
             warm_db(),
             cfg_env(),
             block_env(),
@@ -471,7 +489,7 @@ mod tests {
 
     #[test]
     fn sequential_bundle_commits_state_and_nonces() {
-        let runs = execute_whatif(
+        let (runs, _) = execute_whatif(
             warm_db(),
             cfg_env(),
             block_env(),
@@ -496,7 +514,7 @@ mod tests {
 
     #[test]
     fn insufficient_gas_degrades_to_status_false() {
-        let runs = execute_whatif(
+        let (runs, _) = execute_whatif(
             warm_db(),
             cfg_env(),
             block_env(),
@@ -521,7 +539,7 @@ mod tests {
 
     #[test]
     fn executed_map_keys_runs_by_anchor() {
-        let runs = execute_whatif(
+        let (runs, _) = execute_whatif(
             warm_db(),
             cfg_env(),
             block_env(),

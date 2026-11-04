@@ -28,6 +28,7 @@ alloy = { version = "2", features = [
     "consensus",
     "reqwest-default-tls",
     "signers",
+    "signer-local",
     "eips",
     "serde",
 ] }

@@ -13,7 +13,7 @@ todos:
     status: completed
   - id: smoke
     content: Regenerate results/dash.html and verify file:// first viewport
-    status: in_progress
+    status: completed
 isProject: false
 ---
 

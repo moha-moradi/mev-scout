@@ -68,6 +68,13 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
                 if let Some(sim) = s.sim_mode.as_deref() {
                     println!("    sim: {sim}");
                 }
+                if let Some(mode) = s.exec_mode.as_deref() {
+                    if mode != "none" {
+                        let ok = s.exec_ok.unwrap_or(0);
+                        let rev = s.exec_revert.unwrap_or(0);
+                        println!("    exec: {mode} {ok} ok / {rev} revert");
+                    }
+                }
                 match (s.replay_blocks, s.log_only_blocks) {
                     (Some(r), Some(l)) if r > 0 || l > 0 => {
                         println!("    modes: {r} replay / {l} log-only");

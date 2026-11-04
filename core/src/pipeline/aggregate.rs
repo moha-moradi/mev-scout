@@ -687,6 +687,11 @@ mod tests {
             borrowed_wei: 0,
             repay_ok: true,
             state_drift: false,
+            exec_mode: None,
+            exec_status: None,
+            exec_gas_used: None,
+            exec_net_wei: None,
+            tx_hash: None,
         }
     }
 

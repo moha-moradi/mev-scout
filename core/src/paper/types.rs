@@ -25,6 +25,12 @@ pub enum FillSkipReason {
     SimPathUnavailable,
     /// Strategy is not state-simulatable (e.g. JIT under `--sim state`).
     SimStrategyUnsupported,
+    /// On-chain / revm execution reverted or halted.
+    ExecRevert,
+    /// Calldata or pool path could not be built.
+    ExecBuildFailed,
+    /// Strategy is outside the flash executor (JIT, and anything non-V2/V3).
+    ExecStrategyUnsupported,
 }
 
 impl FillSkipReason {
@@ -40,6 +46,51 @@ impl FillSkipReason {
             Self::SimRepayShortfall => "sim_repay_shortfall",
             Self::SimPathUnavailable => "sim_path_unavailable",
             Self::SimStrategyUnsupported => "sim_strategy_unsupported",
+            Self::ExecRevert => "exec_revert",
+            Self::ExecBuildFailed => "exec_build_failed",
+            Self::ExecStrategyUnsupported => "exec_strategy_unsupported",
+        }
+    }
+}
+
+/// One virtual execution attempt. `fail` is set when the tx was not a success
+/// the ledger should book; `status == false` is also treated as a revert.
+#[derive(Debug, Clone)]
+pub struct ExecAttempt {
+    pub status: bool,
+    pub net_wei: i128,
+    pub gas_used: u64,
+    pub gas_wei: u128,
+    pub tx_hash: Option<String>,
+    pub fail: Option<FillSkipReason>,
+}
+
+impl ExecAttempt {
+    pub fn failed(reason: FillSkipReason) -> Self {
+        Self {
+            status: false,
+            net_wei: 0,
+            gas_used: 0,
+            gas_wei: 0,
+            tx_hash: None,
+            fail: Some(reason),
+        }
+    }
+
+    pub fn ran(
+        status: bool,
+        net_wei: i128,
+        gas_used: u64,
+        gas_wei: u128,
+        tx_hash: Option<String>,
+    ) -> Self {
+        Self {
+            status,
+            net_wei,
+            gas_used,
+            gas_wei,
+            tx_hash,
+            fail: None,
         }
     }
 }
@@ -139,6 +190,18 @@ pub struct PaperFill {
     pub repay_ok: bool,
     /// Overlay used a pool state written by an earlier fill (co-impact).
     pub state_drift: bool,
+    /// `revm` / `anvil` / `testnet` when this fill was booked from execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_mode: Option<String>,
+    /// `ok` when the executor tx succeeded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_gas_used: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_net_wei: Option<i128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<String>,
 }
 
 impl PaperFill {
@@ -198,6 +261,17 @@ pub struct LedgerResult {
     /// Simulatable candidates skipped because the seed budget was full.
     #[serde(default)]
     pub seeds_capped: usize,
+    /// `none` unless `--exec` booked the fills.
+    #[serde(default = "default_exec_mode_label")]
+    pub exec_mode: String,
+    #[serde(default)]
+    pub exec_ok: u64,
+    #[serde(default)]
+    pub exec_revert: u64,
+}
+
+fn default_exec_mode_label() -> String {
+    "none".to_string()
 }
 
 impl LedgerResult {
@@ -230,4 +304,7 @@ pub struct PaperSession {
     pub sim_mode: Option<String>,
     pub replay_blocks: Option<u64>,
     pub log_only_blocks: Option<u64>,
+    pub exec_mode: Option<String>,
+    pub exec_ok: Option<u64>,
+    pub exec_revert: Option<u64>,
 }
