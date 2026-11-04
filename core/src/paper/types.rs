@@ -268,6 +268,13 @@ pub struct LedgerResult {
     pub exec_ok: u64,
     #[serde(default)]
     pub exec_revert: u64,
+    /// Set when `--sim state` ran beside `--exec`. State-sim claims vs executed net.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recon_pass: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recon_fail: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recon_unverifiable: Option<u64>,
 }
 
 fn default_exec_mode_label() -> String {

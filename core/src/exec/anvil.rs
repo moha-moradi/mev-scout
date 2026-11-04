@@ -153,7 +153,12 @@ pub async fn send_exec(
         .and_then(|v| v.as_str())
         .map(|s| s == "0x1" || s == "1")
         .unwrap_or(false);
-    let gas_used = hex_u64(receipt.get("gasUsed").and_then(|v| v.as_str()).unwrap_or("0x0"));
+    let gas_used = hex_u64(
+        receipt
+            .get("gasUsed")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0x0"),
+    );
     let gas_price = hex_u128(
         receipt
             .get("effectiveGasPrice")
@@ -245,7 +250,11 @@ fn assert_loopback(url: &str) -> anyhow::Result<()> {
 }
 
 fn pick_port() -> u16 {
-    18000 + (std::process::id() % 20000) as u16
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mixed = (std::process::id()).wrapping_mul(17).wrapping_add(n);
+    20_000 + (mixed % 40_000) as u16
 }
 
 fn hex_u64(s: &str) -> u64 {
@@ -275,6 +284,7 @@ fn signed_delta(before: U256, after: U256) -> i128 {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -325,5 +335,241 @@ mod tests {
             let text = code.as_str().unwrap_or("0x");
             assert!(text.len() > 4, "executor has no code: {text}");
         });
+    }
+
+    /// Fixed local chain, two flash-arbs through the same V2 pools. The second
+    /// receipt is a real Anvil tx and earns less (or reverts) because the first
+    /// take moved the reserves. Skips when `anvil` or `forge` is not installed.
+    #[test]
+    fn same_pool_second_candidate_earns_less() {
+        let bin = std::env::var("ANVIL_BIN").unwrap_or_else(|_| "anvil".to_string());
+        if std::process::Command::new(&bin)
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        if std::process::Command::new("forge")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let weth_code = forge_creation("MockERC20");
+        let pair_code = forge_creation("MockV2Pair");
+        let vault_code = forge_creation("MockVault");
+        let exec_code = forge_creation("FlashArbExecutor");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let node = AnvilNode::spawn_dev(&bin).expect("spawn");
+            node.wait_ready().await.expect("ready");
+            let from = super::super::ANVIL_DEFAULT_ADDRESS;
+            impersonate_and_fund(&node.url, from).await.expect("fund");
+
+            let weth = deploy(&node.url, from, Bytes::from(weth_code.clone())).await;
+            let usdc = deploy(&node.url, from, Bytes::from(weth_code)).await;
+            let cheap = deploy(
+                &node.url,
+                from,
+                with_addrs(pair_code.clone(), &[weth, usdc]),
+            )
+            .await;
+            let rich = deploy(&node.url, from, with_addrs(pair_code, &[weth, usdc])).await;
+            let vault = deploy(&node.url, from, Bytes::from(vault_code)).await;
+            let executor = deploy(&node.url, from, Bytes::from(exec_code)).await;
+
+            call(&node.url, from, weth, selector_call("setWithdrawer()")).await;
+            let ten = eth(10);
+            let hundred = eth(100);
+            call(&node.url, from, weth, mint_data(cheap, ten)).await;
+            call(&node.url, from, usdc, mint_data(cheap, eth(20_000))).await;
+            call(&node.url, from, cheap, selector_call("sync()")).await;
+            call(&node.url, from, weth, mint_data(rich, ten)).await;
+            call(&node.url, from, usdc, mint_data(rich, eth(30_000))).await;
+            call(&node.url, from, rich, selector_call("sync()")).await;
+            call(&node.url, from, weth, mint_data(vault, hundred)).await;
+            rpc(
+                &node.url,
+                "anvil_setBalance",
+                json!([
+                    format!("{weth:#x}"),
+                    format!("0x{:x}", 100u128 * 10u128.pow(18))
+                ]),
+            )
+            .await
+            .expect("fund weth");
+
+            let plan = sample_plan(vault, weth, usdc, rich, cheap, from, eth(1));
+            let data = crate::exec::encode_execute(&plan);
+            let first = send_exec(&node.url, from, executor, data.clone())
+                .await
+                .expect("first");
+            let second = send_exec(&node.url, from, executor, data)
+                .await
+                .expect("second");
+
+            assert!(first.status, "first candidate should land: {first:?}");
+            assert!(first.tx_hash.is_some() && second.tx_hash.is_some());
+            assert_ne!(first.tx_hash, second.tx_hash);
+            if second.status {
+                let p1 = first.net_wei.saturating_add(first.gas_wei as i128);
+                let p2 = second.net_wei.saturating_add(second.gas_wei as i128);
+                assert!(
+                    p2 < p1,
+                    "second take on the same pools should earn less ({p2} vs {p1})"
+                );
+            }
+        });
+    }
+
+    fn forge_creation(contract: &str) -> Vec<u8> {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../contracts");
+        let path = find_artifact(&dir.join("out"), contract).unwrap_or_else(|| {
+            let out = std::process::Command::new("forge")
+                .arg("build")
+                .current_dir(&dir)
+                .output()
+                .expect("forge build");
+            assert!(
+                out.status.success(),
+                "forge build failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            find_artifact(&dir.join("out"), contract)
+                .unwrap_or_else(|| panic!("forge artifact for {contract} missing"))
+        });
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let v: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let hex = v
+            .pointer("/bytecode/object")
+            .and_then(|s| s.as_str())
+            .unwrap_or_else(|| panic!("{path:?} has no bytecode.object"));
+        decode_hex_bytes(hex)
+    }
+
+    fn find_artifact(dir: &std::path::Path, contract: &str) -> Option<std::path::PathBuf> {
+        let target = format!("{contract}.json");
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(cur) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&cur) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.file_name().and_then(|n| n.to_str()) == Some(target.as_str()) {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    fn decode_hex_bytes(raw: &str) -> Vec<u8> {
+        let compact = raw.trim().trim_start_matches("0x");
+        hex::decode(compact).unwrap_or_else(|e| panic!("artifact hex: {e}"))
+    }
+
+    fn with_addrs(code: Vec<u8>, addrs: &[Address]) -> Bytes {
+        let mut out = code;
+        for addr in addrs {
+            let mut word = [0u8; 32];
+            word[12..].copy_from_slice(addr.as_slice());
+            out.extend_from_slice(&word);
+        }
+        Bytes::from(out)
+    }
+
+    fn eth(n: u128) -> U256 {
+        U256::from(n) * U256::from(10u128.pow(18))
+    }
+
+    fn selector_call(sig: &str) -> Bytes {
+        let hash = alloy::primitives::keccak256(sig.as_bytes());
+        Bytes::from(hash[..4].to_vec())
+    }
+
+    fn mint_data(to: Address, amount: U256) -> Bytes {
+        let mut data = selector_call("mint(address,uint256)").to_vec();
+        let mut word = [0u8; 32];
+        word[12..].copy_from_slice(to.as_slice());
+        data.extend_from_slice(&word);
+        let amount_word: [u8; 32] = amount.to_be_bytes();
+        data.extend_from_slice(&amount_word);
+        Bytes::from(data)
+    }
+
+    fn sample_plan(
+        vault: Address,
+        weth: Address,
+        usdc: Address,
+        rich: Address,
+        cheap: Address,
+        profit_to: Address,
+        amount: U256,
+    ) -> crate::exec::plan::ExecPlan {
+        use crate::exec::plan::{ExecLeg, ExecPlan};
+        use crate::types::FlashLoanProvider;
+        ExecPlan {
+            vault,
+            borrow_token: weth,
+            amount,
+            legs: vec![
+                ExecLeg {
+                    pool: rich,
+                    token_in: weth,
+                    token_out: usdc,
+                    kind: 0,
+                    fee: 30,
+                },
+                ExecLeg {
+                    pool: cheap,
+                    token_in: usdc,
+                    token_out: weth,
+                    kind: 0,
+                    fee: 30,
+                },
+            ],
+            profit_to,
+            weth,
+            provider: FlashLoanProvider::Balancer,
+        }
+    }
+
+    async fn deploy(url: &str, from: Address, code: Bytes) -> Address {
+        let hash = send_tx(url, from, None, code, 8_000_000)
+            .await
+            .expect("deploy send");
+        let receipt = wait_receipt(url, &hash).await.expect("deploy receipt");
+        assert_status(&receipt, "deploy");
+        receipt
+            .get("contractAddress")
+            .and_then(|v| v.as_str())
+            .expect("contractAddress")
+            .parse()
+            .expect("address")
+    }
+
+    async fn call(url: &str, from: Address, to: Address, data: Bytes) {
+        let hash = send_tx(url, from, Some(to), data, 2_000_000)
+            .await
+            .expect("call");
+        let receipt = wait_receipt(url, &hash).await.expect("call receipt");
+        assert_status(&receipt, "call");
+    }
+
+    fn assert_status(receipt: &Value, what: &str) {
+        let status = receipt.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(
+            status == "0x1" || status == "1",
+            "{what} reverted: {receipt}"
+        );
     }
 }

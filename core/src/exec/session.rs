@@ -1,4 +1,6 @@
 //! Run the paper ledger against revm, a local Anvil fork, or a testnet.
+use std::collections::HashMap;
+
 use alloy::primitives::Address;
 
 use crate::paper::{ExecAttempt, FillSkipReason, LedgerPolicy, LedgerResult, SimMode};
@@ -29,6 +31,9 @@ pub struct ExecContext {
     pub anvil_block: Option<u64>,
     pub testnet: Option<TestnetSender>,
     pub testnet_executor: Option<Address>,
+    /// Broadcasts already sent on testnet, keyed by [`submit_key`]. A later
+    /// ledger pass replays these results instead of signing again.
+    pub submitted: HashMap<String, ExecAttempt>,
 }
 
 pub fn execute_ledger(
@@ -195,7 +200,14 @@ fn run_testnet(
         .testnet
         .take()
         .ok_or_else(|| anyhow::anyhow!("--exec testnet has no signer"))?;
+    // Testnet cannot replay history. A later ledger pass (live recomputes the
+    // whole session) must reuse the receipt instead of broadcasting again.
+    let mut submitted = std::mem::take(&mut ctx.submitted);
     let ledger = policy.apply_executed(opps, sim, mode, |opp| {
+        let key = submit_key(opp);
+        if let Some(hit) = submitted.get(&key).cloned() {
+            return hit;
+        }
         let plan = match plan_from_opportunity(opp, pools, vault, searcher, weth, provider) {
             Ok(plan) => plan,
             Err(PlanError::StrategyUnsupported) => {
@@ -207,18 +219,76 @@ fn run_testnet(
             }
         };
         let data = encode_execute(&plan);
-        match wait(async { sender.send_exec(executor, data).await }) {
+        let attempt = match wait(async { sender.send_exec(executor, data).await }) {
             Ok(attempt) => attempt,
             Err(e) => {
                 tracing::warn!("testnet exec: {e}");
                 ExecAttempt::failed(FillSkipReason::ExecBuildFailed)
             }
-        }
+        };
+        remember_broadcast(&mut submitted, key, &attempt);
+        attempt
     });
     ctx.testnet = Some(sender);
+    ctx.submitted = submitted;
     Ok(ledger)
+}
+
+fn submit_key(opp: &MevOpportunity) -> String {
+    if let Some(id) = opp.canonical_id.as_deref().filter(|s| !s.is_empty()) {
+        return id.to_string();
+    }
+    format!(
+        "{}:{}:{}:{:#x}:{:#x}",
+        opp.block_number, opp.tx_index, opp.strategy, opp.pool_a, opp.pool_b
+    )
+}
+
+/// Keep a result only after a transaction was handed to the node. A pre-send
+/// build failure stays uncached so the next pass can retry it.
+fn remember_broadcast(
+    cache: &mut HashMap<String, ExecAttempt>,
+    key: String,
+    attempt: &ExecAttempt,
+) {
+    let broadcast = attempt.tx_hash.is_some() || attempt.fail == Some(FillSkipReason::ExecRevert);
+    if broadcast {
+        cache.insert(key, attempt.clone());
+    }
 }
 
 fn wait<T>(fut: impl std::future::Future<Output = T>) -> T {
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Strategy;
+
+    #[test]
+    fn broadcast_is_cached_and_build_failure_is_not() {
+        let mut cache = HashMap::new();
+        let built = ExecAttempt::failed(FillSkipReason::ExecBuildFailed);
+        remember_broadcast(&mut cache, "k".into(), &built);
+        assert!(cache.is_empty());
+
+        let sent = ExecAttempt::ran(true, 10, 21_000, 1, Some("0xabc".into()));
+        remember_broadcast(&mut cache, "k".into(), &sent);
+        assert_eq!(cache["k"].tx_hash.as_deref(), Some("0xabc"));
+
+        let timed_out = ExecAttempt::failed(FillSkipReason::ExecRevert);
+        remember_broadcast(&mut cache, "t".into(), &timed_out);
+        assert!(cache.contains_key("t"));
+        assert_eq!(cache["k"].net_wei, 10);
+    }
+
+    #[test]
+    fn submit_key_prefers_canonical_id() {
+        let mut opp = MevOpportunity::new(1, 2, Strategy::TwoHopArb, Address::ZERO, 0);
+        opp.canonical_id = Some("cid".into());
+        assert_eq!(submit_key(&opp), "cid");
+        opp.canonical_id = None;
+        assert!(submit_key(&opp).starts_with("1:2:"));
+    }
 }

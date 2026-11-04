@@ -4,19 +4,19 @@ overview: "P0–P3 state-sim تمام شده و از این پلن حذف می�
 todos:
   - id: e0-foundry-executor
     content: "E0: Foundry contracts/ + FlashArbExecutor (Balancer callback, V2/V3 legs) + forge fork tests"
-    status: in_progress
+    status: completed
   - id: e1-bundle-builder
     content: "E1: core/src/exec calldata/plan/artifacts from MevOpportunity → Balancer flash bundle"
-    status: pending
+    status: completed
   - id: e2-revm-live
     content: "E2: revm ExecBackend + apply_executed + live --exec revm wiring/CLI/config"
-    status: pending
+    status: completed
   - id: e3-anvil-fork
     content: "E3: Anvil fork spawn/attach, deploy, send txs, ledger from receipts"
-    status: pending
+    status: completed
   - id: e4-testnet-persist
     content: "E4: testnet deploy config, --exec testnet guard, DB/report exec_* fields"
-    status: pending
+    status: completed
 isProject: false
 ---
 

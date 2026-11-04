@@ -6,9 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use alloy::primitives::{Address, U256};
 
-use crate::paper::sim::{
-    commit_outcome, pools_of_opp, simulate_candidate, SimPolicy, SimSeeds,
-};
+use crate::paper::sim::{commit_outcome, pools_of_opp, simulate_candidate, SimPolicy, SimSeeds};
 use crate::paper::types::{
     ExecAttempt, FillSkipReason, LedgerResult, PaperFill, PaperSkip, SimMode,
 };
@@ -237,32 +235,30 @@ impl LedgerPolicy {
                     used_pools.insert(*p);
                 }
                 fills_this_block += 1;
-                fills.push(
-                    PaperFill {
-                        block_number: block,
-                        tx_index,
-                        canonical_id: cid,
-                        strategy,
-                        gross_wei: gross,
-                        gas_wei: gas,
-                        net_wei: net,
-                        wallet_before,
-                        wallet_after,
-                        pools,
-                        mempool_only: opp.mempool_only,
-                        sim_mode: SimMode::Assumed,
-                        sim_gross_wei: gross,
-                        sim_net_wei: net,
-                        borrowed_wei: 0,
-                        repay_ok: true,
-                        state_drift: false,
-                        exec_mode: None,
-                        exec_status: None,
-                        exec_gas_used: None,
-                        exec_net_wei: None,
-                        tx_hash: None,
-                    },
-                );
+                fills.push(PaperFill {
+                    block_number: block,
+                    tx_index,
+                    canonical_id: cid,
+                    strategy,
+                    gross_wei: gross,
+                    gas_wei: gas,
+                    net_wei: net,
+                    wallet_before,
+                    wallet_after,
+                    pools,
+                    mempool_only: opp.mempool_only,
+                    sim_mode: SimMode::Assumed,
+                    sim_gross_wei: gross,
+                    sim_net_wei: net,
+                    borrowed_wei: 0,
+                    repay_ok: true,
+                    state_drift: false,
+                    exec_mode: None,
+                    exec_status: None,
+                    exec_gas_used: None,
+                    exec_net_wei: None,
+                    tx_hash: None,
+                });
                 gross_total = gross_total.saturating_add(gross);
                 gas_total = gas_total.saturating_add(gas);
                 net_total += net;
@@ -294,6 +290,9 @@ impl LedgerPolicy {
             exec_mode: "none".to_string(),
             exec_ok: 0,
             exec_revert: 0,
+            recon_pass: None,
+            recon_fail: None,
+            recon_unverifiable: None,
         }
     }
 
@@ -484,6 +483,9 @@ impl LedgerPolicy {
             exec_mode: "none".to_string(),
             exec_ok: 0,
             exec_revert: 0,
+            recon_pass: None,
+            recon_fail: None,
+            recon_unverifiable: None,
         }
     }
 
@@ -700,6 +702,9 @@ impl LedgerPolicy {
             exec_mode: exec_mode.to_string(),
             exec_ok,
             exec_revert,
+            recon_pass: None,
+            recon_fail: None,
+            recon_unverifiable: None,
         }
     }
 }
@@ -908,10 +913,7 @@ mod tests {
         };
         let r = policy.apply_simulated(&[o], &SimSeeds::new(), &sim);
         assert!(r.fills.is_empty());
-        assert_eq!(
-            r.skips[0].reason,
-            FillSkipReason::SimStrategyUnsupported
-        );
+        assert_eq!(r.skips[0].reason, FillSkipReason::SimStrategyUnsupported);
     }
 
     #[test]
@@ -1075,10 +1077,7 @@ mod tests {
             fee_bps: 0,
             max_candidates_per_block: 32,
         };
-        let fee9 = SimPolicy {
-            fee_bps: 9,
-            ..zero
-        };
+        let fee9 = SimPolicy { fee_bps: 9, ..zero };
         let r0 = policy.apply_simulated(&[o.clone()], &seeds, &zero);
         let r9 = policy.apply_simulated(&[o], &seeds, &fee9);
         assert_eq!(r0.fills.len(), 1);
@@ -1181,12 +1180,9 @@ mod tests {
             ExecAttempt::ran(true, 250, 80_000, 40, Some("0xabc".into())),
             ExecAttempt::ran(false, -10, 21_000, 10, Some("0xdef".into())),
         ];
-        let r = policy.apply_executed(
-            &[good, bad, jit],
-            SimMode::Assumed,
-            "revm",
-            |_| queued.remove(0),
-        );
+        let r = policy.apply_executed(&[good, bad, jit], SimMode::Assumed, "revm", |_| {
+            queued.remove(0)
+        });
         assert_eq!(r.fills.len(), 1);
         assert_eq!(r.fills[0].net_wei, 250);
         assert_eq!(r.fills[0].tx_hash.as_deref(), Some("0xabc"));

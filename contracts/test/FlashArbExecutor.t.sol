@@ -114,6 +114,56 @@ contract FlashArbExecutorTest {
         assert(searcher.balance == 0);
     }
 
+    /// V3 exact-input: sell WETH at 3000 USDC, buy it back at 2000. Leftover
+    /// WETH is unwrapped to the searcher.
+    function test_v3_two_hop_repays_and_unwraps_profit() public {
+        MockV3Pool sell = new MockV3Pool(address(weth), address(usdc), 3000 ether);
+        // 3000e18 * (1e18/2000) / 1e18 = 1.5e18 WETH out.
+        MockV3Pool buy = new MockV3Pool(address(weth), address(usdc), 1 ether / 2000);
+        usdc.mint(address(sell), 1_000_000 ether);
+        weth.mint(address(buy), 100 ether);
+
+        FlashArbExecutor.Leg[] memory legs = new FlashArbExecutor.Leg[](2);
+        legs[0] = FlashArbExecutor.Leg({
+            pool: address(sell),
+            tokenIn: address(weth),
+            tokenOut: address(usdc),
+            kind: 1,
+            fee: 3000
+        });
+        legs[1] = FlashArbExecutor.Leg({
+            pool: address(buy),
+            tokenIn: address(usdc),
+            tokenOut: address(weth),
+            kind: 1,
+            fee: 3000
+        });
+
+        uint256 before = searcher.balance;
+        exec.execute(
+            FlashArbExecutor.Plan({
+                vault: address(vault),
+                borrowToken: address(weth),
+                amount: 1 ether,
+                legs: legs,
+                profitTo: searcher,
+                weth: address(weth)
+            })
+        );
+        assert(searcher.balance > before);
+        assert(weth.balanceOf(address(exec)) == 0);
+        assert(weth.balanceOf(address(vault)) == 100 ether);
+    }
+
+    function test_v3_callback_rejects_stranger() public {
+        (bool ok,) = address(exec).call(
+            abi.encodeCall(
+                FlashArbExecutor.uniswapV3SwapCallback, (int256(1), int256(0), abi.encode(address(weth)))
+            )
+        );
+        assert(!ok);
+    }
+
     /// Optional. Set `FORK_RPC_URL` (and optionally `FORK_BLOCK`) to run a
     /// WETH two-hop against Ethereum mainnet state. Skips when unset.
     function test_fork_weth_two_hop() public {
@@ -283,6 +333,43 @@ contract MockV2Pair {
         require(bal0Adj * bal1Adj >= uint256(reserve0) * uint256(reserve1) * 1_000_000, "K");
         reserve0 = uint112(b0);
         reserve1 = uint112(b1);
+    }
+}
+
+/// Constant-price V3 pool. Pulls `tokenIn` via the executor callback, then pays
+/// `amountIn * outPerIn / 1e18` of the other token.
+contract MockV3Pool {
+    address public token0;
+    address public token1;
+    uint256 public outPerIn;
+
+    constructor(address a, address b, uint256 rate) {
+        if (a < b) {
+            token0 = a;
+            token1 = b;
+        } else {
+            token0 = b;
+            token1 = a;
+        }
+        outPerIn = rate;
+    }
+
+    function swap(address recipient, bool, int256 amountSpecified, uint160, bytes calldata data)
+        external
+        returns (int256 amount0, int256 amount1)
+    {
+        require(amountSpecified > 0, "exact in");
+        uint256 amountIn = uint256(amountSpecified);
+        address tokenIn = abi.decode(data, (address));
+        address tokenOut = tokenIn == token0 ? token1 : token0;
+        int256 d0 = tokenIn == token0 ? int256(amountIn) : int256(0);
+        int256 d1 = tokenIn == token1 ? int256(amountIn) : int256(0);
+        FlashArbExecutor(payable(msg.sender)).uniswapV3SwapCallback(d0, d1, data);
+        uint256 amountOut = amountIn * outPerIn / 1e18;
+        require(amountOut > 0, "zero out");
+        MockERC20(payable(tokenOut)).transfer(recipient, amountOut);
+        if (tokenIn == token0) return (int256(amountIn), -int256(amountOut));
+        return (-int256(amountOut), int256(amountIn));
     }
 }
 

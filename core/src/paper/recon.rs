@@ -17,8 +17,13 @@
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-use crate::paper::types::{LedgerResult, PaperFill};
-use crate::replay::whatif::ExecutedNetMap;
+use crate::paper::types::{FillSkipReason, LedgerResult, PaperFill};
+use crate::replay::whatif::{ExecutedNet, ExecutedNetMap};
+
+/// Relative error allowed when comparing a state-sim net to an executed net.
+pub const RECON_TOLERANCE_PCT: f64 = 20.0;
+/// Absolute wei band used when the state-sim net is zero.
+pub const RECON_ABS_WEI_TOL: i128 = 5_000_000_000_000_000;
 
 /// Outcome of reconciling one paper fill against its executed result.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -196,6 +201,75 @@ fn fill_verdict(
     }
 }
 
+/// Compare a state-sim ledger to an exec ledger and stamp the counts on `exec`.
+///
+/// Paper side is the state-sim fill net. Executed side is `exec_net_wei` on a
+/// booked fill, or a revert skip. State-sim fills the executor never ran stay
+/// unverifiable. Also copies state-sim quote fields onto the matching exec fill
+/// so the booked row keeps both numbers.
+pub fn reconcile_sim_vs_exec(exec: &mut LedgerResult, sim: &LedgerResult) {
+    for fill in &mut exec.fills {
+        let Some(src) = sim.fills.iter().find(|s| same_fill(s, fill)) else {
+            continue;
+        };
+        fill.sim_mode = crate::paper::SimMode::StateSim;
+        fill.sim_gross_wei = src.sim_gross_wei;
+        fill.sim_net_wei = src.sim_net_wei;
+        fill.borrowed_wei = src.borrowed_wei;
+        fill.repay_ok = src.repay_ok;
+        fill.state_drift = src.state_drift;
+    }
+    let report = paper_vs_executed(
+        sim,
+        &executed_from(exec),
+        RECON_TOLERANCE_PCT,
+        RECON_ABS_WEI_TOL,
+    );
+    exec.recon_pass = Some(report.pass as u64);
+    exec.recon_fail = Some(report.fail as u64);
+    exec.recon_unverifiable = Some(report.unverifiable as u64);
+}
+
+fn same_fill(a: &PaperFill, b: &PaperFill) -> bool {
+    match (&a.canonical_id, &b.canonical_id) {
+        (Some(x), Some(y)) if !x.is_empty() && !y.is_empty() => x == y,
+        _ => {
+            a.block_number == b.block_number && a.tx_index == b.tx_index && a.strategy == b.strategy
+        }
+    }
+}
+
+fn executed_from(exec: &LedgerResult) -> ExecutedNetMap {
+    let mut map = ExecutedNetMap::new();
+    for fill in &exec.fills {
+        let Some(cid) = fill.canonical_id.clone() else {
+            continue;
+        };
+        map.insert(
+            cid,
+            ExecutedNet {
+                net_wei: fill.exec_net_wei.unwrap_or(fill.net_wei),
+                gas_used: fill.exec_gas_used.unwrap_or(0),
+                status: true,
+            },
+        );
+    }
+    for skip in &exec.skips {
+        if skip.reason != FillSkipReason::ExecRevert {
+            continue;
+        }
+        let Some(cid) = skip.canonical_id.clone() else {
+            continue;
+        };
+        map.entry(cid).or_insert(ExecutedNet {
+            net_wei: 0,
+            gas_used: 0,
+            status: false,
+        });
+    }
+    map
+}
+
 /// Reconcile every ledger fill against the executed map (keyed by
 /// `canonical_id`). Pure — no I/O.
 pub fn paper_vs_executed(
@@ -298,6 +372,9 @@ mod tests {
             exec_mode: "none".to_string(),
             exec_ok: 0,
             exec_revert: 0,
+            recon_pass: None,
+            recon_fail: None,
+            recon_unverifiable: None,
         }
     }
 
@@ -513,5 +590,28 @@ mod tests {
             .map(|f| f.canonical_id.as_deref().unwrap())
             .collect();
         assert_eq!(anchored, vec!["a"]);
+    }
+
+    #[test]
+    fn recon_sim_vs_exec_agrees_within_tolerance_and_fails_revert() {
+        use crate::paper::{FillSkipReason, PaperSkip};
+        let sim = ledger(vec![fill("ok", WEI, 1, 0), fill("bad", WEI, 1, 1)]);
+        let mut exec = ledger(vec![fill("ok", WEI - WEI / 10, 1, 0)]);
+        exec.fills[0].exec_net_wei = Some(WEI - WEI / 10);
+        exec.fills[0].exec_status = Some("ok".into());
+        exec.fills[0].exec_gas_used = Some(100_000);
+        exec.skips.push(PaperSkip {
+            block_number: 1,
+            tx_index: Some(1),
+            canonical_id: Some("bad".into()),
+            strategy: "TwoHopArb".into(),
+            reason: FillSkipReason::ExecRevert,
+        });
+        super::reconcile_sim_vs_exec(&mut exec, &sim);
+        assert_eq!(exec.recon_pass, Some(1));
+        assert_eq!(exec.recon_fail, Some(1));
+        assert_eq!(exec.recon_unverifiable, Some(0));
+        assert_eq!(exec.fills[0].sim_net_wei, WEI);
+        assert_eq!(exec.fills[0].net_wei, WEI - WEI / 10);
     }
 }

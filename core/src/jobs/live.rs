@@ -18,8 +18,8 @@ use crate::explorer::store::ExplorerStore;
 use crate::fetch::Fetcher;
 use crate::paper::sim::{merge_seeds, SimSeeds};
 use crate::paper::{
-    FillSkipReason, LedgerPolicy, LedgerResult, PaperFill, PaperMode, SimMode, SimPolicy,
-    HARD_MAX_FILLS_PER_BLOCK,
+    reconcile_sim_vs_exec, FillSkipReason, LedgerPolicy, LedgerResult, PaperFill, PaperMode,
+    SimMode, SimPolicy, HARD_MAX_FILLS_PER_BLOCK,
 };
 use crate::pipeline::{aggregate_fills, BacktestRunner, BlockMode, BlockReplayStats};
 use crate::pool::state::PoolManager;
@@ -191,7 +191,9 @@ fn resolve_exec_context(
     let urls = config.effective_rpc_urls(validation.chain_name)?;
     let fork_url = urls.first().cloned().unwrap_or_default();
     let anvil = if mode == ExecMode::Anvil && !config.paper.anvil_url.trim().is_empty() {
-        Some(AnvilNode::attach(config.paper.anvil_url.trim().to_string())?)
+        Some(AnvilNode::attach(
+            config.paper.anvil_url.trim().to_string(),
+        )?)
     } else {
         None
     };
@@ -220,6 +222,7 @@ fn resolve_exec_context(
         anvil_block: None,
         testnet: None,
         testnet_executor: executor,
+        submitted: Default::default(),
     })
 }
 
@@ -479,7 +482,9 @@ impl<'a> LiveContext<'a> {
         if self.sim.is_state_sim() {
             let incoming = self.runner.take_sim_seeds();
             merge_seeds(&mut self.session_seeds, incoming);
-            self.seeds_capped = self.seeds_capped.saturating_add(self.runner.take_seeds_capped());
+            self.seeds_capped = self
+                .seeds_capped
+                .saturating_add(self.runner.take_seeds_capped());
         }
         Ok((opps, stats))
     }
@@ -581,6 +586,12 @@ impl<'a> LiveContext<'a> {
                 &mut self.exec,
             )?
         };
+        if !self.exec.mode.is_off() && self.sim.is_state_sim() {
+            let sim_ledger =
+                self.policy
+                    .apply_simulated(&self.session_opps, &self.session_seeds, &self.sim);
+            reconcile_sim_vs_exec(&mut ledger, &sim_ledger);
+        }
         ledger.sim_mode = self.sim.mode;
         ledger.replay_blocks = self.replay_blocks;
         ledger.log_only_blocks = self.log_only_blocks;
@@ -717,6 +728,15 @@ pub fn render_ledger_summary(ledger: &LedgerResult, native_usd: Option<f64>) -> 
         out.push_str(&format!(
             "  exec: {} {} ok / {} revert\n",
             ledger.exec_mode, ledger.exec_ok, ledger.exec_revert,
+        ));
+    }
+    if let (Some(pass), Some(fail), Some(unverifiable)) = (
+        ledger.recon_pass,
+        ledger.recon_fail,
+        ledger.recon_unverifiable,
+    ) {
+        out.push_str(&format!(
+            "  recon: state vs exec {pass} pass / {fail} fail / {unverifiable} unverifiable\n",
         ));
     }
     if ledger.sim_mode == SimMode::StateSim
@@ -1535,11 +1555,33 @@ mod tests {
             exec_mode: "none".to_string(),
             exec_ok: 0,
             exec_revert: 0,
+            recon_pass: None,
+            recon_fail: None,
+            recon_unverifiable: None,
         };
         let text = render_ledger_summary(&ledger, None);
         assert!(
             text.contains("not_native_unit"),
             "expected an explicit note, got: {text}"
+        );
+    }
+
+    #[test]
+    fn summary_prints_state_vs_exec_recon() {
+        let policy = LedgerPolicy {
+            starting_gas_wei: 1_000_000,
+            reserve_wei: 0,
+            max_fills_per_block: HARD_MAX_FILLS_PER_BLOCK,
+        };
+        let mut ledger = policy.apply(&[]);
+        ledger.exec_mode = "revm".into();
+        ledger.recon_pass = Some(2);
+        ledger.recon_fail = Some(1);
+        ledger.recon_unverifiable = Some(3);
+        let text = render_ledger_summary(&ledger, None);
+        assert!(
+            text.contains("recon: state vs exec 2 pass / 1 fail / 3 unverifiable"),
+            "text was: {text}"
         );
     }
 
