@@ -25,7 +25,10 @@ impl ExplorerStore {
               created_at INTEGER NOT NULL,
               sim_mode TEXT,
               replay_blocks INTEGER,
-              log_only_blocks INTEGER
+              log_only_blocks INTEGER,
+              exec_mode TEXT,
+              exec_ok INTEGER,
+              exec_revert INTEGER
             );
             CREATE INDEX IF NOT EXISTS paper_sessions_created
               ON paper_sessions(created_at);
@@ -52,6 +55,11 @@ impl ExplorerStore {
               borrowed_wei TEXT,
               repay_ok INTEGER,
               state_drift INTEGER NOT NULL DEFAULT 0,
+              exec_mode TEXT,
+              exec_status TEXT,
+              exec_gas_used INTEGER,
+              exec_net_wei TEXT,
+              tx_hash TEXT,
               FOREIGN KEY(session_id) REFERENCES paper_sessions(session_id)
             );
             CREATE INDEX IF NOT EXISTS paper_fills_session

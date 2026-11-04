@@ -745,6 +745,11 @@ impl ExplorerStore {
         column: &str,
         ty: &str,
     ) -> anyhow::Result<()> {
+        // A legacy file stamped at V1 never replayed `CREATE TABLE paper_*`.
+        // Later alters must no-op until `ensure_paper_tables` creates them.
+        if !table_exists(conn, table)? {
+            return Ok(());
+        }
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
         let mut rows = stmt.query([])?;
         let mut exists = false;
