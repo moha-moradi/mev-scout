@@ -8,6 +8,10 @@ use anyhow::Context;
 use crate::cache::{RunManifest, SqliteStore};
 use crate::config::validation::{self, ValidationResult};
 use crate::config::{Config, ProviderConfig};
+use crate::exec::{
+    assert_testnet_chain, execute_ledger, searcher_address, AnvilNode, ExecContext, ExecMode,
+    TestnetSender,
+};
 use crate::explorer::pricing;
 use crate::explorer::results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};
 use crate::explorer::store::ExplorerStore;
@@ -142,6 +146,83 @@ fn resolve_sim_policy(config: &Config, opts: &LiveOpts) -> anyhow::Result<SimPol
     Ok(policy)
 }
 
+fn resolve_exec_context(
+    config: &Config,
+    opts: &LiveOpts,
+    validation: &ValidationResult,
+) -> anyhow::Result<ExecContext> {
+    let mut mode = config.paper.exec_mode()?;
+    if let Some(raw) = opts.exec.as_deref() {
+        mode = ExecMode::parse(raw).ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid --exec '{raw}': expected 'none', 'revm', 'anvil', or 'testnet'"
+            )
+        })?;
+    }
+    let chain_id = validation.chain_config.chain_id;
+    if mode == ExecMode::Testnet {
+        assert_testnet_chain(chain_id)?;
+    }
+    let key = if !config.paper.exec_key.trim().is_empty() {
+        Some(config.paper.exec_key.trim().to_string())
+    } else {
+        std::env::var("MEV_SCOUT_EXEC_KEY")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    if mode == ExecMode::Testnet && key.is_none() {
+        anyhow::bail!(
+            "--exec testnet needs [paper].exec_key or MEV_SCOUT_EXEC_KEY \
+             (a faucet key). This mode never signs a mainnet transaction."
+        );
+    }
+    let searcher = searcher_address(key.as_deref())?;
+    let executor = if config.paper.executor_address.trim().is_empty() {
+        None
+    } else {
+        Some(config.paper.executor_address.trim().parse().map_err(|e| {
+            anyhow::anyhow!(
+                "invalid paper.executor_address '{}': {e}",
+                config.paper.executor_address
+            )
+        })?)
+    };
+    let urls = config.effective_rpc_urls(validation.chain_name)?;
+    let fork_url = urls.first().cloned().unwrap_or_default();
+    let anvil = if mode == ExecMode::Anvil && !config.paper.anvil_url.trim().is_empty() {
+        Some(AnvilNode::attach(config.paper.anvil_url.trim().to_string())?)
+    } else {
+        None
+    };
+    Ok(ExecContext {
+        mode,
+        chain_id,
+        vault: validation
+            .chain_config
+            .balancer_vault
+            .unwrap_or(Address::ZERO),
+        weth: validation
+            .chain_config
+            .wrapped_native_token
+            .unwrap_or(Address::ZERO),
+        searcher,
+        provider: validation.flash_loan_provider,
+        fork_url,
+        exec_key: key,
+        anvil_bin: if config.paper.anvil_bin.trim().is_empty() {
+            "anvil".to_string()
+        } else {
+            config.paper.anvil_bin.clone()
+        },
+        anvil,
+        anvil_executor: None,
+        anvil_block: None,
+        testnet: None,
+        testnet_executor: executor,
+    })
+}
+
 /// Resolve the native USD price once per session.
 ///
 /// Order: cached ZERO-keyed price, then the wrapped-native cache, then
@@ -246,6 +327,8 @@ struct LiveContext<'a> {
     log_only_blocks: u64,
     /// Seed-budget diagnostics for report (`seed_budget` vs `fills capped`).
     seeds_capped: usize,
+    /// Virtual execution. `mode == none` leaves the paper ledger on sim/assumed.
+    exec: ExecContext,
 }
 
 impl<'a> LiveContext<'a> {
@@ -257,6 +340,7 @@ impl<'a> LiveContext<'a> {
         record_rejections: bool,
         progress: &'a dyn JobProgress,
         ledger: ResolvedLedger,
+        exec: ExecContext,
     ) -> anyhow::Result<LiveContext<'a>> {
         let chain_name = validation.chain_name;
         let cache = SqliteStore::open(config.effective_db_path(&chain_name))?;
@@ -340,6 +424,7 @@ impl<'a> LiveContext<'a> {
             replay_blocks: 0,
             log_only_blocks: 0,
             seeds_capped: 0,
+            exec,
         })
     }
 
@@ -474,13 +559,27 @@ impl<'a> LiveContext<'a> {
     /// `apply` regroups by `block_number` and recomputes the wallet from
     /// `starting_gas_wei` every time, so the growing `session_opps` list is
     /// the only state needed. Cost is O(n) per pass in session opportunities.
-    fn update_ledger(&mut self, opps: &[MevOpportunity]) -> LedgerResult {
+    async fn update_ledger(&mut self, opps: &[MevOpportunity]) -> anyhow::Result<LedgerResult> {
         self.session_opps.extend_from_slice(opps);
-        let mut ledger = if self.sim.is_state_sim() {
-            self.policy
-                .apply_simulated(&self.session_opps, &self.session_seeds, &self.sim)
+        let mut ledger = if self.exec.mode.is_off() {
+            if self.sim.is_state_sim() {
+                self.policy
+                    .apply_simulated(&self.session_opps, &self.session_seeds, &self.sim)
+            } else {
+                self.policy.apply(&self.session_opps)
+            }
         } else {
-            self.policy.apply(&self.session_opps)
+            self.ensure_exec_ready().await?;
+            let replayer = self.runner.replayer();
+            let pools = self.runner.pool_manager();
+            execute_ledger(
+                &self.policy,
+                &self.session_opps,
+                self.sim.mode,
+                replayer,
+                pools,
+                &mut self.exec,
+            )?
         };
         ledger.sim_mode = self.sim.mode;
         ledger.replay_blocks = self.replay_blocks;
@@ -488,7 +587,51 @@ impl<'a> LiveContext<'a> {
         ledger.seed_budget = self.sim.max_candidates_per_block;
         ledger.seeds_recorded = self.session_seeds.len();
         ledger.seeds_capped = self.seeds_capped;
-        ledger
+        Ok(ledger)
+    }
+
+    async fn ensure_exec_ready(&mut self) -> anyhow::Result<()> {
+        match self.exec.mode {
+            ExecMode::None | ExecMode::Revm => Ok(()),
+            ExecMode::Anvil => {
+                if self.exec.anvil.is_some() {
+                    return Ok(());
+                }
+                let bin = self.exec.anvil_bin.clone();
+                let fork = self.exec.fork_url.clone();
+                if fork.is_empty() {
+                    anyhow::bail!("--exec anvil needs an RPC url to fork");
+                }
+                let node = AnvilNode::spawn(&bin, &fork, self.tip)?;
+                node.wait_ready().await?;
+                self.progress
+                    .log(&format!("exec: anvil fork at {}", node.url));
+                self.exec.anvil = Some(node);
+                Ok(())
+            }
+            ExecMode::Testnet => {
+                if self.exec.testnet.is_some() {
+                    return Ok(());
+                }
+                let key = self.exec.exec_key.clone().ok_or_else(|| {
+                    anyhow::anyhow!("--exec testnet needs [paper].exec_key or MEV_SCOUT_EXEC_KEY")
+                })?;
+                let url = self.exec.fork_url.clone();
+                if url.is_empty() {
+                    anyhow::bail!("--exec testnet needs an RPC url");
+                }
+                let mut sender = TestnetSender::connect(&url, &key).await?;
+                self.exec.searcher = sender.from;
+                if self.exec.testnet_executor.is_none() {
+                    let addr = sender.deploy_executor().await?;
+                    self.progress
+                        .log(&format!("exec: deployed testnet executor {addr:#x}"));
+                    self.exec.testnet_executor = Some(addr);
+                }
+                self.exec.testnet = Some(sender);
+                Ok(())
+            }
+        }
     }
 
     /// Persist the finished session ledger. Called once — `insert_paper_session`
@@ -570,6 +713,12 @@ pub fn render_ledger_summary(ledger: &LedgerResult, native_usd: Option<f64>) -> 
         "  sim: {} | state-sim {state_fills} fill / {sim_skips} skipped | assumed {assumed_fills}\n",
         ledger.sim_mode.as_str(),
     ));
+    if ledger.exec_mode != "none" {
+        out.push_str(&format!(
+            "  exec: {} {} ok / {} revert\n",
+            ledger.exec_mode, ledger.exec_ok, ledger.exec_revert,
+        ));
+    }
     if ledger.sim_mode == SimMode::StateSim
         || ledger.seed_budget > 0
         || ledger.seeds_recorded > 0
@@ -718,6 +867,10 @@ pub async fn job_live(
         sim,
         native_usd,
     };
+    let exec = resolve_exec_context(config, opts, &validation)?;
+    if !exec.mode.is_off() {
+        progress.log(&format!("exec: {}", exec.mode));
+    }
 
     let setup = init_rpc(config, validation.chain_name, true).await?;
     let mut ctx = LiveContext::new(
@@ -728,6 +881,7 @@ pub async fn job_live(
         opts.record_rejections,
         progress,
         ledger,
+        exec,
     )
     .await?;
 
@@ -822,7 +976,7 @@ async fn run_once(
     let elapsed = start.elapsed();
     ctx.extend_session(&resolved);
     ctx.persist_results(&opps);
-    let ledger = ctx.update_ledger(&opps);
+    let ledger = ctx.update_ledger(&opps).await?;
     if let Err(e) = ctx.persist_ledger_session(&ledger) {
         // Not fatal: the run results and manifest are already written, so
         // the session is still usable via `report`. Losing only the P&L row
@@ -1023,7 +1177,7 @@ async fn process_pass(
 
     ctx.extend_session(&resolved);
     ctx.persist_results(&opps);
-    let ledger = ctx.update_ledger(&opps);
+    let ledger = ctx.update_ledger(&opps).await?;
     progress.log(&render_ledger_summary(&ledger, ctx.native_usd));
     progress.emit(ProgressEvent {
         stage: "complete".to_string(),
@@ -1114,7 +1268,7 @@ async fn run_loop(
     // Recomputed over the full accumulated list. `update_ledger` already ran
     // after every pass, including passes that found nothing; this last apply
     // is the row written at session end.
-    let ledger = ctx.update_ledger(&[]);
+    let ledger = ctx.update_ledger(&[]).await?;
     let session_id = match ctx.persist_ledger_session(&ledger) {
         Ok(id) => id,
         Err(e) => {

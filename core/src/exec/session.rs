@@ -22,6 +22,8 @@ pub struct ExecContext {
     pub searcher: Address,
     pub provider: FlashLoanProvider,
     pub fork_url: String,
+    pub exec_key: Option<String>,
+    pub anvil_bin: String,
     pub anvil: Option<AnvilNode>,
     pub anvil_executor: Option<Address>,
     pub anvil_block: Option<u64>,

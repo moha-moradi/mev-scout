@@ -122,29 +122,30 @@ contract FlashArbExecutorTest {
         uint256 blockNo = vm.envOr("FORK_BLOCK", uint256(19_000_000));
         vm.createSelectFork(rpc, blockNo);
 
-        address vault = 0xBA12222222228d8Ba445958a75a0704d566BF2C8;
-        address weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-        address usdc = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+        address forkVault = 0xBA12222222228d8Ba445958a75a0704d566BF2C8;
+        address forkWeth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+        address forkUsdc = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
         address uni = 0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc;
         address sushi = 0x397FF1542f962076d0BFE58eA045FfA2d347ACa0;
 
         FlashArbExecutor forkExec = new FlashArbExecutor();
         uint256 amount = 1 ether;
-        (address buy, address sell, bool profitable) = _forkDirection(uni, sushi, weth, usdc, amount);
+        (address buy, address sell, bool profitable) =
+            _forkDirection(uni, sushi, forkWeth, forkUsdc, amount);
         if (!profitable) return;
 
         uint256 before = searcher.balance;
         FlashArbExecutor.Leg[] memory legs = new FlashArbExecutor.Leg[](2);
-        legs[0] = FlashArbExecutor.Leg({pool: buy, tokenIn: weth, tokenOut: usdc, kind: 0, fee: 30});
-        legs[1] = FlashArbExecutor.Leg({pool: sell, tokenIn: usdc, tokenOut: weth, kind: 0, fee: 30});
+        legs[0] = FlashArbExecutor.Leg({pool: buy, tokenIn: forkWeth, tokenOut: forkUsdc, kind: 0, fee: 30});
+        legs[1] = FlashArbExecutor.Leg({pool: sell, tokenIn: forkUsdc, tokenOut: forkWeth, kind: 0, fee: 30});
         forkExec.execute(
             FlashArbExecutor.Plan({
-                vault: vault,
-                borrowToken: weth,
+                vault: forkVault,
+                borrowToken: forkWeth,
                 amount: amount,
                 legs: legs,
                 profitTo: searcher,
-                weth: weth
+                weth: forkWeth
             })
         );
         assert(searcher.balance > before);
@@ -184,15 +185,15 @@ contract FlashArbExecutorTest {
         });
     }
 
-    function _forkDirection(address uni, address sushi, address weth, address usdc, uint256 amount)
+    function _forkDirection(address uni, address sushi, address forkWeth, address forkUsdc, uint256 amount)
         internal
         view
         returns (address buy, address sell, bool profitable)
     {
-        uint256 viaUni = _quoteV2(uni, weth, usdc, amount);
-        uint256 backSushi = _quoteV2(sushi, usdc, weth, viaUni);
-        uint256 viaSushi = _quoteV2(sushi, weth, usdc, amount);
-        uint256 backUni = _quoteV2(uni, usdc, weth, viaSushi);
+        uint256 viaUni = _quoteV2(uni, forkWeth, forkUsdc, amount);
+        uint256 backSushi = _quoteV2(sushi, forkUsdc, forkWeth, viaUni);
+        uint256 viaSushi = _quoteV2(sushi, forkWeth, forkUsdc, amount);
+        uint256 backUni = _quoteV2(uni, forkUsdc, forkWeth, viaSushi);
         if (backSushi > amount && backSushi >= backUni) return (uni, sushi, true);
         if (backUni > amount) return (sushi, uni, true);
         return (uni, sushi, false);
@@ -243,18 +244,18 @@ contract MockERC20 {
 }
 
 contract MockV2Pair {
-    address public token0;
-    address public token1;
+    address payable public token0;
+    address payable public token1;
     uint112 public reserve0;
     uint112 public reserve1;
 
     constructor(address a, address b) {
         if (a < b) {
-            token0 = a;
-            token1 = b;
+            token0 = payable(a);
+            token1 = payable(b);
         } else {
-            token0 = b;
-            token1 = a;
+            token0 = payable(b);
+            token1 = payable(a);
         }
     }
 
@@ -292,8 +293,8 @@ contract MockVault {
         uint256[] calldata amounts,
         bytes calldata userData
     ) external {
-        MockERC20(tokens[0]).transfer(recipient, amounts[0]);
+        MockERC20(payable(tokens[0])).transfer(recipient, amounts[0]);
         uint256[] memory fees = new uint256[](amounts.length);
-        FlashArbExecutor(recipient).receiveFlashLoan(tokens, amounts, fees, userData);
+        FlashArbExecutor(payable(recipient)).receiveFlashLoan(tokens, amounts, fees, userData);
     }
 }

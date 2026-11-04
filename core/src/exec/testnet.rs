@@ -128,7 +128,7 @@ impl TestnetSender {
             status,
             signed_delta(before, after),
             gas_used,
-            gas_used.saturating_mul(gas_price),
+            (gas_used as u128).saturating_mul(gas_price),
             Some(hash),
         ))
     }

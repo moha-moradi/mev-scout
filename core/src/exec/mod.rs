@@ -16,7 +16,7 @@ pub use artifacts::{creation_bytecode, deployed_bytecode, ABI_VERSION};
 pub use calldata::{encode_execute, EXECUTE_SIG};
 pub use plan::{plan_from_opportunity, ExecLeg, ExecPlan, PlanError};
 pub use session::{execute_ledger, ExecContext};
-pub use testnet::assert_testnet_chain;
+pub use testnet::{assert_testnet_chain, TestnetSender};
 
 use std::str::FromStr;
 

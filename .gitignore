@@ -1,5 +1,7 @@
 /target
 /cache
+/contracts/out
+/contracts/cache
 tmp_error.txt
 tmp_output.txt
 *.log

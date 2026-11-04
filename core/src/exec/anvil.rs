@@ -157,7 +157,7 @@ pub async fn send_exec(
         status,
         net,
         gas_used,
-        gas_used.saturating_mul(gas_price),
+        (gas_used as u128).saturating_mul(gas_price),
         Some(hash),
     ))
 }

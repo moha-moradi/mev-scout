@@ -1141,4 +1141,66 @@ mod tests {
             FillSkipReason::SimPriceConsumed | FillSkipReason::SimRepayShortfall
         )));
     }
+
+    #[test]
+    fn apply_executed_books_positive_net_and_counts_reverts() {
+        let policy = LedgerPolicy {
+            starting_gas_wei: 1_000_000,
+            reserve_wei: 0,
+            max_fills_per_block: 32,
+        };
+        let good = opp(
+            1,
+            0,
+            Strategy::TwoHopArb,
+            address!("0x0000000000000000000000000000000000000011"),
+            address!("0x0000000000000000000000000000000000000022"),
+            500,
+            100,
+        );
+        let mut bad = opp(
+            1,
+            1,
+            Strategy::TwoHopArb,
+            address!("0x0000000000000000000000000000000000000033"),
+            address!("0x0000000000000000000000000000000000000044"),
+            400,
+            50,
+        );
+        bad.canonical_id = Some("revert-me".into());
+        let jit = opp(
+            1,
+            2,
+            Strategy::Jit,
+            address!("0x0000000000000000000000000000000000000055"),
+            address!("0x0000000000000000000000000000000000000066"),
+            900,
+            10,
+        );
+        let mut queued = vec![
+            ExecAttempt::ran(true, 250, 80_000, 40, Some("0xabc".into())),
+            ExecAttempt::ran(false, -10, 21_000, 10, Some("0xdef".into())),
+        ];
+        let r = policy.apply_executed(
+            &[good, bad, jit],
+            SimMode::Assumed,
+            "revm",
+            |_| queued.remove(0),
+        );
+        assert_eq!(r.fills.len(), 1);
+        assert_eq!(r.fills[0].net_wei, 250);
+        assert_eq!(r.fills[0].tx_hash.as_deref(), Some("0xabc"));
+        assert_eq!(r.fills[0].exec_mode.as_deref(), Some("revm"));
+        assert_eq!(r.exec_ok, 1);
+        assert_eq!(r.exec_revert, 1);
+        assert_eq!(r.ending_gas_wei, 1_000_000 + 250);
+        assert!(r
+            .skips
+            .iter()
+            .any(|s| s.reason == FillSkipReason::ExecStrategyUnsupported));
+        assert!(r
+            .skips
+            .iter()
+            .any(|s| s.reason == FillSkipReason::ExecRevert));
+    }
 }
