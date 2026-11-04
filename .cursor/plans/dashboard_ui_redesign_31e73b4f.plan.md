@@ -4,16 +4,16 @@ overview: "Rebuild the static dashboard HTML into a single-composition, MEV.ZONE
 todos:
   - id: shell
     content: "Replace dashboard_template.html shell: no P-rail; header + hero + sections"
-    status: pending
+    status: completed
   - id: render
     content: "Rewrite JS render path: Live, Activity, Pools/Searchers, collapsed Details"
-    status: pending
+    status: completed
   - id: visual
     content: Apply light Avalanche palette + Fraunces/Plex; restyle SVG/tables
-    status: pending
+    status: completed
   - id: smoke
     content: Regenerate results/dash.html and verify file:// first viewport
-    status: pending
+    status: in_progress
 isProject: false
 ---
 
