@@ -119,12 +119,14 @@ Reuse: `input_amount` / `path` / pool kinds از [`core/src/types/opportunity.rs
 
 ## Verification
 
-1. `forge test` (با fork RPC) سبز برای executor
-2. `cargo test -p mev-scout-core` شامل builder + apply_executed
-3. `live --sim state` رفتار قبلی را حفظ کند
-4. `live --exec revm --blocks 32` → fills ≤ state-sim، revertها skip شوند
-5. `live --exec anvil --blocks 8` روی fork محلی → tx hashهای Anvil در report
-6. اختیاری: همان run با recon `paper_vs_executed` بین state-sim net و exec net
+1. `forge test` (با fork RPC) سبز برای executor — **done** (7/7 offline; fork leg needs `FORK_RPC_URL`)
+2. `cargo test -p mev-scout-core` شامل builder + apply_executed — **done** (`exec::*`, `apply_executed`, `paper::recon`, anvil same-pool)
+3. `live --sim state` رفتار قبلی را حفظ کند — **done** (wired; default `assumed` unchanged)
+4. `live --exec revm --blocks 32` → fills ≤ state-sim، revertها skip شوند — **smoke done** (`--blocks 8` printed `exec: revm` + recon; tip RPC rate-limits may yield 0 fills)
+5. `live --exec anvil --blocks 8` روی fork محلی → tx hashهای Anvil در report — unit/integration covered (`same_pool_second_candidate_earns_less`); tip smoke needs archive/local RPC (public free RPC 408 on anvil genesis; wait_ready now surfaces stderr + hint)
+6. اختیاری: همان run با recon `paper_vs_executed` بین state-sim net و exec net — **done** (`reconcile_sim_vs_exec` when `--exec` + `--sim state`)
+
+Docs polish (post-E4 residual): `docs/CLI.md`, `docs/ARCHITECTURE.md`, `README.md` updated for `--exec` / FlashArb. Anvil wait: 120s fork timeout + stderr capture.
 
 ## Residual honesty
 

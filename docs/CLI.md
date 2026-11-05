@@ -149,6 +149,9 @@ mev-scout live --loop --duration 1h
 mev-scout live --loop --max-blocks 50
 mev-scout live --initial-balance 1000000000000000000
 mev-scout live --reserve 500000000000000000
+mev-scout live --sim state                    # state-sim ledger (pool seeds)
+mev-scout live --exec revm --blocks 32        # FlashArb on historical revm state
+mev-scout live --exec anvil --blocks 8        # same path on a local Anvil fork
 # poll_interval_ms → [live]; record_rejections → TOML
 # starting wallet with no flag → [paper].starting_gas_wei
 ```
@@ -161,6 +164,8 @@ mev-scout live --reserve 500000000000000000
 | `--duration` / `--max-blocks` | Stop conditions; **both require `--loop`** |
 | `--initial-balance <wei>` | Virtual wallet seed; overrides `[paper].starting_gas_wei` |
 | `--reserve <wei>` | Gas kept back from the wallet; overrides `[paper].reserve_wei` |
+| `--sim <assumed\|state>` | Ledger fill mode; overrides `[paper].sim` (default `assumed`) |
+| `--exec <none\|revm\|anvil\|testnet>` | Virtual FlashArb backend; overrides `[paper].exec` (default `none`). Never mainnet broadcast |
 
 #### Implicit bootstrap
 
@@ -544,27 +549,53 @@ Gates that depend on this table:
 
 ### 3.7 Ledger (was `paper`)
 
-Theoretical session accounting over detected opportunities: a native gas wallet,
-greedy per-block fill selection (pool-conflict aware), labeled
-`PAPER (theoretical, no competition)`. The ledger is a pure post-process applied
-by `live` after every pass, and persisted once at session end. No mempool
-racing, no Solidity executor.
+Session accounting over detected opportunities: a native gas wallet, greedy
+per-block fill selection (pool-conflict aware), labeled
+`PAPER (theoretical, no competition)`. Applied by `live` after every pass and
+persisted once at session end. No mempool racing and **no mainnet broadcast**.
+
+Fill modes (`--sim` / `[paper].sim`):
+
+| Mode | Meaning |
+|---|---|
+| `assumed` (default) | Credit detector claim net after gas |
+| `state` | Quote legs against seeded pool state (`apply_simulated`) |
+
+Virtual execution (`--exec` / `[paper].exec`) — opt-in FlashArb path via
+`contracts/FlashArbExecutor` (Balancer flash → V2/V3 legs). Default `none`
+leaves `--sim` alone:
+
+| Mode | Backend |
+|---|---|
+| `none` | Paper / state-sim only |
+| `revm` | In-process EVM on historical RPC state; ledger from executed net |
+| `anvil` | Local Anvil mainnet-fork; real txs, Anvil tx hashes in report |
+| `testnet` | Known testnets only (Sepolia, Amoy, Fuji, …); needs `exec_key` / `MEV_SCOUT_EXEC_KEY` |
+
+With `--exec` + `--sim state`, `live` also runs state-vs-exec recon
+(`recon: state vs exec N pass / M fail / …`). JIT and non-V2/V3 paths skip
+explicitly (`ExecStrategyUnsupported`).
 
 The standalone `paper` command was removed — see §3.2 for the flags.
 
 `[paper]` TOML: `starting_gas_wei`, `reserve_wei`, `max_fills_per_block`
-(hard-capped at 32/block). Balance and reserve may be overridden per session;
-`max_fills_per_block` is TOML-only, since it is a tuning knob against the hard
-cap rather than a per-run decision:
+(hard-capped at 32/block), `sim`, `exec`, `exec_key`, `executor_address`,
+`anvil_bin`, `anvil_url`. Balance and reserve may be overridden per session;
+`max_fills_per_block` is TOML-only:
 
 ```powershell
 mev-scout live --initial-balance 1000000000000000000
 mev-scout live --reserve 500000000000000000
+mev-scout live --sim state --exec revm --blocks 32
 ```
 
 ```mermaid
 flowchart TB
-  detect["live / opportunities"] --> ledger["paper::LedgerPolicy"]
+  detect["live / opportunities"] --> gate{"exec mode"}
+  gate -->|none| ledger["assumed or state-sim"]
+  gate -->|revm / anvil / testnet| build["FlashArb bundle"]
+  build --> run["EVM backend"]
+  run --> ledger
   ledger --> sess["paper_sessions + paper_fills"]
-  sess --> rep["report (session P&L)"]
+  sess --> rep["report (sim + exec lines)"]
 ```

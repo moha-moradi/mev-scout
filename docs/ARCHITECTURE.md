@@ -57,6 +57,7 @@ flowchart TB
             SIGS["sigs — 4byte signature resolver"]
             CHAIN["chain — per-chain topology / timing"]
             PAPER2["paper — LedgerPolicy · store · recon"]
+            EXEC["exec — FlashArb plan · revm/anvil/testnet"]
             MISC["data · error · dex_type · utils · progress"]
         end
     end
@@ -85,6 +86,11 @@ flowchart TB
     POOL --> CACHE
     EXPL --> RPC
     COREJOBS -. "opportunities always;<br/>rejections if record_rejections" .-> EXPL
+    COREJOBS --> PAPER2
+    COREJOBS --> EXEC
+    EXEC --> REPLAY
+    EXEC -. "optional Anvil/testnet txs" .-> RPC
+    PAPER2 --> EXEC
     CFG --> TYPES
     PIPE --> TYPES
     FETCH -.-> SIGS
@@ -97,6 +103,7 @@ flowchart TB
 - `cache` (SQLite) is the local-first backbone — `live` fetches blocks into it; the runner reads from it; pool discovery persists pools/tokens into it.
 - `rpc` fronts the chain for everything: fetching, `eth_call` pool state, and replay's on-demand state misses (via `CachedRpcDb`).
 - `explorer` answers "what was made" (realized MEV forensics) vs the detectors' "what could be made" — it ingests via RPC into its own SQLite store (`explorer-{chain}.sqlite`) so live index writes never contend with replay-path cache reads. Scanner `live` always persists detected opportunities there (via in-memory `ResultsFile` DTO); `record_rejections = true` also stores rejected candidates for miss attribution.
+- `exec` is opt-in from `live --exec revm|anvil|testnet`: builds Balancer flash-arb calldata from `MevOpportunity`, runs it on revm / local Anvil fork / known testnets, and books P&L via `LedgerPolicy::apply_executed`. Default remains paper/`--sim` only (no mainnet submit). Foundry sources live in `contracts/`.
 
 ---
 
@@ -140,7 +147,8 @@ The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogO
 |---|---|---|
 | SQLite `cache.db` (blocks, receipts, state, discovered pools, tokens, run manifests) | `live` (incl. bootstrap), `discover` | `live`, `discover`, `report` (manifests) |
 | Explorer store `explorer-{chain}.sqlite` — `opportunities` (+ optional `rejected_candidates`) | `live` (always opportunities; rejections when `record_rejections = true`) | `report` |
-| Explorer store — `paper_sessions` / `paper_fills` | `live` (one session row written at session end) | `report` (session P&L) |
+| Explorer store — `paper_sessions` / `paper_fills` (incl. optional `exec_*` / `sim_*` columns) | `live` (one session row written at session end; fills from assumed, state-sim, or executed net) | `report` (session P&L + `sim:` / `exec:` lines) |
+| Foundry artifacts `contracts/out/FlashArbExecutor.sol/*.json` | `forge build` | `core::exec::artifacts` (embedded bytecode/ABI) |
 | Explorer store `explorer-{chain}.sqlite` — forensic layer (blocks, txs, transfers, swaps, `mev_ops`, sync_state, …) | `explorer index` | `explorer` CLI (report + `explorer dashboard`) |
 | Static dashboard `results/*.html` / `*.json` (gitignored) | `explorer dashboard` (read-only; never migrates) | browser / jq |
 | Signature DB (4byte directory snapshot) | resolver only (`core::sigs::SignatureResolver`); the downloader and bundled fallback tables were removed as unreachable. Still **not wired** into `run`/`live` ingest | tx decoding (future) |

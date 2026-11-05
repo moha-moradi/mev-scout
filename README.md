@@ -68,6 +68,10 @@ and CWD). Full flag coverage lives in
 # Detect at the tip → opportunities + paper P&L (ledger is always on)
 cargo run -p mev-scout-cli -- --config mev-scout.toml live
 
+# Opt-in virtual FlashArb (revm / Anvil fork / testnet — never mainnet)
+mev-scout live --sim state --exec revm --blocks 32
+mev-scout live --exec anvil --blocks 8
+
 # Rebuild the pool universe (hybrid TVL ranking by default)
 mev-scout discover
 mev-scout discover --blocks 2000
@@ -93,8 +97,10 @@ mev-scout explorer
 | `explorer` | Realized revenue report (bare); `index` for ingest | [§3.6](docs/CLI.md#36-explorer--realized-mev-forensics) |
 
 `run` and `paper` were folded into `live`, which detects at chain tip and
-always runs its paper ledger (`--initial-balance`, `--reserve`). At session
-end it prints and persists cost, remaining balance, net P&L and a
+always runs its paper ledger (`--initial-balance`, `--reserve`). Opt-in
+`--sim state` and `--exec revm|anvil|testnet` book fills from state quotes
+or executed FlashArb net (see [§3.7](docs/CLI.md#37-ledger-was-paper)).
+At session end it prints and persists cost, remaining balance, net P&L and a
 per-strategy breakdown; `report` shows a run's ledger session alongside its
 results. `--max-fills-per-block` moved to `[paper]` in the TOML.
 Bare `explorer` is the revenue report; `explorer index` covers both historical
@@ -113,6 +119,7 @@ and `--incremental`. Source and enrich live under `[discover]` in TOML.
 |---|---|
 | `core/` | Library: pool state, quoting, detectors, cache & explorer stores, config |
 | `cli/` | `mev-scout` binary — `live`, `discover`, `report`, `explorer`, … |
+| `contracts/` | Foundry `FlashArbExecutor` (Balancer flash + V2/V3 legs) for `--exec` |
 | `cache/` | SQLite DBs (per-chain scanner cache + explorer stores), gitignored |
 
 Pool discovery defaults to `hybrid`: factory events over the lookback window

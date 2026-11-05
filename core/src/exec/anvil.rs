@@ -1,5 +1,7 @@
 //! Local Anvil fork: spawn or attach, deploy the executor, send the same calldata.
+use std::io::Read;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use alloy::primitives::{Address, Bytes, U256};
@@ -9,9 +11,16 @@ use crate::paper::types::{ExecAttempt, FillSkipReason};
 
 use super::artifacts::creation_bytecode;
 
+/// Dev (no fork) is instant; forked tip against a public RPC often needs a minute+.
+const READY_TIMEOUT_DEV: Duration = Duration::from_secs(20);
+const READY_TIMEOUT_FORK: Duration = Duration::from_secs(120);
+
 pub struct AnvilNode {
     pub url: String,
     child: Option<Child>,
+    forked: bool,
+    /// Tail of anvil stderr, filled by a reader thread (non-blocking for wait_ready).
+    stderr: Arc<Mutex<String>>,
 }
 
 impl Drop for AnvilNode {
@@ -26,7 +35,12 @@ impl Drop for AnvilNode {
 impl AnvilNode {
     pub fn attach(url: String) -> anyhow::Result<Self> {
         assert_loopback(&url)?;
-        Ok(Self { url, child: None })
+        Ok(Self {
+            url,
+            child: None,
+            forked: false,
+            stderr: Arc::new(Mutex::new(String::new())),
+        })
     }
 
     /// Dev chain, no fork. Used by the deploy smoke test.
@@ -40,37 +54,97 @@ impl AnvilNode {
 
     fn start(bin: &str, fork_url: Option<&str>, block: Option<u64>) -> anyhow::Result<Self> {
         let port = pick_port();
+        let forked = fork_url.is_some();
         let args = anvil_args(bin, fork_url, block, port);
         let mut cmd = Command::new(&args[0]);
+        // Keep stderr so a failed fork (bad RPC / block) surfaces in wait_ready.
         cmd.args(&args[1..])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let child = cmd.spawn().map_err(|e| {
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| {
             anyhow::anyhow!(
                 "failed to spawn anvil ({bin}): {e}. Install foundry and put `anvil` on PATH, \
                  or set [paper].anvil_url to a loopback fork."
             )
         })?;
+        let stderr = Arc::new(Mutex::new(String::new()));
+        if let Some(pipe) = child.stderr.take() {
+            spawn_stderr_reader(pipe, Arc::clone(&stderr));
+        }
         let url = format!("http://127.0.0.1:{port}");
         Ok(Self {
             url,
             child: Some(child),
+            forked,
+            stderr,
         })
     }
 
-    pub async fn wait_ready(&self) -> anyhow::Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(20);
+    pub async fn wait_ready(&mut self) -> anyhow::Result<()> {
+        let timeout = if self.forked {
+            READY_TIMEOUT_FORK
+        } else {
+            READY_TIMEOUT_DEV
+        };
+        let deadline = Instant::now() + timeout;
         let mut last = String::from("not started");
         while Instant::now() < deadline {
+            if let Some(child) = self.child.as_mut() {
+                if let Ok(Some(status)) = child.try_wait() {
+                    anyhow::bail!(
+                        "anvil exited early ({status}) before eth_chainId answered. stderr:\n{}",
+                        self.stderr_tail()
+                    );
+                }
+            }
             match rpc(&self.url, "eth_chainId", json!([])).await {
                 Ok(_) => return Ok(()),
                 Err(e) => last = e.to_string(),
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        anyhow::bail!("anvil at {} did not answer eth_chainId: {last}", self.url)
+        anyhow::bail!(
+            "anvil at {} did not answer eth_chainId within {}s: {last}. stderr:\n{}",
+            self.url,
+            timeout.as_secs(),
+            self.stderr_tail()
+        )
     }
+
+    fn stderr_tail(&self) -> String {
+        self.stderr
+            .lock()
+            .map(|s| {
+                if s.len() > 4_000 {
+                    s[s.len() - 4_000..].to_string()
+                } else {
+                    s.clone()
+                }
+            })
+            .unwrap_or_default()
+    }
+}
+
+fn spawn_stderr_reader(mut pipe: impl Read + Send + 'static, sink: Arc<Mutex<String>>) {
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        loop {
+            match pipe.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Ok(mut s) = sink.lock() {
+                        s.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        // Cap growth so a noisy fork does not balloon RAM.
+                        if s.len() > 16_000 {
+                            *s = s[s.len() - 8_000..].to_string();
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
 }
 
 pub fn anvil_args(bin: &str, fork_url: Option<&str>, block: Option<u64>, port: u16) -> Vec<String> {
@@ -320,7 +394,7 @@ mod tests {
             .build()
             .expect("runtime");
         rt.block_on(async {
-            let node = AnvilNode::spawn_dev(&bin).expect("spawn");
+            let mut node = AnvilNode::spawn_dev(&bin).expect("spawn");
             node.wait_ready().await.expect("ready");
             let from = super::super::ANVIL_DEFAULT_ADDRESS;
             impersonate_and_fund(&node.url, from).await.expect("fund");
@@ -367,7 +441,7 @@ mod tests {
             .build()
             .expect("runtime");
         rt.block_on(async {
-            let node = AnvilNode::spawn_dev(&bin).expect("spawn");
+            let mut node = AnvilNode::spawn_dev(&bin).expect("spawn");
             node.wait_ready().await.expect("ready");
             let from = super::super::ANVIL_DEFAULT_ADDRESS;
             impersonate_and_fund(&node.url, from).await.expect("fund");

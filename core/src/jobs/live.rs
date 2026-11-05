@@ -613,8 +613,15 @@ impl<'a> LiveContext<'a> {
                 if fork.is_empty() {
                     anyhow::bail!("--exec anvil needs an RPC url to fork");
                 }
-                let node = AnvilNode::spawn(&bin, &fork, self.tip)?;
-                node.wait_ready().await?;
+                let mut node = AnvilNode::spawn(&bin, &fork, self.tip)?;
+                node.wait_ready().await.map_err(|e| {
+                    anyhow::anyhow!(
+                        "{e}\n--exec anvil forks `{fork}` at block {}. \
+                         Public/free RPCs often 408 here; use a local tip node \
+                         or set [paper].anvil_url to a ready loopback fork.",
+                        self.tip
+                    )
+                })?;
                 self.progress
                     .log(&format!("exec: anvil fork at {}", node.url));
                 self.exec.anvil = Some(node);
