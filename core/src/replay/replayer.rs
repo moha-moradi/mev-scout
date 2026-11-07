@@ -9,10 +9,11 @@
 //! - [`CachedRpcDb`] — lazy-fetch database bridging SQLite cache and RPC for
 //!   revm's `Database` trait
 //!
-//! ## Polygon special handling
-//! Chain 137 (Polygon) requires BLS12-377 precompile registration and state
-//! receiver stubs. See [`register_polygon_precompiles`] and
-//! [`spec_id_for_block`] for details.
+//! ## Chain schedules
+//! [`spec_id_for_header`] maps a block header to the chain's real EVM fork
+//! (Ethereum and Polygon by block; BSC and Avalanche by block/timestamp). L2s
+//! and unknown chains use the latest deployed spec. See
+//! [`register_polygon_precompiles`] for Polygon-specific state setup.
 //!
 //! ## Receipt verification
 //! After each transaction, `verify_receipt` compares the revm execution
@@ -22,7 +23,7 @@
 macro_rules! build_mainnet_evm {
     ($self:expr, $block_num:expr, $block:expr) => {{
         let cache_db = $self.create_db_for_block($block_num)?;
-        let cfg_env = $self.build_cfg_env($block_num);
+        let cfg_env = $self.build_cfg_env($block_num, $block.timestamp, $block.mix_hash);
         let block_env = $self.build_block_env($block);
         Context::mainnet()
             .with_db(cache_db)
@@ -66,7 +67,16 @@ fn addr_from_last_byte(b: u8) -> Address {
     Address::from(bytes)
 }
 
-/// Select EVM spec ID based on chain and block number.
+/// Latest *deployed* EVM spec in revm. `SpecId::NEXT` is Amsterdam, whose
+/// EIP-8037 state-gas rules no supported chain has activated.
+pub const LATEST_LIVE_SPEC: SpecId = SpecId::OSAKA;
+
+/// Select the EVM spec for a block header.
+///
+/// Ethereum and Polygon activate by block number. BSC and Avalanche activate
+/// their later forks by timestamp, so replay paths pass the header timestamp
+/// here. Pass `u64::MAX` when only the block number is known; time-based chains
+/// then use their latest supported spec.
 ///
 /// Ethereum mainnet block activations:
 /// - Frontier: 0
@@ -84,28 +94,69 @@ fn addr_from_last_byte(b: u8) -> Address {
 /// - Prague: 22,431,084
 /// - Osaka: 23,935,694 (Amsterdam is not scheduled; use the latest live fork)
 ///
-/// Polygon hardfork activation blocks (Bor):
-/// - Bhilai (EIP-7702 / Pectra): 73,440,256
-/// - Agra (Cancun): 50,523,000
+/// Polygon (Bor) block activations:
+/// - Petersburg: 0
+/// - Istanbul: 3,395,000
+/// - Berlin: 14,750,000
 /// - London: 23,850,000
+/// - Shanghai: 50,523,000
+/// - Cancun: 54,876,000
+/// - Prague: 73,440,256
 ///
-/// Chains without a known schedule use revm's latest spec (`NEXT`).
-pub fn spec_id_for_block(chain_id: u64, block_number: u64) -> SpecId {
+/// BSC block/timestamp activations:
+/// - Istanbul: 0
+/// - Berlin + London: block 31,302,048
+/// - Shanghai: time 1,705,996,800
+/// - Cancun: time 1,718,863,500
+/// - Prague: time 1,742,436,600
+/// - Osaka: time 1,777,343,400
+///
+/// Avalanche C-Chain block/timestamp activations:
+/// - Istanbul: 0
+/// - Berlin: block 1,640,340
+/// - London: block 3,308,552
+/// - Shanghai (Durango): time 1,709,740,800
+/// - Cancun (Etna): time 1,734,368,400
+///
+/// Arbitrum One (ArbOS version in `mixHash[16..24]`):
+/// - Merge: version < 11
+/// - Shanghai: version >= 11
+/// - Cancun: version >= 20
+/// - Prague: version >= 40
+/// - Osaka: version >= 50
+///
+/// OP Mainnet timestamps:
+/// - Canyon: 1,704,992,401 (Shanghai)
+/// - Ecotone: 1,710,374,401 (Cancun)
+/// - Isthmus: 1,746,806,401 (Prague)
+///
+/// Arbitrum, Base, and OP Mainnet follow their own L2 upgrade schedules
+/// (ArbOS / OP Stack), which do not map onto Ethereum block heights. Arbitrum
+/// encodes its ArbOS version in `mixHash[16..24]`; OP uses the timestamps
+/// recorded in the OP Stack config. Base has its own activation schedule and
+/// uses the latest live spec here. Unknown chains do the same.
+pub fn spec_id_for_header(
+    chain_id: u64,
+    block_number: u64,
+    timestamp: u64,
+    mix_hash: B256,
+) -> SpecId {
     match chain_id {
         1 => ethereum_spec_id(block_number),
-        137 => {
-            if block_number >= 73_440_256 {
-                SpecId::PRAGUE
-            } else if block_number >= 50_523_000 {
-                SpecId::CANCUN
-            } else if block_number >= 23_850_000 {
-                SpecId::LONDON
-            } else {
-                SpecId::BERLIN
-            }
-        }
-        _ => SpecId::NEXT,
+        137 => polygon_spec_id(block_number),
+        56 => bsc_spec_id(block_number, timestamp),
+        43114 => avalanche_spec_id(block_number, timestamp),
+        42161 => arbitrum_spec_id(mix_hash),
+        10 => op_spec_id(timestamp),
+        _ => LATEST_LIVE_SPEC,
     }
+}
+
+/// Block-only convenience. Time-based chains (BSC/Avalanche/OP) and
+/// header-gated chains (Arbitrum) return their latest supported spec because
+/// the header is unknown; replay paths should call [`spec_id_for_header`].
+pub fn spec_id_for_block(chain_id: u64, block_number: u64) -> SpecId {
+    spec_id_for_header(chain_id, block_number, u64::MAX, B256::ZERO)
 }
 
 fn ethereum_spec_id(block_number: u64) -> SpecId {
@@ -137,6 +188,101 @@ fn ethereum_spec_id(block_number: u64) -> SpecId {
         SpecId::HOMESTEAD
     } else {
         SpecId::FRONTIER
+    }
+}
+
+fn polygon_spec_id(block_number: u64) -> SpecId {
+    if block_number >= 73_440_256 {
+        SpecId::PRAGUE
+    } else if block_number >= 54_876_000 {
+        SpecId::CANCUN
+    } else if block_number >= 50_523_000 {
+        SpecId::SHANGHAI
+    } else if block_number >= 23_850_000 {
+        SpecId::LONDON
+    } else if block_number >= 14_750_000 {
+        SpecId::BERLIN
+    } else if block_number >= 3_395_000 {
+        SpecId::ISTANBUL
+    } else {
+        SpecId::PETERSBURG
+    }
+}
+
+fn bsc_spec_id(block_number: u64, timestamp: u64) -> SpecId {
+    if block_number < 31_302_048 {
+        return SpecId::ISTANBUL;
+    }
+    if timestamp == u64::MAX {
+        return LATEST_LIVE_SPEC;
+    }
+    if timestamp >= 1_777_343_400 {
+        SpecId::OSAKA
+    } else if timestamp >= 1_742_436_600 {
+        SpecId::PRAGUE
+    } else if timestamp >= 1_718_863_500 {
+        SpecId::CANCUN
+    } else if timestamp >= 1_705_996_800 {
+        SpecId::SHANGHAI
+    } else {
+        SpecId::LONDON
+    }
+}
+
+fn avalanche_spec_id(block_number: u64, timestamp: u64) -> SpecId {
+    if block_number < 1_640_340 {
+        return SpecId::ISTANBUL;
+    }
+    if block_number < 3_308_552 {
+        return SpecId::BERLIN;
+    }
+    if timestamp == u64::MAX {
+        return SpecId::CANCUN;
+    }
+    if timestamp >= 1_734_368_400 {
+        SpecId::CANCUN
+    } else if timestamp >= 1_709_740_800 {
+        SpecId::SHANGHAI
+    } else {
+        SpecId::LONDON
+    }
+}
+
+/// Arbitrum stores its ArbOS version in `mixHash[16..24]` (big-endian u64).
+/// A zero version means the caller had no header (block-only convenience), so
+/// use the latest live spec instead of regressing to Merge.
+fn arbitrum_spec_id(mix_hash: B256) -> SpecId {
+    let bytes = mix_hash.as_slice();
+    let mut word = [0u8; 8];
+    word.copy_from_slice(&bytes[16..24]);
+    let version = u64::from_be_bytes(word);
+    if version == 0 {
+        LATEST_LIVE_SPEC
+    } else if version >= 50 {
+        SpecId::OSAKA
+    } else if version >= 40 {
+        SpecId::PRAGUE
+    } else if version >= 20 {
+        SpecId::CANCUN
+    } else if version >= 11 {
+        SpecId::SHANGHAI
+    } else {
+        SpecId::MERGE
+    }
+}
+
+fn op_spec_id(timestamp: u64) -> SpecId {
+    if timestamp == u64::MAX {
+        return LATEST_LIVE_SPEC;
+    }
+    if timestamp >= 1_746_806_401 {
+        SpecId::PRAGUE
+    } else if timestamp >= 1_710_374_401 {
+        SpecId::CANCUN
+    } else if timestamp >= 1_704_992_401 {
+        SpecId::SHANGHAI
+    } else {
+        SpecId::MERGE
     }
 }
 
@@ -323,8 +469,8 @@ impl BlockReplayer {
         self.cache.has_block(block_num)
     }
 
-    pub(crate) fn build_cfg_env(&self, block_num: u64) -> CfgEnv {
-        let spec = spec_id_for_block(self.chain_id, block_num);
+    pub(crate) fn build_cfg_env(&self, block_num: u64, timestamp: u64, mix_hash: B256) -> CfgEnv {
+        let spec = spec_id_for_header(self.chain_id, block_num, timestamp, mix_hash);
         let mut cfg = CfgEnv::new_with_spec(spec);
         cfg.chain_id = self.chain_id;
         cfg.limit_contract_code_size = Some(0x6000);
@@ -332,7 +478,7 @@ impl BlockReplayer {
     }
 
     pub(crate) fn build_block_env(&self, block: &BlockData) -> BlockEnv {
-        let spec = spec_id_for_block(self.chain_id, block.number);
+        let spec = spec_id_for_header(self.chain_id, block.number, block.timestamp, block.mix_hash);
         let blob_excess_gas_and_price = if spec >= SpecId::CANCUN {
             Some(BlobExcessGasAndPrice::new_with_spec(0, spec))
         } else {
@@ -354,7 +500,8 @@ impl BlockReplayer {
     /// Next-block env for pending inclusion: N+1, timestamp+12, basefee×1.125.
     pub(crate) fn build_next_block_env(&self, prev: &BlockData) -> BlockEnv {
         let next_num = prev.number.saturating_add(1);
-        let spec = spec_id_for_block(self.chain_id, next_num);
+        let next_ts = prev.timestamp.saturating_add(12);
+        let spec = spec_id_for_header(self.chain_id, next_num, next_ts, prev.mix_hash);
         let blob_excess_gas_and_price = if spec >= SpecId::CANCUN {
             Some(BlobExcessGasAndPrice::new_with_spec(0, spec))
         } else {
@@ -365,7 +512,7 @@ impl BlockReplayer {
         BlockEnv {
             number: U256::from(next_num),
             beneficiary: prev.coinbase,
-            timestamp: U256::from(prev.timestamp.saturating_add(12)),
+            timestamp: U256::from(next_ts),
             gas_limit: prev.gas_limit,
             basefee: next_base as u64,
             difficulty: prev.difficulty,
@@ -822,16 +969,144 @@ mod tests {
     }
 
     #[test]
-    fn polygon_keeps_its_own_schedule() {
-        assert_eq!(spec_id_for_block(137, 0), SpecId::BERLIN);
-        assert_eq!(spec_id_for_block(137, 23_849_999), SpecId::BERLIN);
-        assert_eq!(spec_id_for_block(137, 23_850_000), SpecId::LONDON);
-        assert_eq!(spec_id_for_block(137, 50_523_000), SpecId::CANCUN);
-        assert_eq!(spec_id_for_block(137, 73_440_256), SpecId::PRAGUE);
+    fn polygon_uses_the_bor_schedule() {
+        let cases = [
+            (0, SpecId::PETERSBURG),
+            (3_394_999, SpecId::PETERSBURG),
+            (3_395_000, SpecId::ISTANBUL),
+            (14_749_999, SpecId::ISTANBUL),
+            (14_750_000, SpecId::BERLIN),
+            (23_849_999, SpecId::BERLIN),
+            (23_850_000, SpecId::LONDON),
+            (50_522_999, SpecId::LONDON),
+            (50_523_000, SpecId::SHANGHAI),
+            (54_875_999, SpecId::SHANGHAI),
+            (54_876_000, SpecId::CANCUN),
+            (73_440_255, SpecId::CANCUN),
+            (73_440_256, SpecId::PRAGUE),
+        ];
+        for (block, expected) in cases {
+            assert_eq!(
+                spec_id_for_block(137, block),
+                expected,
+                "Polygon block {block}"
+            );
+        }
     }
 
     #[test]
-    fn unknown_chains_keep_the_latest_spec() {
-        assert_eq!(spec_id_for_block(999_999, 1), SpecId::NEXT);
+    fn bsc_uses_block_then_time_activations() {
+        assert_eq!(
+            spec_id_for_header(56, 31_302_047, 1_700_000_000, B256::ZERO),
+            SpecId::ISTANBUL
+        );
+        assert_eq!(
+            spec_id_for_header(56, 31_302_048, 1_700_000_000, B256::ZERO),
+            SpecId::LONDON
+        );
+        assert_eq!(
+            spec_id_for_header(56, 31_302_048, 1_705_996_800, B256::ZERO),
+            SpecId::SHANGHAI
+        );
+        assert_eq!(
+            spec_id_for_header(56, 31_302_048, 1_718_863_500, B256::ZERO),
+            SpecId::CANCUN
+        );
+        assert_eq!(
+            spec_id_for_header(56, 31_302_048, 1_742_436_600, B256::ZERO),
+            SpecId::PRAGUE
+        );
+        assert_eq!(
+            spec_id_for_header(56, 31_302_048, 1_777_343_400, B256::ZERO),
+            SpecId::OSAKA
+        );
+        // Block-only callers get the latest supported spec.
+        assert_eq!(spec_id_for_block(56, 40_000_000), LATEST_LIVE_SPEC);
+    }
+
+    #[test]
+    fn avalanche_uses_block_then_time_activations() {
+        assert_eq!(
+            spec_id_for_header(43114, 1_640_339, 1_700_000_000, B256::ZERO),
+            SpecId::ISTANBUL
+        );
+        assert_eq!(
+            spec_id_for_header(43114, 1_640_340, 1_700_000_000, B256::ZERO),
+            SpecId::BERLIN
+        );
+        assert_eq!(
+            spec_id_for_header(43114, 3_308_551, 1_700_000_000, B256::ZERO),
+            SpecId::BERLIN
+        );
+        assert_eq!(
+            spec_id_for_header(43114, 3_308_552, 1_700_000_000, B256::ZERO),
+            SpecId::LONDON
+        );
+        assert_eq!(
+            spec_id_for_header(43114, 3_308_552, 1_709_740_800, B256::ZERO),
+            SpecId::SHANGHAI
+        );
+        assert_eq!(
+            spec_id_for_header(43114, 3_308_552, 1_734_368_400, B256::ZERO),
+            SpecId::CANCUN
+        );
+        assert_eq!(spec_id_for_block(43114, 100_000_000), SpecId::CANCUN);
+    }
+
+    fn arb_mix(version: u64) -> B256 {
+        let mut bytes = [0u8; 32];
+        bytes[16..24].copy_from_slice(&version.to_be_bytes());
+        B256::from(bytes)
+    }
+
+    #[test]
+    fn arbitrum_uses_arbos_version_from_mix_hash() {
+        assert_eq!(spec_id_for_header(42161, 1, 0, arb_mix(10)), SpecId::MERGE);
+        assert_eq!(
+            spec_id_for_header(42161, 1, 0, arb_mix(11)),
+            SpecId::SHANGHAI
+        );
+        assert_eq!(spec_id_for_header(42161, 1, 0, arb_mix(20)), SpecId::CANCUN);
+        assert_eq!(spec_id_for_header(42161, 1, 0, arb_mix(40)), SpecId::PRAGUE);
+        assert_eq!(spec_id_for_header(42161, 1, 0, arb_mix(50)), SpecId::OSAKA);
+        // No header available: latest live spec.
+        assert_eq!(spec_id_for_block(42161, 1), LATEST_LIVE_SPEC);
+    }
+
+    #[test]
+    fn op_mainnet_uses_timestamp_activations() {
+        assert_eq!(
+            spec_id_for_header(10, 1, 1_704_992_400, B256::ZERO),
+            SpecId::MERGE
+        );
+        assert_eq!(
+            spec_id_for_header(10, 1, 1_704_992_401, B256::ZERO),
+            SpecId::SHANGHAI
+        );
+        assert_eq!(
+            spec_id_for_header(10, 1, 1_710_374_401, B256::ZERO),
+            SpecId::CANCUN
+        );
+        assert_eq!(
+            spec_id_for_header(10, 1, 1_746_806_401, B256::ZERO),
+            SpecId::PRAGUE
+        );
+        // Jovian changes no EVM rules in the OP Stack config.
+        assert_eq!(
+            spec_id_for_header(10, 1, 1_764_691_201, B256::ZERO),
+            SpecId::PRAGUE
+        );
+        assert_eq!(spec_id_for_block(10, 1), LATEST_LIVE_SPEC);
+    }
+
+    #[test]
+    fn base_and_unknown_chains_use_the_latest_live_spec() {
+        for chain in [8453, 999_999] {
+            assert_eq!(
+                spec_id_for_header(chain, 1, 0, B256::ZERO),
+                LATEST_LIVE_SPEC
+            );
+            assert_eq!(spec_id_for_block(chain, 1), LATEST_LIVE_SPEC);
+        }
     }
 }

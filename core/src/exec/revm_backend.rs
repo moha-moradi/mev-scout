@@ -37,6 +37,7 @@ fn deploy_gas_for(spec: SpecId) -> u64 {
 
 pub struct RevmBlock {
     pub state_block: u64,
+    pub cfg_timestamp: u64,
     pub exec_env: BlockEnv,
     pub db: Option<CacheDB<CachedRpcDb>>,
     pub executor: Address,
@@ -58,19 +59,20 @@ pub fn open_revm_block(
     let pending = opp.mempool_only || matches!(opp.detection_path, Some(DetectionPath::Pending));
     let n = opp.block_number;
 
-    let (mut db, exec_env, state_block) = if pending {
+    let (mut db, exec_env, state_block, cfg_timestamp) = if pending {
         // `opp.block_number` is the pending (not-yet-mined) block; the parent
         // is the newest cached block and seeds the next-block environment.
         let parent = n.saturating_sub(1);
         let (block_data, _) = replayer.load_block_data(parent)?;
         let db = replayer.what_if_state(n)?;
         let env = replayer.build_next_block_env(&block_data);
-        (db, env, n)
+        let ts = block_data.timestamp.saturating_add(12);
+        (db, env, n, ts)
     } else {
         match replayer.load_block_data(n) {
             Ok((block_data, txs)) if !txs.is_empty() => {
                 let mut db = replayer.what_if_state(n)?;
-                let cfg = replayer.build_cfg_env(n);
+                let cfg = replayer.build_cfg_env(n, block_data.timestamp, block_data.mix_hash);
                 let env = replayer.build_block_env(&block_data);
                 let end = (opp.tx_index + 1).min(txs.len());
                 let envs: Vec<TxEnv> = txs[..end]
@@ -81,7 +83,7 @@ pub fn open_revm_block(
                     let (_, next) = execute_whatif(db, cfg, env.clone(), &envs)?;
                     db = next;
                 }
-                (db, env, n)
+                (db, env, n, block_data.timestamp)
             }
             Ok((block_data, _)) => {
                 tracing::warn!(
@@ -89,7 +91,7 @@ pub fn open_revm_block(
                 );
                 let db = replayer.what_if_state(n)?;
                 let env = replayer.build_block_env(&block_data);
-                (db, env, n)
+                (db, env, n, block_data.timestamp)
             }
             Err(e) => {
                 tracing::warn!(
@@ -114,12 +116,13 @@ pub fn open_revm_block(
                     )
                 });
                 let env = replayer.build_block_env(&block_data);
-                (db, env, n)
+                (db, env, n, block_data.timestamp)
             }
         }
     };
 
     fund_searcher(&mut db, searcher, balance_wei)?;
+    let cfg_mix_hash = exec_env.prevrandao.unwrap_or_default();
 
     let deploy_nonce = db
         .basic_ref(searcher)
@@ -132,8 +135,13 @@ pub fn open_revm_block(
     let mut creation = creation_bytecode()?;
     creation = append_address_args(&creation, &[searcher, withdrawer, weth]);
     let gas_price = (exec_env.basefee as u128).saturating_add(PRIORITY_WEI);
-    let deploy_gas =
-        deploy_gas_for(crate::replay::spec_id_for_block(chain_id, n)).min(exec_env.gas_limit);
+    let deploy_gas = deploy_gas_for(crate::replay::spec_id_for_header(
+        chain_id,
+        n,
+        cfg_timestamp,
+        cfg_mix_hash,
+    ))
+    .min(exec_env.gas_limit);
     let deploy_tx = TxEnv {
         tx_type: 2,
         caller: searcher,
@@ -150,7 +158,7 @@ pub fn open_revm_block(
         max_fee_per_blob_gas: 0,
         authorization_list: Vec::new(),
     };
-    let cfg = replayer.build_cfg_env(n);
+    let cfg = replayer.build_cfg_env(n, cfg_timestamp, cfg_mix_hash);
     let (runs, db) = execute_whatif(db, cfg, exec_env.clone(), &[deploy_tx])?;
     let run = runs
         .into_iter()
@@ -176,6 +184,7 @@ pub fn open_revm_block(
 
     Ok(RevmBlock {
         state_block,
+        cfg_timestamp,
         exec_env,
         db: Some(db),
         executor: created,
@@ -223,7 +232,11 @@ pub fn exec_plan_revm(
         .db
         .take()
         .ok_or_else(|| anyhow::anyhow!("revm db already consumed"))?;
-    let cfg = replayer.build_cfg_env(block.state_block);
+    let cfg = replayer.build_cfg_env(
+        block.state_block,
+        block.cfg_timestamp,
+        block.exec_env.prevrandao.unwrap_or_default(),
+    );
     let (runs, db) = execute_whatif(db, cfg, block.exec_env.clone(), &[tx])?;
     block.db = Some(db);
     let Some(run) = runs.into_iter().next() else {

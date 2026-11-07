@@ -62,7 +62,12 @@ fn main() -> anyhow::Result<()> {
     let (block, txs) = replayer.load_block_data(block_num)?;
     let receipts = replayer.load_receipts(block_num)?;
 
-    let spec = mev_scout_core::replay::spec_id_for_block(chain_id, block_num);
+    let spec = mev_scout_core::replay::spec_id_for_header(
+        chain_id,
+        block_num,
+        block.timestamp,
+        block.mix_hash,
+    );
     let gas_params = GasParams::new_spec(spec);
 
     println!("block {block_num} spec={spec:?} {} txs", txs.len());

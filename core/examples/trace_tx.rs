@@ -210,7 +210,12 @@ fn main() -> anyhow::Result<()> {
     };
     mev_scout_core::replay::register_polygon_precompiles(&mut cache_db, block_num)?;
 
-    let spec = mev_scout_core::replay::spec_id_for_block(chain_id, block_num);
+    let spec = mev_scout_core::replay::spec_id_for_header(
+        chain_id,
+        block_num,
+        block.timestamp,
+        block.mix_hash,
+    );
     let mut cfg = CfgEnv::new_with_spec(spec);
     cfg.chain_id = chain_id;
     cfg.limit_contract_code_size = Some(0x6000);

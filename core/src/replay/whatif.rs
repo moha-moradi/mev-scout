@@ -224,7 +224,7 @@ impl BlockReplayer {
         let (block, _txs) = self.load_block_data(block_num)?;
         Ok(execute_whatif(
             db,
-            self.build_cfg_env(block_num),
+            self.build_cfg_env(block.number, block.timestamp, block.mix_hash),
             self.build_block_env(&block),
             txs,
         )?
@@ -256,7 +256,7 @@ impl BlockReplayer {
         let beneficiary = block.coinbase;
         let mut evm = Context::mainnet()
             .with_db(self.create_db_for_block(block_num)?)
-            .with_cfg(self.build_cfg_env(block_num))
+            .with_cfg(self.build_cfg_env(block.number, block.timestamp, block.mix_hash))
             .with_block(self.build_block_env(&block))
             .build_mainnet();
         let mut out = Vec::new();
