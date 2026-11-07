@@ -1,6 +1,6 @@
 ---
 name: Live Explorer Ops Guide
-overview: یک سند چک‌لیست گام‌به‌گام (docs) برای `live` و `explorer` با آرگومان‌ها، کانفیگ‌ها، پیش‌فرض‌ها، دستورات ایمن قابل اجرا، معیارهای سنجش dead code، و گاردهای side-effect — بدون اجرای cleanup در این مرحله.
+overview: راهنمای ops برای live/explorer + فاز simplify مینیمالیستی که فقط after evidence اجرا می‌شود و اهداف محصول (paper live ledger، forensic explorer، safety rails) را نمی‌شکند.
 todos:
   - id: write-checklist-doc
     content: Create docs/live_explorer_ops_checklist.md with full live+explorer args/config/defaults, runnable steps, metrics, safety
@@ -11,16 +11,29 @@ todos:
   - id: seed-deadcode-matrix
     content: Include pre-seeded dead-code/simplify candidate matrix from code audit for next-phase execution
     status: pending
+  - id: define-nonnegotiable-goals
+    content: Document non-negotiable product goals + acceptance invariants that simplify must not break
+    status: pending
+  - id: evidence-then-triage
+    content: Run checklist, fill matrix (observed/optional/safe/tests), triage remove vs keep vs defer
+    status: pending
+  - id: simplify-pass
+    content: Execute minimalist cleanup only for safe=yes rows; keep behavior; update docs/example.toml; re-run smoke
+    status: pending
 isProject: false
 ---
 
-# Live + Explorer Operational Checklist Guide
+# Live + Explorer Ops Guide + Goal-Safe Minimalist Simplify
 
-## Deliverable
+## Deliverable (دو فاز)
 
-یک فایل جدید مثل [`docs/live_explorer_ops_checklist.md`](docs/live_explorer_ops_checklist.md) (یا به‌روزرسانی [`docs/CLI.md`](docs/CLI.md) فقط اگر ترجیح بدهی؛ پیش‌فرض: فایل جدا تا CLI.md حجیم نشود) که راهنمای عملیاتی + چک‌لیست شناسایی dead code / ساده‌سازی minimalist باشد.
+### فاز A — Docs / checklist (بدون تغییر runtime)
 
-**این مرحله فقط نوشتن راهنماست.** اجرا و پیشنهاد cleanup در نوبت بعد (طبق درخواست خودت).
+یک فایل جدید مثل [`docs/live_explorer_ops_checklist.md`](docs/live_explorer_ops_checklist.md) (پیش‌فرض: فایل جدا تا CLI.md حجیم نشود) که راهنمای عملیاتی + چک‌لیست شناسایی dead code / ساده‌سازی minimalist باشد.
+
+### فاز B — Simplify مینیمالیستی (بعد از evidence)
+
+فقط کاندیدهایی که در ماتریس `safe to remove? = yes` و با **اهداف غیرقابل‌مذاکره** تضاد ندارند حذف/ساده می‌شوند. هدف: کمتر کد، کمتر سطح، کمتر knobs مرده — **بدون** تضعیف capabilityهای محصول.
 
 منبع حقیقت کد (نه حدس):
 
@@ -31,7 +44,37 @@ isProject: false
 
 ---
 
-## Document structure (what will be written)
+## Non-negotiable goals (simplify نباید بزند)
+
+این‌ها acceptance gate فاز B هستند؛ اگر تغییری یکی را بشکند → revert / defer.
+
+| Goal | باید بماند |
+|---|---|
+| `live` product | one-shot + loop؛ paper wallet/ledger؛ persist به explorer DB؛ `--sim assumed\|state`؛ `--exec none\|revm\|anvil` (testnet فقط با تایید صریح، پیش‌فرض `none`) |
+| `explorer` product | `index` (range/days + tip loop)؛ bare report؛ `dashboard` read-only از `--db` |
+| Isolation | مسیرهای DB جدا scanner vs explorer؛ `validate_explorer_db_isolation` |
+| Safety | بدون broadcast ناخواسته؛ `--exec anvil` فقط fork محلی |
+| Observability | Run ID / ledger lines؛ report offline بعد از live |
+| Config honesty | هر کلید باقی‌مانده در example.toml روی path واقعی اثر دارد، یا صریحاً documented-as-future |
+
+**خارج از scope حذف (keep حتی اگر «زیاد» به نظر برسد):** detectors فعال، paper exec paths، classify/decode برای index، schema migrations لازم، گاردهای clap (duration requires loop، و غیره).
+
+---
+
+## Minimalist principles (چگونه ساده‌سازی می‌کنیم)
+
+1. **Evidence قبل از حذف** — هیچ حذف صرفاً بر اساس حس؛ ماتریس از run واقعی پر شود.
+2. **حذف knob مرده > بازنویسی معماری** — اول config/CLI/fields بی‌اثر، بعد dead helpers، بعد consolidate duplicate validate/parse.
+3. **یک مسیر حقیقت** — اگر CLI و job هر دو duration/validate دارند و یکی redundant است، یکی بماند.
+4. **Library-only بدون caller از binary** — `jobs::run` / `tokens` و مشابه: یا wire به CLI، یا `#[cfg(test)]`/حذف از public surface، یا defer با دلیل.
+5. **جداسازی ماژول‌ها را نشکن** — live نباید به classify/dashboard بکشد؛ explorer index نباید detectors/paper exec را بکشد. Cross-imports مرده حذف؛ coupling جدید ممنوع.
+6. **رفتار پیش‌فرض ثابت** — defaults فعلی (`blocks=64`, `poll=2000`, paper balances، explorer windows) عوض نشوند مگر bug.
+7. **تست‌ها gate هستند** — هر remove که تست می‌شکند یا `safe=no` می‌شود یا تست عمداً به‌روز می‌شود چون assertion روی dead path بوده.
+8. **یک PR ذهنی کوچک** — ترجیح چند commit/تم متمرکز (dead config → dead CLI fields → dead progress types) نه big-bang rewrite.
+
+---
+
+## Document structure (فاز A — what will be written)
 
 ### 0. Safety rails (اول صفحه)
 
@@ -108,7 +151,7 @@ isProject: false
 
 ### 4. Cross-module dead-code / minimalist audit matrix
 
-جدول چک‌لیست برای هر کاندید: *observed in run?* | *optional path?* | *safe to remove?* | *depends on tests?*
+جدول چک‌لیست برای هر کاندید: *observed in run?* | *optional path?* | *safe to remove?* | *depends on tests?* | *goal impact?* (`none` / `breaks X`)
 
 شامل حداقل این ردیف‌ها:
 
@@ -121,7 +164,7 @@ isProject: false
 - explorer modules never reached from live (classify/decode/dashboard)
 - live modules never reached from explorer index (detectors/paper exec)
 
-### 5. Expected evidence pack (خروجی که بعداً برای cleanup می‌آوری)
+### 5. Expected evidence pack (ورودی فاز B)
 
 - stdout snippets از هر step
 - `sqlite3 … ".tables"` / `SELECT COUNT(*)` روی opportunities / mev_ops / paper_sessions
@@ -130,12 +173,32 @@ isProject: false
 
 ---
 
-## Implementation notes (وقتی تأیید شد)
+## فاز B — Simplify execution (بعد از پر شدن ماتریس)
 
-- فقط markdown راهنما؛ بدون تغییر رفتار runtime.
-- لینک متقابل کوتاه از [`docs/CLI.md`](docs/CLI.md) §live/§explorer به این چک‌لیست (۱–۲ خط).
+ترتیب پیشنهادی (هر لایه بعد از smoke قبلی):
+
+1. **Config surface** — حذف/deprecate کلیدهای parsed-but-unused از settings + example.toml؛ membership بی‌اثر `strategies` را یا wire کن یا از docs/example بردار و رفتار emptiness-only را صریح کن.
+2. **CLI / LiveOpts honesty** — فیلدهای بدون clap (`initial_balance_usd`/`native_usd`) حذف یا expose؛ progress types مرده حذف.
+3. **Dead library commands** — `jobs::run`/`tokens`/sigs بدون caller: حذف از binary surface یا نگه با `pub(crate)` + دلیل در ماتریس.
+4. **Dedup** — یک validate/duration parse path.
+5. **Docs sync** — CLI.md + checklist + example.toml با سطح واقعی هم‌تراز.
+
+**Acceptance بعد از simplify:**
+
+- همان runnable checklist فاز A سبز (live `--blocks 8`, report, explorer index bounded, bare, dashboard `--db`)
+- هیچ هدف non-negotiable نشکسته
+- `cargo test` (حداقل packages لمس‌شده) سبز
+- diff ترجیحاً فقط حذف/ساده؛ بدون feature جدید در همین پاس
+
+---
+
+## Implementation notes
+
+- فاز A: فقط markdown؛ بدون تغییر رفتار runtime.
+- فاز B: کد + docs؛ فقط ردیف‌های `safe=yes` و `goal impact=none`.
+- لینک متقابل کوتاه از [`docs/CLI.md`](docs/CLI.md) §live/§explorer به چک‌لیست (۱–۲ خط).
 - دستورات PowerShell؛ `cargo run -p mev-scout-cli -- …` به‌عنوان شکل کامل.
-- فارسی یا انگلیسی؟ پیش‌فرض: بدنه چک‌لیست **انگلیسی فنی** (مثل docs فعلی) + عنوان/مقدمه کوتاه فارسی اگر بخواهی؛ ترجیح docs فعلی انگلیسی است مگر خلافش را بگویی.
+- زبان docs: بدنه **انگلیسی فنی** (مثل docs فعلی) مگر خلافش گفته شود.
 
 ```mermaid
 flowchart TB
@@ -146,4 +209,10 @@ flowchart TB
   expReport --> dash[dashboard --db]
   liveSafe --> matrix[Dead-code matrix fill]
   dash --> matrix
+  matrix --> triage[Triage remove keep defer]
+  triage --> simplify[Minimalist cleanup]
+  simplify --> smoke[Re-run checklist + tests]
+  smoke --> goals{Non-negotiable goals OK?}
+  goals -->|yes| done[Done]
+  goals -->|no| revert[Revert / defer candidate]
 ```

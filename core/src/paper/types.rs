@@ -93,6 +93,18 @@ impl ExecAttempt {
             fail: None,
         }
     }
+
+    /// Receipt timeout / unknown failure treated as a revert that burned gas.
+    pub fn reverted(gas_used: u64, gas_wei: u128, tx_hash: Option<String>) -> Self {
+        Self {
+            status: false,
+            net_wei: 0,
+            gas_used,
+            gas_wei,
+            tx_hash,
+            fail: Some(FillSkipReason::ExecRevert),
+        }
+    }
 }
 
 impl std::fmt::Display for FillSkipReason {
@@ -190,7 +202,7 @@ pub struct PaperFill {
     pub repay_ok: bool,
     /// Overlay used a pool state written by an earlier fill (co-impact).
     pub state_drift: bool,
-    /// `revm` / `anvil` / `testnet` when this fill was booked from execution.
+    /// `revm` / `anvil` when this fill was booked from execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exec_mode: Option<String>,
     /// `ok` when the executor tx succeeded.
@@ -268,6 +280,15 @@ pub struct LedgerResult {
     pub exec_ok: u64,
     #[serde(default)]
     pub exec_revert: u64,
+    /// Native wei burned on reverted attempts.
+    #[serde(default)]
+    pub revert_gas_wei: u128,
+    /// Absolute loss booked on successful txs with non-positive net.
+    #[serde(default)]
+    pub exec_loss_wei: u128,
+    /// Executor deploy overhead (observe-only; not booked as a fill).
+    #[serde(default)]
+    pub setup_gas_wei: u128,
     /// Set when `--sim state` ran beside `--exec`. State-sim claims vs executed net.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recon_pass: Option<u64>,
@@ -314,4 +335,7 @@ pub struct PaperSession {
     pub exec_mode: Option<String>,
     pub exec_ok: Option<u64>,
     pub exec_revert: Option<u64>,
+    pub revert_gas_wei: Option<String>,
+    pub exec_loss_wei: Option<String>,
+    pub setup_gas_wei: Option<String>,
 }

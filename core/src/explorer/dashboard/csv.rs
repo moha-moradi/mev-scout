@@ -6,8 +6,7 @@ use std::collections::BTreeMap;
 
 use super::DashboardSnapshot;
 
-const HEADER: &str =
-    "window,section,label,ops,volume_usd,gross_usd,gas_usd,flash_fee_usd,net_usd";
+const HEADER: &str = "window,section,label,ops,volume_usd,gross_usd,gas_usd,flash_fee_usd,net_usd";
 
 /// Emit report-compatible CSV for one dashboard snapshot.
 pub fn render_csv(snap: &DashboardSnapshot) -> String {
@@ -275,17 +274,12 @@ fn escape_csv_field(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::explorer::dashboard::{
-        build, BuildOptions, WindowSpec,
-    };
+    use crate::explorer::dashboard::{build, BuildOptions, WindowSpec};
     use crate::explorer::store::ExplorerStore;
 
     #[test]
     fn csv_header_matches_report_contract() {
-        let dir = std::env::temp_dir().join(format!(
-            "mev_dash_csv_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("mev_dash_csv_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("explorer-avalanche.sqlite");
         {

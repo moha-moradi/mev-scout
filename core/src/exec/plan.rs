@@ -25,9 +25,9 @@ pub struct ExecPlan {
     pub vault: Address,
     pub borrow_token: Address,
     pub amount: U256,
+    pub min_profit: U256,
+    pub deadline: u64,
     pub legs: Vec<ExecLeg>,
-    pub profit_to: Address,
-    pub weth: Address,
     pub provider: FlashLoanProvider,
 }
 
@@ -57,9 +57,9 @@ pub fn plan_from_opportunity(
     opp: &MevOpportunity,
     pools: &PoolManager,
     vault: Address,
-    profit_to: Address,
-    weth: Address,
     provider: FlashLoanProvider,
+    min_profit: U256,
+    deadline: u64,
 ) -> Result<ExecPlan, PlanError> {
     if !matches!(
         opp.strategy,
@@ -107,9 +107,9 @@ pub fn plan_from_opportunity(
         vault,
         borrow_token: opp.token_in,
         amount: opp.input_amount,
+        min_profit,
+        deadline,
         legs,
-        profit_to,
-        weth,
         provider,
     })
 }
@@ -184,7 +184,6 @@ mod tests {
         let pa = address!("0x00000000000000000000000000000000000000aa");
         let pb = address!("0x00000000000000000000000000000000000000bb");
         let vault = address!("0x00000000000000000000000000000000000000cc");
-        let who = address!("0x00000000000000000000000000000000000000dd");
         let mut pm = PoolManager::new();
         pm.add_pool(v2(pa, t0, t1));
         pm.add_pool(v2(pb, t0, t1));
@@ -197,9 +196,9 @@ mod tests {
             &opp,
             &pm,
             vault,
-            who,
-            t0,
             FlashLoanProvider::Balancer,
+            U256::from(1u64),
+            12,
         )
         .expect("plan");
         assert_eq!(plan.legs.len(), 2);
@@ -210,6 +209,8 @@ mod tests {
         assert_eq!(plan.legs[1].token_in, t1);
         assert_eq!(plan.legs[1].token_out, t0);
         assert_eq!(plan.borrow_token, t0);
+        assert_eq!(plan.min_profit, U256::from(1u64));
+        assert_eq!(plan.deadline, 12);
     }
 
     #[test]
@@ -220,9 +221,9 @@ mod tests {
             &opp,
             &PoolManager::new(),
             address!("0x0000000000000000000000000000000000000001"),
-            Address::ZERO,
-            Address::ZERO,
             FlashLoanProvider::Auto,
+            U256::from(1u64),
+            12,
         )
         .unwrap_err();
         assert_eq!(err, PlanError::StrategyUnsupported);
@@ -246,9 +247,9 @@ mod tests {
             &opp,
             &pm,
             address!("0x0000000000000000000000000000000000000009"),
-            Address::ZERO,
-            Address::ZERO,
             FlashLoanProvider::Auto,
+            U256::from(1u64),
+            12,
         )
         .unwrap_err();
         assert_eq!(err, PlanError::PathUnavailable);

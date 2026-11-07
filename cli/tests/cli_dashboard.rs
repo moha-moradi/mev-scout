@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use common::{BIN, TimedOutput};
+use common::{TimedOutput, BIN};
 use rusqlite::Connection;
 
 fn run(args: &[&str]) -> TimedOutput {

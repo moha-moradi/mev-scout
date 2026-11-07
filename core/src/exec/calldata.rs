@@ -1,14 +1,15 @@
 //! ABI encoder for `FlashArbExecutor.execute(Plan)`.
 //!
-//! The signature is the canonical tuple form of `Plan` (ABI v1):
-//! `execute((address,address,uint256,(address,address,address,uint8,uint24)[],address,address))`
+//! The signature is the canonical tuple form of `Plan` (ABI v2):
+//! `execute((address,address,uint256,uint256,uint256,(address,address,address,uint8,uint24)[]))`
 //!
 //! `Plan` is a dynamic tuple, so the argument head is a single offset word.
 use alloy::primitives::{keccak256, Address, Bytes, U256};
 
 use super::plan::ExecPlan;
 
-pub const EXECUTE_SIG: &str = "execute((address,address,uint256,(address,address,address,uint8,uint24)[],address,address))";
+pub const EXECUTE_SIG: &str =
+    "execute((address,address,uint256,uint256,uint256,(address,address,address,uint8,uint24)[]))";
 
 pub fn execute_selector() -> [u8; 4] {
     let hash = keccak256(EXECUTE_SIG.as_bytes());
@@ -27,9 +28,9 @@ pub fn encode_execute(plan: &ExecPlan) -> Bytes {
     out.extend_from_slice(&word_addr(plan.vault));
     out.extend_from_slice(&word_addr(plan.borrow_token));
     out.extend_from_slice(&word_u256(plan.amount));
-    out.extend_from_slice(&word_u64(32 * 6));
-    out.extend_from_slice(&word_addr(plan.profit_to));
-    out.extend_from_slice(&word_addr(plan.weth));
+    out.extend_from_slice(&word_u256(plan.min_profit));
+    out.extend_from_slice(&word_u64(plan.deadline));
+    out.extend_from_slice(&word_u64(32 * 6)); // legsOffset = 192
     out.extend_from_slice(&word_u64(plan.legs.len() as u64));
     for leg in &plan.legs {
         out.extend_from_slice(&word_addr(leg.pool));
@@ -69,6 +70,8 @@ mod tests {
             vault: address!("0x0000000000000000000000000000000000000001"),
             borrow_token: address!("0x0000000000000000000000000000000000000002"),
             amount: U256::from(1u64),
+            min_profit: U256::from(1u64),
+            deadline: 12,
             legs: vec![ExecLeg {
                 pool: address!("0x0000000000000000000000000000000000000003"),
                 token_in: address!("0x0000000000000000000000000000000000000002"),
@@ -76,14 +79,12 @@ mod tests {
                 kind: 0,
                 fee: 30,
             }],
-            profit_to: address!("0x0000000000000000000000000000000000000005"),
-            weth: address!("0x0000000000000000000000000000000000000006"),
             provider: FlashLoanProvider::Balancer,
         }
     }
 
     #[test]
-    fn selector_matches_abi_v1() {
+    fn selector_matches_abi_v2() {
         let data = encode_execute(&sample());
         assert_eq!(&data[..4], execute_selector().as_slice());
         // One dynamic argument → offset 32.
@@ -91,7 +92,7 @@ mod tests {
         // Tuple: vault is the first word.
         assert_eq!(&data[36..68], word_addr(sample().vault).as_slice());
         // legs offset inside the tuple is 6 words.
-        assert_eq!(&data[36 + 32 * 3..36 + 32 * 4], word_u64(192).as_slice());
+        assert_eq!(&data[36 + 32 * 5..36 + 32 * 6], word_u64(192).as_slice());
         // Array length 1 sits immediately after the 6-word tuple head.
         let legs_at = 36 + 32 * 6;
         assert_eq!(&data[legs_at..legs_at + 32], word_u64(1).as_slice());

@@ -76,9 +76,8 @@ fn column_names(conn: &Connection, table: &str) -> anyhow::Result<HashSet<String
 }
 
 fn index_names(conn: &Connection, table: &str) -> anyhow::Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?1",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?1")?;
     let rows = stmt.query_map([table], |r| r.get::<_, String>(0))?;
     let mut out = Vec::new();
     for row in rows {
@@ -88,8 +87,9 @@ fn index_names(conn: &Connection, table: &str) -> anyhow::Result<Vec<String>> {
 }
 
 fn table_names(conn: &Connection) -> anyhow::Result<HashSet<String>> {
-    let mut stmt =
-        conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")?;
+    let mut stmt = conn.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+    )?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
     let mut out = HashSet::new();
     for row in rows {

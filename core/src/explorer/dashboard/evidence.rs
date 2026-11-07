@@ -166,10 +166,7 @@ fn decimals_map() -> &'static HashMap<String, u8> {
         let v: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
         let mut m = HashMap::new();
         // Native wei sentinel used in explorer amounts.
-        m.insert(
-            "0xffffffffffffffffffffffffffffffffffffffff".to_string(),
-            18,
-        );
+        m.insert("0xffffffffffffffffffffffffffffffffffffffff".to_string(), 18);
         if let Some(obj) = v.get("wrapped_native_by_chain").and_then(|x| x.as_object()) {
             for entry in obj.values() {
                 if let (Some(addr), Some(dec)) = (

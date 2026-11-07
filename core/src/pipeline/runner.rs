@@ -12,14 +12,14 @@ use crate::mev::detectors::JitDetector;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
 use crate::mev::detectors::{detect_pending_opportunities, mempool, DetectionPath};
+use crate::paper::sim::{
+    promote_pending_seeds, push_pending_seeds, record_seeds_for_block, PendingSeed, SimSeeds,
+};
 use crate::pipeline::{BlockMode, BlockReplayStats, GasPriceDistribution};
 use crate::pool::state::{PoolInfo, PoolManager, PoolState, ScanScope, UniswapV2PoolState};
 use crate::replay::BlockReplayer;
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
-use crate::paper::sim::{
-    promote_pending_seeds, push_pending_seeds, record_seeds_for_block, PendingSeed, SimSeeds,
-};
 use crate::types::gas::GasCalibration;
 use crate::types::MevOpportunity;
 use crate::types::{GasConfig, GasModel, Strategy};

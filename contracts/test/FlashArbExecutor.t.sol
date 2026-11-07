@@ -8,6 +8,8 @@ interface Vm {
     function envOr(string calldata name, uint256 defaultValue) external returns (uint256);
     function createSelectFork(string calldata urlOrAlias, uint256 blockNumber) external returns (uint256);
     function deal(address account, uint256 newBalance) external;
+    function warp(uint256 newTimestamp) external;
+    function prank(address msgSender) external;
 }
 
 /// Local mocks plus an optional mainnet-fork two-hop. The fork leg runs only
@@ -22,13 +24,15 @@ contract FlashArbExecutorTest {
     MockV2Pair internal cheap;
     MockV2Pair internal rich;
 
+    address internal operator;
     address internal searcher = address(0x5EAE);
 
     function setUp() public {
-        exec = new FlashArbExecutor();
+        operator = address(this);
         vault = new MockVault();
         weth = new MockERC20();
         usdc = new MockERC20();
+        exec = new FlashArbExecutor(operator, searcher, address(weth));
         // WETH is also the unwrap target: teach the mock to pay ETH out.
         weth.setWithdrawer();
         cheap = new MockV2Pair(address(weth), address(usdc));
@@ -49,29 +53,65 @@ contract FlashArbExecutorTest {
     }
 
     function test_abi_version_and_selector() public view {
-        assert(exec.ABI_VERSION() == 1);
+        assert(exec.ABI_VERSION() == 2);
         bytes4 sel = bytes4(
             keccak256(
-                "execute((address,address,uint256,(address,address,address,uint8,uint24)[],address,address))"
+                "execute((address,address,uint256,uint256,uint256,(address,address,address,uint8,uint24)[]))"
             )
         );
         assert(sel == FlashArbExecutor.execute.selector);
     }
 
+    function test_only_operator() public {
+        FlashArbExecutor.Leg[] memory legs = _cycle();
+        vm.prank(address(0xBEEF));
+        (bool ok,) = address(exec).call(abi.encodeCall(FlashArbExecutor.execute, (_plan(legs, 1 ether, 1))));
+        assert(!ok);
+    }
+
+    function test_expired_reverts() public {
+        FlashArbExecutor.Leg[] memory legs = _cycle();
+        FlashArbExecutor.Plan memory plan = _plan(legs, 1 ether, 1);
+        plan.deadline = block.timestamp;
+        vm.warp(block.timestamp + 1);
+        (bool ok,) = address(exec).call(abi.encodeCall(FlashArbExecutor.execute, (plan)));
+        assert(!ok);
+    }
+
+    function test_min_profit_reverts() public {
+        FlashArbExecutor.Leg[] memory legs = _cycle();
+        // Unreasonably high floor: any real net will fail MinProfit.
+        (bool ok,) =
+            address(exec).call(abi.encodeCall(FlashArbExecutor.execute, (_plan(legs, 1 ether, 100 ether))));
+        assert(!ok);
+        assert(searcher.balance == 0);
+    }
+
+    function test_profit_goes_to_withdrawer() public {
+        // Caller (operator) ≠ withdrawer (searcher).
+        assert(operator != searcher);
+        uint256 beforeCaller = operator.balance;
+        uint256 beforeWithdrawer = searcher.balance;
+        exec.execute(_plan(_cycle(), 1 ether, 1));
+        assert(operator.balance == beforeCaller);
+        assert(searcher.balance > beforeWithdrawer);
+    }
+
+    function test_sweep_operator_only() public {
+        weth.mint(address(exec), 1 ether);
+        vm.prank(address(0xBEEF));
+        (bool ok,) = address(exec).call(abi.encodeCall(FlashArbExecutor.sweep, (address(weth))));
+        assert(!ok);
+
+        uint256 before = weth.balanceOf(searcher);
+        exec.sweep(address(weth));
+        assert(weth.balanceOf(searcher) == before + 1 ether);
+        assert(weth.balanceOf(address(exec)) == 0);
+    }
+
     function test_two_hop_repays_and_unwraps_profit() public {
         uint256 before = searcher.balance;
-        FlashArbExecutor.Leg[] memory legs = _cycle();
-
-        exec.execute(
-            FlashArbExecutor.Plan({
-                vault: address(vault),
-                borrowToken: address(weth),
-                amount: 1 ether,
-                legs: legs,
-                profitTo: searcher,
-                weth: address(weth)
-            })
-        );
+        exec.execute(_plan(_cycle(), 1 ether, 1));
 
         assert(searcher.balance > before);
         assert(weth.balanceOf(address(exec)) == 0);
@@ -82,11 +122,11 @@ contract FlashArbExecutorTest {
     function test_second_leg_on_consumed_pool_earns_less() public {
         FlashArbExecutor.Leg[] memory legs = _cycle();
         uint256 before = searcher.balance;
-        exec.execute(_plan(legs, 0.05 ether));
+        exec.execute(_plan(legs, 0.05 ether, 1));
         uint256 first = searcher.balance - before;
 
         uint256 mid = searcher.balance;
-        exec.execute(_plan(legs, 0.05 ether));
+        exec.execute(_plan(legs, 0.05 ether, 1));
         uint256 second = searcher.balance - mid;
         // Same pools, same size: the first take moved the price.
         assert(second < first);
@@ -109,13 +149,13 @@ contract FlashArbExecutorTest {
             kind: 0,
             fee: 30
         });
-        (bool ok,) = address(exec).call(abi.encodeCall(FlashArbExecutor.execute, (_plan(legs, 1 ether))));
+        (bool ok,) = address(exec).call(abi.encodeCall(FlashArbExecutor.execute, (_plan(legs, 1 ether, 1))));
         assert(!ok);
         assert(searcher.balance == 0);
     }
 
     /// V3 exact-input: sell WETH at 3000 USDC, buy it back at 2000. Leftover
-    /// WETH is unwrapped to the searcher.
+    /// WETH is unwrapped to the withdrawer.
     function test_v3_two_hop_repays_and_unwraps_profit() public {
         MockV3Pool sell = new MockV3Pool(address(weth), address(usdc), 3000 ether);
         // 3000e18 * (1e18/2000) / 1e18 = 1.5e18 WETH out.
@@ -140,16 +180,7 @@ contract FlashArbExecutorTest {
         });
 
         uint256 before = searcher.balance;
-        exec.execute(
-            FlashArbExecutor.Plan({
-                vault: address(vault),
-                borrowToken: address(weth),
-                amount: 1 ether,
-                legs: legs,
-                profitTo: searcher,
-                weth: address(weth)
-            })
-        );
+        exec.execute(_plan(legs, 1 ether, 1));
         assert(searcher.balance > before);
         assert(weth.balanceOf(address(exec)) == 0);
         assert(weth.balanceOf(address(vault)) == 100 ether);
@@ -178,7 +209,7 @@ contract FlashArbExecutorTest {
         address uni = 0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc;
         address sushi = 0x397FF1542f962076d0BFE58eA045FfA2d347ACa0;
 
-        FlashArbExecutor forkExec = new FlashArbExecutor();
+        FlashArbExecutor forkExec = new FlashArbExecutor(operator, searcher, forkWeth);
         uint256 amount = 1 ether;
         (address buy, address sell, bool profitable) =
             _forkDirection(uni, sushi, forkWeth, forkUsdc, amount);
@@ -193,9 +224,9 @@ contract FlashArbExecutorTest {
                 vault: forkVault,
                 borrowToken: forkWeth,
                 amount: amount,
-                legs: legs,
-                profitTo: searcher,
-                weth: forkWeth
+                minProfit: 1,
+                deadline: block.timestamp + 12,
+                legs: legs
             })
         );
         assert(searcher.balance > before);
@@ -220,7 +251,7 @@ contract FlashArbExecutorTest {
         });
     }
 
-    function _plan(FlashArbExecutor.Leg[] memory legs, uint256 amount)
+    function _plan(FlashArbExecutor.Leg[] memory legs, uint256 amount, uint256 minProfit)
         internal
         view
         returns (FlashArbExecutor.Plan memory)
@@ -229,9 +260,9 @@ contract FlashArbExecutorTest {
             vault: address(vault),
             borrowToken: address(weth),
             amount: amount,
-            legs: legs,
-            profitTo: searcher,
-            weth: address(weth)
+            minProfit: minProfit,
+            deadline: block.timestamp + 12,
+            legs: legs
         });
     }
 

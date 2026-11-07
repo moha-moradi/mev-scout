@@ -57,7 +57,7 @@ flowchart TB
             SIGS["sigs — 4byte signature resolver"]
             CHAIN["chain — per-chain topology / timing"]
             PAPER2["paper — LedgerPolicy · store · recon"]
-            FLASH_EXEC["exec — FlashArb plan · revm/anvil/testnet"]
+            FLASH_EXEC["exec — FlashArb plan · revm/anvil"]
             MISC["data · error · dex_type · utils · progress"]
         end
     end
@@ -89,7 +89,7 @@ flowchart TB
     COREJOBS --> PAPER2
     COREJOBS --> FLASH_EXEC
     FLASH_EXEC --> REPLAY
-    FLASH_EXEC -. "optional Anvil/testnet txs" .-> RPC
+    FLASH_EXEC -. "optional Anvil fork txs" .-> RPC
     PAPER2 --> FLASH_EXEC
     CFG --> TYPES
     PIPE --> TYPES
@@ -105,7 +105,8 @@ flowchart TB
 - `cache` (SQLite) is the local-first backbone — `live` fetches blocks into it; the runner reads from it; pool discovery persists pools/tokens into it.
 - `rpc` fronts the chain for everything: fetching, `eth_call` pool state, and replay's on-demand state misses (via `CachedRpcDb`).
 - `explorer` answers "what was made" (realized MEV forensics) vs the detectors' "what could be made" — it ingests via RPC into its own SQLite store (`./cache/explorer-{chain}.sqlite`) so live index writes never contend with replay-path cache reads. Scanner `live` always persists detected opportunities there (via in-memory `ResultsFile` DTO); `record_rejections = true` also stores rejected candidates for miss attribution. `explorer dashboard` opens the store read-only (`ExplorerStore::open_read_only`).
-- `exec` is opt-in from `live --exec revm|anvil|testnet`: builds Balancer flash-arb calldata from `MevOpportunity`, runs it on revm / local Anvil fork / known testnets, and books P&L via `LedgerPolicy::apply_executed`. Default remains paper/`--sim` only (no mainnet submit). Foundry sources live in `contracts/`; runtime bytecode is the checked-in hex under `core/src/exec/artifacts/` (regenerate from `forge build`).
+- `exec` is opt-in from `live --exec revm|anvil`: builds Balancer flash-arb calldata (ABI v2) from `MevOpportunity`, deploys the executor from `creation.hex` + constructor args, runs it on revm / a local Anvil fork with signed EIP-1559 txs, and books P&L via `LedgerPolicy::apply_executed` (including revert-gas debit). Default remains paper/`--sim` only (no mainnet submit). Foundry sources live in `contracts/`; regenerate hex with:
+  `node -e "const j=require('./contracts/out/FlashArbExecutor.sol/FlashArbExecutor.json'),f=require('fs');f.writeFileSync('core/src/exec/artifacts/FlashArbExecutor.creation.hex',j.bytecode.object.replace(/^0x/,'')+'\n');f.writeFileSync('core/src/exec/artifacts/FlashArbExecutor.deployed.hex',j.deployedBytecode.object.replace(/^0x/,'')+'\n')"`.
 
 ---
 

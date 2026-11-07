@@ -171,16 +171,13 @@ pub struct PaperConfig {
     /// Seed budget per block when capturing pool snapshots (not fill cap).
     #[serde(default = "default_paper_sim_max_candidates")]
     pub sim_max_candidates_per_block: usize,
-    /// Execution backend: `none` (default), `revm`, `anvil`, or `testnet`.
+    /// Execution backend: `none` (default), `revm`, or `anvil`.
     #[serde(default = "default_paper_exec")]
     pub exec: String,
-    /// Hex private key for the virtual searcher. Empty uses `MEV_SCOUT_EXEC_KEY`,
-    /// then the Anvil dev account for `revm` / `anvil` only.
+    /// Hex private key for the virtual searcher / Anvil signer. Empty uses
+    /// `MEV_SCOUT_EXEC_KEY`, then the Anvil dev account for `revm` / `anvil`.
     #[serde(default)]
     pub exec_key: String,
-    /// Already-deployed executor on a testnet. Empty deploys once per session.
-    #[serde(default)]
-    pub executor_address: String,
     /// Anvil binary name or path. Default `anvil`.
     #[serde(default = "default_anvil_bin")]
     pub anvil_bin: String,
@@ -253,7 +250,7 @@ impl PaperConfig {
     pub fn exec_mode(&self) -> anyhow::Result<crate::exec::ExecMode> {
         crate::exec::ExecMode::parse(&self.exec).ok_or_else(|| {
             anyhow::anyhow!(
-                "invalid paper.exec '{}': expected 'none', 'revm', 'anvil', or 'testnet'",
+                "invalid paper.exec '{}': expected 'none', 'revm', or 'anvil'",
                 self.exec
             )
         })
@@ -280,7 +277,6 @@ impl Default for PaperConfig {
             sim_max_candidates_per_block: default_paper_sim_max_candidates(),
             exec: default_paper_exec(),
             exec_key: String::new(),
-            executor_address: String::new(),
             anvil_bin: default_anvil_bin(),
             anvil_url: String::new(),
         }

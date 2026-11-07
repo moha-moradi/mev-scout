@@ -133,6 +133,12 @@ pub async fn cmd_live(
     // is a pure config invariant check (offline), so this is the cheap way to
     // fail loudly and locally.
     mev_scout_core::config::validation::validate_live(config).context("invalid configuration")?;
+    // Reject unknown --exec before bootstrap hits the network.
+    if let Some(raw) = args.exec.as_deref() {
+        mev_scout_core::exec::ExecMode::parse(raw).ok_or_else(|| {
+            anyhow::anyhow!("invalid --exec '{raw}': expected 'none', 'revm', or 'anvil'")
+        })?;
+    }
 
     bootstrap(config, progress).await;
 

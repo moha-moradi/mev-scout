@@ -8,10 +8,7 @@ use anyhow::Context;
 use crate::cache::{RunManifest, SqliteStore};
 use crate::config::validation::{self, ValidationResult};
 use crate::config::{Config, ProviderConfig};
-use crate::exec::{
-    assert_testnet_chain, execute_ledger, searcher_address, AnvilNode, ExecContext, ExecMode,
-    TestnetSender,
-};
+use crate::exec::{execute_ledger, searcher_address, AnvilNode, ExecContext, ExecMode};
 use crate::explorer::pricing;
 use crate::explorer::results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};
 use crate::explorer::store::ExplorerStore;
@@ -55,7 +52,7 @@ pub struct LiveOpts {
     pub sim: Option<String>,
     /// Override `[paper].sim_max_candidates_per_block`.
     pub sim_max_candidates_per_block: Option<usize>,
-    /// Override `[paper].exec` (`none` | `revm` | `anvil` | `testnet`).
+    /// Override `[paper].exec` (`none` | `revm` | `anvil`).
     pub exec: Option<String>,
 }
 
@@ -154,15 +151,10 @@ fn resolve_exec_context(
     let mut mode = config.paper.exec_mode()?;
     if let Some(raw) = opts.exec.as_deref() {
         mode = ExecMode::parse(raw).ok_or_else(|| {
-            anyhow::anyhow!(
-                "invalid --exec '{raw}': expected 'none', 'revm', 'anvil', or 'testnet'"
-            )
+            anyhow::anyhow!("invalid --exec '{raw}': expected 'none', 'revm', or 'anvil'")
         })?;
     }
     let chain_id = validation.chain_config.chain_id;
-    if mode == ExecMode::Testnet {
-        assert_testnet_chain(chain_id)?;
-    }
     let key = if !config.paper.exec_key.trim().is_empty() {
         Some(config.paper.exec_key.trim().to_string())
     } else {
@@ -171,23 +163,7 @@ fn resolve_exec_context(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     };
-    if mode == ExecMode::Testnet && key.is_none() {
-        anyhow::bail!(
-            "--exec testnet needs [paper].exec_key or MEV_SCOUT_EXEC_KEY \
-             (a faucet key). This mode never signs a mainnet transaction."
-        );
-    }
     let searcher = searcher_address(key.as_deref())?;
-    let executor = if config.paper.executor_address.trim().is_empty() {
-        None
-    } else {
-        Some(config.paper.executor_address.trim().parse().map_err(|e| {
-            anyhow::anyhow!(
-                "invalid paper.executor_address '{}': {e}",
-                config.paper.executor_address
-            )
-        })?)
-    };
     let urls = config.effective_rpc_urls(validation.chain_name)?;
     let fork_url = urls.first().cloned().unwrap_or_default();
     let anvil = if mode == ExecMode::Anvil && !config.paper.anvil_url.trim().is_empty() {
@@ -220,9 +196,7 @@ fn resolve_exec_context(
         anvil,
         anvil_executor: None,
         anvil_block: None,
-        testnet: None,
-        testnet_executor: executor,
-        submitted: Default::default(),
+        cache: Default::default(),
     })
 }
 
@@ -627,28 +601,6 @@ impl<'a> LiveContext<'a> {
                 self.exec.anvil = Some(node);
                 Ok(())
             }
-            ExecMode::Testnet => {
-                if self.exec.testnet.is_some() {
-                    return Ok(());
-                }
-                let key = self.exec.exec_key.clone().ok_or_else(|| {
-                    anyhow::anyhow!("--exec testnet needs [paper].exec_key or MEV_SCOUT_EXEC_KEY")
-                })?;
-                let url = self.exec.fork_url.clone();
-                if url.is_empty() {
-                    anyhow::bail!("--exec testnet needs an RPC url");
-                }
-                let mut sender = TestnetSender::connect(&url, &key).await?;
-                self.exec.searcher = sender.from;
-                if self.exec.testnet_executor.is_none() {
-                    let addr = sender.deploy_executor().await?;
-                    self.progress
-                        .log(&format!("exec: deployed testnet executor {addr:#x}"));
-                    self.exec.testnet_executor = Some(addr);
-                }
-                self.exec.testnet = Some(sender);
-                Ok(())
-            }
         }
     }
 
@@ -732,10 +684,21 @@ pub fn render_ledger_summary(ledger: &LedgerResult, native_usd: Option<f64>) -> 
         ledger.sim_mode.as_str(),
     ));
     if ledger.exec_mode != "none" {
-        out.push_str(&format!(
-            "  exec: {} {} ok / {} revert\n",
+        let mut exec_line = format!(
+            "  exec: {} {} ok / {} revert",
             ledger.exec_mode, ledger.exec_ok, ledger.exec_revert,
-        ));
+        );
+        if ledger.revert_gas_wei > 0 {
+            exec_line.push_str(&format!(" | revert gas {}", ledger.revert_gas_wei));
+        }
+        if ledger.exec_loss_wei > 0 {
+            exec_line.push_str(&format!(" | loss {}", ledger.exec_loss_wei));
+        }
+        if ledger.setup_gas_wei > 0 {
+            exec_line.push_str(&format!(" | setup {}", ledger.setup_gas_wei));
+        }
+        exec_line.push('\n');
+        out.push_str(&exec_line);
     }
     if let (Some(pass), Some(fail), Some(unverifiable)) = (
         ledger.recon_pass,
@@ -850,6 +813,12 @@ pub async fn job_live(
 ) -> anyhow::Result<LiveOutcome> {
     if opts.max_blocks.is_some() && !opts.loop_enabled {
         anyhow::bail!("--max-blocks requires --loop");
+    }
+    // Fail fast on unknown --exec before any RPC / price work.
+    if let Some(raw) = opts.exec.as_deref() {
+        ExecMode::parse(raw).ok_or_else(|| {
+            anyhow::anyhow!("invalid --exec '{raw}': expected 'none', 'revm', or 'anvil'")
+        })?;
     }
     // Before any price lookup or RPC: both flags describe the same wallet,
     // and resolving a price first would hit the network for a request that
@@ -1562,6 +1531,9 @@ mod tests {
             exec_mode: "none".to_string(),
             exec_ok: 0,
             exec_revert: 0,
+            revert_gas_wei: 0,
+            exec_loss_wei: 0,
+            setup_gas_wei: 0,
             recon_pass: None,
             recon_fail: None,
             recon_unverifiable: None,

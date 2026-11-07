@@ -28,10 +28,7 @@ mod tests {
     #[test]
     fn template_is_single_composition() {
         for id in ["hero", "live", "activity", "pools", "searchers", "details"] {
-            assert!(
-                TEMPLATE.contains(&format!("id=\"{id}\"")),
-                "missing #{id}"
-            );
+            assert!(TEMPLATE.contains(&format!("id=\"{id}\"")), "missing #{id}");
         }
         assert!(TEMPLATE.contains("Fraunces"));
         assert!(TEMPLATE.contains("#F7F4EF"));

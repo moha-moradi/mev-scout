@@ -189,11 +189,7 @@ pub fn reduce(
 
     let ops_total = ops.len();
     let emit_ops = ops.len().min(max_ops);
-    let events: Vec<EventRow> = ops
-        .iter()
-        .take(emit_ops)
-        .map(event_row)
-        .collect();
+    let events: Vec<EventRow> = ops.iter().take(emit_ops).map(event_row).collect();
     let evidence_n = emit_ops.min(max_evidence);
     let evidence: Vec<OpEvidence> = ops
         .iter()
@@ -431,14 +427,16 @@ fn reduce_kind_matrix(ops: &[OpRecord], _caps: &StoreCaps) -> Vec<KindCell> {
     }
     let mut cells: Vec<KindCell> = map
         .into_iter()
-        .map(|((kind, subkind, confidence), (ops, gross, net))| KindCell {
-            kind,
-            subkind,
-            confidence,
-            ops,
-            gross_usd: gross,
-            net_usd: net,
-        })
+        .map(
+            |((kind, subkind, confidence), (ops, gross, net))| KindCell {
+                kind,
+                subkind,
+                confidence,
+                ops,
+                gross_usd: gross,
+                net_usd: net,
+            },
+        )
         .collect();
     cells.sort_by(|a, b| {
         a.kind
@@ -489,11 +487,10 @@ fn reduce_actors(
     let mut rows: Vec<ActorRow> = map
         .into_iter()
         .map(|(competitor, a)| ActorRow {
-            label: labels.get(&competitor).cloned().or_else(|| {
-                labels
-                    .get(&a.eoa)
-                    .cloned()
-            }),
+            label: labels
+                .get(&competitor)
+                .cloned()
+                .or_else(|| labels.get(&a.eoa).cloned()),
             competitor,
             eoa: a.eoa,
             contract: a.contract,
@@ -532,10 +529,7 @@ fn reduce_pools(ops: &[OpRecord], _caps: &StoreCaps) -> Vec<PoolRow> {
     let mut map: HashMap<String, Acc> = HashMap::new();
     for o in ops {
         let legs = parse_route(o.route_json.as_deref());
-        let pools: HashSet<String> = legs
-            .iter()
-            .filter_map(|l| l.pool.clone())
-            .collect();
+        let pools: HashSet<String> = legs.iter().filter_map(|l| l.pool.clone()).collect();
         if pools.is_empty() {
             continue;
         }
@@ -577,11 +571,7 @@ fn reduce_pools(ops: &[OpRecord], _caps: &StoreCaps) -> Vec<PoolRow> {
     let mut rows: Vec<PoolRow> = map
         .into_iter()
         .map(|(pool, a)| {
-            let top_kind = a
-                .kinds
-                .into_iter()
-                .max_by_key(|(_, c)| *c)
-                .map(|(k, _)| k);
+            let top_kind = a.kinds.into_iter().max_by_key(|(_, c)| *c).map(|(k, _)| k);
             PoolRow {
                 pool,
                 ops: a.ops.len() as i64,
@@ -665,12 +655,7 @@ fn reduce_facets(
     catalogue: &HashSet<String>,
     caps: &StoreCaps,
 ) -> (Vec<FacetRow>, Vec<FacetRow>) {
-    fn bump(
-        map: &mut HashMap<String, (i64, f64, f64)>,
-        key: &str,
-        o: &OpRecord,
-        caps: &StoreCaps,
-    ) {
+    fn bump(map: &mut HashMap<String, (i64, f64, f64)>, key: &str, o: &OpRecord, caps: &StoreCaps) {
         let e = map.entry(key.to_string()).or_insert((0, 0.0, 0.0));
         e.0 += 1;
         if let Some(g) = o.profit_usd {

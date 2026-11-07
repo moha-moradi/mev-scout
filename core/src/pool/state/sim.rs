@@ -52,8 +52,12 @@ pub fn quote_swap_post(
             } else {
                 (v2.reserve1, v2.reserve0)
             };
-            let amount_out =
-                constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee_tier())?;
+            let amount_out = constant_product_output_amount(
+                amount_in,
+                reserve_in,
+                reserve_out,
+                v2.info.fee_tier(),
+            )?;
             // Full amount_in is added to reserves (fee is implicit in amount_out).
             let (reserve0, reserve1) = if zero_for_one {
                 (

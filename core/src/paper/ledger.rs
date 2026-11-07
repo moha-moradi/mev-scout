@@ -78,6 +78,18 @@ fn exec_skip(
     }
 }
 
+fn apply_wallet_delta(wallet: &mut u128, peak: &mut u128, max_drawdown: &mut u128, delta: i128) {
+    *wallet = wallet.saturating_add_signed(delta);
+    if *wallet > *peak {
+        *peak = *wallet;
+    } else {
+        let dd = peak.saturating_sub(*wallet);
+        if dd > *max_drawdown {
+            *max_drawdown = dd;
+        }
+    }
+}
+
 fn pools_of(opp: &MevOpportunity) -> Vec<Address> {
     let mut pools = Vec::new();
     if !opp.pool_a.is_zero() {
@@ -290,6 +302,9 @@ impl LedgerPolicy {
             exec_mode: "none".to_string(),
             exec_ok: 0,
             exec_revert: 0,
+            revert_gas_wei: 0,
+            exec_loss_wei: 0,
+            setup_gas_wei: 0,
             recon_pass: None,
             recon_fail: None,
             recon_unverifiable: None,
@@ -483,6 +498,9 @@ impl LedgerPolicy {
             exec_mode: "none".to_string(),
             exec_ok: 0,
             exec_revert: 0,
+            revert_gas_wei: 0,
+            exec_loss_wei: 0,
+            setup_gas_wei: 0,
             recon_pass: None,
             recon_fail: None,
             recon_unverifiable: None,
@@ -495,7 +513,8 @@ impl LedgerPolicy {
     /// Pool-conflict is not a pre-skip: `run` is invoked sequentially so the
     /// backend's committed state is what makes a later candidate revert or
     /// earn less. `run` is called only after the strategy, claimed-net, fill
-    /// cap, and gas-wallet gates pass.
+    /// cap, and gas-wallet gates pass. The callback receives the current
+    /// wallet balance so backends can fund the searcher realistically.
     pub fn apply_executed<F>(
         &self,
         opportunities: &[MevOpportunity],
@@ -504,7 +523,7 @@ impl LedgerPolicy {
         mut run: F,
     ) -> LedgerResult
     where
-        F: FnMut(&MevOpportunity) -> ExecAttempt,
+        F: FnMut(&MevOpportunity, u128 /* wallet_before */) -> ExecAttempt,
     {
         let max_fills = self.max_fills_per_block.clamp(1, HARD_MAX_FILLS_PER_BLOCK);
         let mut wallet = self.starting_gas_wei;
@@ -520,6 +539,8 @@ impl LedgerPolicy {
         let mut end_block: Option<u64> = None;
         let mut exec_ok: u64 = 0;
         let mut exec_revert: u64 = 0;
+        let mut revert_gas_wei: u128 = 0;
+        let mut exec_loss_wei: u128 = 0;
 
         let mut by_block: BTreeMap<u64, Vec<&MevOpportunity>> = BTreeMap::new();
         for opp in opportunities {
@@ -588,6 +609,16 @@ impl LedgerPolicy {
                     ));
                     continue;
                 }
+                if wallet <= self.reserve_wei {
+                    skips.push(exec_skip(
+                        block,
+                        tx_index,
+                        &cid,
+                        &strategy,
+                        FillSkipReason::InsufficientGas,
+                    ));
+                    continue;
+                }
                 let surplus = wallet.saturating_sub(self.reserve_wei);
                 if opp.gas_cost_wei > surplus {
                     skips.push(exec_skip(
@@ -600,16 +631,36 @@ impl LedgerPolicy {
                     continue;
                 }
 
-                let attempt = run(opp);
+                let attempt = run(opp, wallet);
                 if let Some(reason) = attempt.fail {
                     if reason == FillSkipReason::ExecRevert {
                         exec_revert += 1;
+                        if attempt.gas_wei > 0 {
+                            apply_wallet_delta(
+                                &mut wallet,
+                                &mut peak,
+                                &mut max_drawdown,
+                                -(attempt.gas_wei as i128),
+                            );
+                            revert_gas_wei = revert_gas_wei.saturating_add(attempt.gas_wei);
+                            gas_total = gas_total.saturating_add(attempt.gas_wei);
+                        }
                     }
                     skips.push(exec_skip(block, tx_index, &cid, &strategy, reason));
                     continue;
                 }
                 if !attempt.status {
                     exec_revert += 1;
+                    if attempt.gas_wei > 0 {
+                        apply_wallet_delta(
+                            &mut wallet,
+                            &mut peak,
+                            &mut max_drawdown,
+                            -(attempt.gas_wei as i128),
+                        );
+                        revert_gas_wei = revert_gas_wei.saturating_add(attempt.gas_wei);
+                        gas_total = gas_total.saturating_add(attempt.gas_wei);
+                    }
                     skips.push(exec_skip(
                         block,
                         tx_index,
@@ -620,6 +671,11 @@ impl LedgerPolicy {
                     continue;
                 }
                 if attempt.net_wei <= 0 {
+                    apply_wallet_delta(&mut wallet, &mut peak, &mut max_drawdown, attempt.net_wei);
+                    if attempt.net_wei < 0 {
+                        exec_loss_wei = exec_loss_wei.saturating_add((-attempt.net_wei) as u128);
+                    }
+                    gas_total = gas_total.saturating_add(attempt.gas_wei);
                     skips.push(exec_skip(
                         block,
                         tx_index,
@@ -634,16 +690,8 @@ impl LedgerPolicy {
                 let gas = attempt.gas_wei;
                 let gross = (net as u128).saturating_add(gas);
                 let wallet_before = wallet;
-                wallet = wallet.saturating_add(net as u128);
+                apply_wallet_delta(&mut wallet, &mut peak, &mut max_drawdown, net);
                 let wallet_after = wallet;
-                if wallet_after > peak {
-                    peak = wallet_after;
-                } else {
-                    let dd = peak.saturating_sub(wallet_after);
-                    if dd > max_drawdown {
-                        max_drawdown = dd;
-                    }
-                }
                 fills_this_block += 1;
                 exec_ok += 1;
                 let pools = pools_of(opp);
@@ -702,6 +750,9 @@ impl LedgerPolicy {
             exec_mode: exec_mode.to_string(),
             exec_ok,
             exec_revert,
+            revert_gas_wei,
+            exec_loss_wei,
+            setup_gas_wei: 0,
             recon_pass: None,
             recon_fail: None,
             recon_unverifiable: None,
@@ -1180,7 +1231,7 @@ mod tests {
             ExecAttempt::ran(true, 250, 80_000, 40, Some("0xabc".into())),
             ExecAttempt::ran(false, -10, 21_000, 10, Some("0xdef".into())),
         ];
-        let r = policy.apply_executed(&[good, bad, jit], SimMode::Assumed, "revm", |_| {
+        let r = policy.apply_executed(&[good, bad, jit], SimMode::Assumed, "revm", |_, _| {
             queued.remove(0)
         });
         assert_eq!(r.fills.len(), 1);
@@ -1189,7 +1240,9 @@ mod tests {
         assert_eq!(r.fills[0].exec_mode.as_deref(), Some("revm"));
         assert_eq!(r.exec_ok, 1);
         assert_eq!(r.exec_revert, 1);
-        assert_eq!(r.ending_gas_wei, 1_000_000 + 250);
+        assert_eq!(r.revert_gas_wei, 10);
+        // fill +250, revert burns 10 gas
+        assert_eq!(r.ending_gas_wei, 1_000_000 + 250 - 10);
         assert!(r
             .skips
             .iter()
@@ -1198,5 +1251,50 @@ mod tests {
             .skips
             .iter()
             .any(|s| s.reason == FillSkipReason::ExecRevert));
+    }
+
+    #[test]
+    fn apply_executed_passes_persistent_wallet_and_books_loss() {
+        let policy = LedgerPolicy {
+            starting_gas_wei: 1_000_000,
+            reserve_wei: 0,
+            max_fills_per_block: 32,
+        };
+        let a = opp(
+            1,
+            0,
+            Strategy::TwoHopArb,
+            address!("0x0000000000000000000000000000000000000011"),
+            address!("0x0000000000000000000000000000000000000022"),
+            500,
+            100,
+        );
+        let b = opp(
+            2,
+            0,
+            Strategy::TwoHopArb,
+            address!("0x0000000000000000000000000000000000000033"),
+            address!("0x0000000000000000000000000000000000000044"),
+            400,
+            50,
+        );
+        let mut seen = Vec::new();
+        let mut queued = vec![
+            ExecAttempt::ran(true, 200, 21_000, 20, Some("0x1".into())),
+            // Success but non-positive net → loss booked, no fill.
+            ExecAttempt::ran(true, -30, 21_000, 30, Some("0x2".into())),
+        ];
+        let r = policy.apply_executed(&[a, b], SimMode::Assumed, "revm", |_, wallet| {
+            seen.push(wallet);
+            queued.remove(0)
+        });
+        assert_eq!(seen, vec![1_000_000, 1_000_200]);
+        assert_eq!(r.fills.len(), 1);
+        assert_eq!(r.exec_loss_wei, 30);
+        assert_eq!(r.ending_gas_wei, 1_000_200 - 30);
+        assert!(r
+            .skips
+            .iter()
+            .any(|s| s.reason == FillSkipReason::NonPositiveNet));
     }
 }

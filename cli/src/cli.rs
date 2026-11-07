@@ -342,7 +342,7 @@ pub struct LiveArgs {
     #[arg(long = "sim", value_name = "MODE", help_heading = "Ledger")]
     pub sim: Option<String>,
 
-    /// Virtual execution backend: `none` (default), `revm`, `anvil`, or `testnet`.
+    /// Virtual execution backend: `none` (default), `revm`, or `anvil`.
     /// Overrides [paper].exec. Never broadcasts to mainnet.
     #[arg(long = "exec", value_name = "MODE", help_heading = "Ledger")]
     pub exec: Option<String>,

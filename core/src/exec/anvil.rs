@@ -1,15 +1,20 @@
-//! Local Anvil fork: spawn or attach, deploy the executor, send the same calldata.
+//! Local Anvil fork: spawn or attach, signed EIP-1559 deploy/send of the executor.
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use alloy::primitives::{Address, Bytes, U256};
+use alloy::consensus::{SignableTransaction, TxEip1559};
+use alloy::eips::eip2718::Encodable2718;
+use alloy::primitives::{Address, Bytes, TxKind, U256};
+use alloy::signers::local::PrivateKeySigner;
+use alloy::signers::SignerSync;
 use serde_json::{json, Value};
 
 use crate::paper::types::{ExecAttempt, FillSkipReason};
 
-use super::artifacts::creation_bytecode;
+use super::artifacts::{append_address_args, creation_bytecode};
 
 /// Dev (no fork) is instant; forked tip against a public RPC often needs a minute+.
 const READY_TIMEOUT_DEV: Duration = Duration::from_secs(20);
@@ -126,6 +131,150 @@ impl AnvilNode {
     }
 }
 
+/// Signed EIP-1559 sender for a local Anvil node.
+pub struct AnvilSender {
+    url: String,
+    chain_id: u64,
+    signer: PrivateKeySigner,
+    pub from: Address,
+    nonce: u64,
+}
+
+impl AnvilSender {
+    pub async fn connect(url: &str, key: &str) -> anyhow::Result<Self> {
+        assert_loopback(url)?;
+        let chain_id = remote_chain_id(url).await?;
+        let signer = PrivateKeySigner::from_str(key.trim())
+            .map_err(|e| anyhow::anyhow!("invalid exec key: {e}"))?;
+        let from = signer.address();
+        let nonce = pending_nonce(url, from).await?;
+        Ok(Self {
+            url: url.to_string(),
+            chain_id,
+            signer,
+            from,
+            nonce,
+        })
+    }
+
+    pub async fn fund(&mut self, wei: u128) -> anyhow::Result<()> {
+        assert_loopback(&self.url)?;
+        rpc(
+            &self.url,
+            "anvil_setBalance",
+            json!([format!("{:#x}", self.from), format!("0x{wei:x}")]),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Deploy FlashArbExecutor with constructor args `[operator, withdrawer, weth]`.
+    /// Returns `(address, setup_gas_wei)`.
+    pub async fn deploy_executor(&mut self, args: &[Address]) -> anyhow::Result<(Address, u128)> {
+        let code = append_address_args(&creation_bytecode()?, args);
+        let hash = self.send(None, code, 8_000_000).await?;
+        let receipt = wait_receipt(&self.url, &hash).await?;
+        let addr = receipt
+            .get("contractAddress")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("anvil deploy receipt missing contractAddress"))?;
+        let addr: Address = addr
+            .parse()
+            .map_err(|e| anyhow::anyhow!("anvil deploy address: {e}"))?;
+        let gas_used = hex_u64(
+            receipt
+                .get("gasUsed")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0x0"),
+        );
+        let gas_price = hex_u128(
+            receipt
+                .get("effectiveGasPrice")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0x0"),
+        );
+        Ok((addr, (gas_used as u128).saturating_mul(gas_price)))
+    }
+
+    pub async fn send_exec(&mut self, to: Address, data: Bytes) -> anyhow::Result<ExecAttempt> {
+        let before = balance_of(&self.url, self.from).await?;
+        let hash = match self.send(Some(to), data, 2_500_000).await {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!("anvil send failed: {e}");
+                return Ok(ExecAttempt::failed(FillSkipReason::ExecBuildFailed));
+            }
+        };
+        let receipt = match wait_receipt(&self.url, &hash).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("anvil receipt failed: {e}");
+                return Ok(ExecAttempt::reverted(0, 0, Some(hash)));
+            }
+        };
+        let status = receipt
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(|s| s == "0x1" || s == "1")
+            .unwrap_or(false);
+        let gas_used = hex_u64(
+            receipt
+                .get("gasUsed")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0x0"),
+        );
+        let gas_price = hex_u128(
+            receipt
+                .get("effectiveGasPrice")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0x0"),
+        );
+        let after = balance_of(&self.url, self.from).await.unwrap_or(before);
+        let net = signed_delta(before, after);
+        Ok(ExecAttempt::ran(
+            status,
+            net,
+            gas_used,
+            (gas_used as u128).saturating_mul(gas_price),
+            Some(hash),
+        ))
+    }
+
+    async fn send(&mut self, to: Option<Address>, data: Bytes, gas: u64) -> anyhow::Result<String> {
+        assert_loopback(&self.url)?;
+        let gas_price = gas_price(&self.url).await?;
+        let tx = TxEip1559 {
+            chain_id: self.chain_id,
+            nonce: self.nonce,
+            gas_limit: gas,
+            max_fee_per_gas: gas_price.saturating_mul(2),
+            max_priority_fee_per_gas: 1_000_000_000,
+            to: match to {
+                Some(addr) => TxKind::Call(addr),
+                None => TxKind::Create,
+            },
+            value: U256::ZERO,
+            input: data,
+            access_list: Default::default(),
+        };
+        let sig = self
+            .signer
+            .sign_hash_sync(&tx.signature_hash())
+            .map_err(|e| anyhow::anyhow!("sign: {e}"))?;
+        let raw = tx.into_signed(sig).encoded_2718();
+        let v = rpc(
+            &self.url,
+            "eth_sendRawTransaction",
+            json!([format!("0x{}", hex::encode(raw))]),
+        )
+        .await?;
+        self.nonce = self.nonce.saturating_add(1);
+        v.as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("eth_sendRawTransaction returned {v}"))
+    }
+}
+
 fn spawn_stderr_reader(mut pipe: impl Read + Send + 'static, sink: Arc<Mutex<String>>) {
     std::thread::spawn(move || {
         let mut buf = [0u8; 1024];
@@ -167,6 +316,7 @@ pub fn anvil_args(bin: &str, fork_url: Option<&str>, block: Option<u64>, port: u
 }
 
 pub async fn reset_fork(url: &str, fork_url: &str, block: u64) -> anyhow::Result<()> {
+    assert_loopback(url)?;
     rpc(
         url,
         "anvil_reset",
@@ -176,101 +326,7 @@ pub async fn reset_fork(url: &str, fork_url: &str, block: u64) -> anyhow::Result
     Ok(())
 }
 
-pub async fn impersonate_and_fund(url: &str, who: Address) -> anyhow::Result<()> {
-    let addr = format!("{who:#x}");
-    rpc(url, "anvil_impersonateAccount", json!([addr])).await?;
-    // 1000 native. Anvil accepts a hex quantity.
-    rpc(
-        url,
-        "anvil_setBalance",
-        json!([addr, format!("0x{:x}", 1_000u128 * 10u128.pow(18))]),
-    )
-    .await?;
-    Ok(())
-}
-
-pub async fn deploy_executor(url: &str, from: Address) -> anyhow::Result<Address> {
-    let code = creation_bytecode()?;
-    let hash = send_tx(url, from, None, code, 8_000_000).await?;
-    let receipt = wait_receipt(url, &hash).await?;
-    let addr = receipt
-        .get("contractAddress")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("anvil deploy receipt missing contractAddress"))?;
-    addr.parse()
-        .map_err(|e| anyhow::anyhow!("anvil deploy address: {e}"))
-}
-
-pub async fn send_exec(
-    url: &str,
-    from: Address,
-    to: Address,
-    data: Bytes,
-) -> anyhow::Result<ExecAttempt> {
-    let before = balance_of(url, from).await?;
-    let hash = match send_tx(url, from, Some(to), data, 2_500_000).await {
-        Ok(h) => h,
-        Err(e) => {
-            tracing::warn!("anvil send failed: {e}");
-            return Ok(ExecAttempt::failed(FillSkipReason::ExecBuildFailed));
-        }
-    };
-    let receipt = match wait_receipt(url, &hash).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!("anvil receipt failed: {e}");
-            return Ok(ExecAttempt::failed(FillSkipReason::ExecRevert));
-        }
-    };
-    let status = receipt
-        .get("status")
-        .and_then(|v| v.as_str())
-        .map(|s| s == "0x1" || s == "1")
-        .unwrap_or(false);
-    let gas_used = hex_u64(
-        receipt
-            .get("gasUsed")
-            .and_then(|v| v.as_str())
-            .unwrap_or("0x0"),
-    );
-    let gas_price = hex_u128(
-        receipt
-            .get("effectiveGasPrice")
-            .and_then(|v| v.as_str())
-            .unwrap_or("0x0"),
-    );
-    let after = balance_of(url, from).await.unwrap_or(before);
-    let net = signed_delta(before, after);
-    Ok(ExecAttempt::ran(
-        status,
-        net,
-        gas_used,
-        (gas_used as u128).saturating_mul(gas_price),
-        Some(hash),
-    ))
-}
-
-async fn send_tx(
-    url: &str,
-    from: Address,
-    to: Option<Address>,
-    data: Bytes,
-    gas: u64,
-) -> anyhow::Result<String> {
-    let mut tx = serde_json::Map::new();
-    tx.insert("from".into(), json!(format!("{from:#x}")));
-    if let Some(to) = to {
-        tx.insert("to".into(), json!(format!("{to:#x}")));
-    }
-    tx.insert("data".into(), json!(format!("0x{}", hex::encode(data))));
-    tx.insert("gas".into(), json!(format!("0x{gas:x}")));
-    let v = rpc(url, "eth_sendTransaction", json!([Value::Object(tx)])).await?;
-    v.as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("eth_sendTransaction returned {v}"))
-}
-
-async fn wait_receipt(url: &str, hash: &str) -> anyhow::Result<Value> {
+pub async fn wait_receipt(url: &str, hash: &str) -> anyhow::Result<Value> {
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         let v = rpc(url, "eth_getTransactionReceipt", json!([hash])).await?;
@@ -280,6 +336,37 @@ async fn wait_receipt(url: &str, hash: &str) -> anyhow::Result<Value> {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     anyhow::bail!("timed out waiting for receipt {hash}")
+}
+
+async fn remote_chain_id(url: &str) -> anyhow::Result<u64> {
+    let v = rpc(url, "eth_chainId", json!([])).await?;
+    let s = v
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("eth_chainId returned {v}"))?;
+    u64::from_str_radix(s.trim_start_matches("0x"), 16)
+        .map_err(|e| anyhow::anyhow!("eth_chainId: {e}"))
+}
+
+async fn pending_nonce(url: &str, who: Address) -> anyhow::Result<u64> {
+    let v = rpc(
+        url,
+        "eth_getTransactionCount",
+        json!([format!("{who:#x}"), "pending"]),
+    )
+    .await?;
+    let s = v
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("nonce returned {v}"))?;
+    u64::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|e| anyhow::anyhow!("nonce: {e}"))
+}
+
+async fn gas_price(url: &str) -> anyhow::Result<u128> {
+    let v = rpc(url, "eth_gasPrice", json!([])).await?;
+    let s = v
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("eth_gasPrice returned {v}"))?;
+    u128::from_str_radix(s.trim_start_matches("0x"), 16)
+        .map_err(|e| anyhow::anyhow!("eth_gasPrice: {e}"))
 }
 
 async fn balance_of(url: &str, who: Address) -> anyhow::Result<U256> {
@@ -361,6 +448,7 @@ fn signed_delta(before: U256, after: U256) -> i128 {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::exec::ANVIL_DEFAULT_KEY;
 
     #[test]
     fn fork_args_include_block() {
@@ -377,8 +465,7 @@ mod tests {
         assert!(err.is_err());
     }
 
-    /// Spawns a local Anvil, deploys the executor, and checks code is present.
-    /// Returns immediately when `anvil` is not on PATH (or `ANVIL_BIN`).
+    /// Spawns a local Anvil, deploys the executor via signed CREATE.
     #[test]
     fn deploys_executor_when_anvil_is_installed() {
         let bin = std::env::var("ANVIL_BIN").unwrap_or_else(|_| "anvil".to_string());
@@ -396,9 +483,15 @@ mod tests {
         rt.block_on(async {
             let mut node = AnvilNode::spawn_dev(&bin).expect("spawn");
             node.wait_ready().await.expect("ready");
-            let from = super::super::ANVIL_DEFAULT_ADDRESS;
-            impersonate_and_fund(&node.url, from).await.expect("fund");
-            let deployed = deploy_executor(&node.url, from).await.expect("deploy");
+            let mut sender = AnvilSender::connect(&node.url, ANVIL_DEFAULT_KEY)
+                .await
+                .expect("connect");
+            sender.fund(10u128.pow(18)).await.expect("fund");
+            let weth = Address::repeat_byte(0x11);
+            let (deployed, _) = sender
+                .deploy_executor(&[sender.from, sender.from, weth])
+                .await
+                .expect("deploy");
             let code = rpc(
                 &node.url,
                 "eth_getCode",
@@ -411,9 +504,55 @@ mod tests {
         });
     }
 
-    /// Fixed local chain, two flash-arbs through the same V2 pools. The second
-    /// receipt is a real Anvil tx and earns less (or reverts) because the first
-    /// take moved the reserves. Skips when `anvil` or `forge` is not installed.
+    /// Non-operator cannot call execute (on-chain NotOperator).
+    #[test]
+    fn non_operator_execute_reverts() {
+        let bin = std::env::var("ANVIL_BIN").unwrap_or_else(|_| "anvil".to_string());
+        if std::process::Command::new(&bin)
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let mut node = AnvilNode::spawn_dev(&bin).expect("spawn");
+            node.wait_ready().await.expect("ready");
+            let mut operator = AnvilSender::connect(&node.url, ANVIL_DEFAULT_KEY)
+                .await
+                .expect("op");
+            operator.fund(10u128.pow(18)).await.expect("fund");
+            let weth = Address::repeat_byte(0x22);
+            let (executor, _) = operator
+                .deploy_executor(&[operator.from, operator.from, weth])
+                .await
+                .expect("deploy");
+
+            // Anvil account #1 — not the operator (Foundry default, 32-byte key).
+            const OTHER: &str =
+                "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b786466";
+            let mut stranger = AnvilSender::connect(&node.url, OTHER)
+                .await
+                .expect("stranger");
+            stranger.fund(10u128.pow(18)).await.expect("fund stranger");
+            let data = crate::exec::encode_execute(&sample_plan(
+                Address::repeat_byte(0x33),
+                weth,
+                Address::repeat_byte(0x44),
+                Address::repeat_byte(0x55),
+                Address::repeat_byte(0x66),
+                U256::from(1u64),
+            ));
+            let attempt = stranger.send_exec(executor, data).await.expect("send");
+            assert!(!attempt.status, "stranger execute must revert: {attempt:?}");
+        });
+    }
+
+    /// Fixed local chain, two flash-arbs through the same V2 pools.
     #[test]
     fn same_pool_second_candidate_earns_less() {
         let bin = std::env::var("ANVIL_BIN").unwrap_or_else(|_| "anvil".to_string());
@@ -424,17 +563,17 @@ mod tests {
         {
             return;
         }
-        if std::process::Command::new("forge")
+        let forge = foundry_bin("forge");
+        if std::process::Command::new(&forge)
             .arg("--version")
             .output()
             .is_err()
         {
             return;
         }
-        let weth_code = forge_creation("MockERC20");
-        let pair_code = forge_creation("MockV2Pair");
-        let vault_code = forge_creation("MockVault");
-        let exec_code = forge_creation("FlashArbExecutor");
+        let weth_code = forge_creation(&forge, "MockERC20");
+        let pair_code = forge_creation(&forge, "MockV2Pair");
+        let vault_code = forge_creation(&forge, "MockVault");
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -443,31 +582,32 @@ mod tests {
         rt.block_on(async {
             let mut node = AnvilNode::spawn_dev(&bin).expect("spawn");
             node.wait_ready().await.expect("ready");
-            let from = super::super::ANVIL_DEFAULT_ADDRESS;
-            impersonate_and_fund(&node.url, from).await.expect("fund");
+            let mut sender = AnvilSender::connect(&node.url, ANVIL_DEFAULT_KEY)
+                .await
+                .expect("connect");
+            sender.fund(1_000u128 * 10u128.pow(18)).await.expect("fund");
+            let from = sender.from;
 
-            let weth = deploy(&node.url, from, Bytes::from(weth_code.clone())).await;
-            let usdc = deploy(&node.url, from, Bytes::from(weth_code)).await;
-            let cheap = deploy(
-                &node.url,
-                from,
-                with_addrs(pair_code.clone(), &[weth, usdc]),
-            )
-            .await;
-            let rich = deploy(&node.url, from, with_addrs(pair_code, &[weth, usdc])).await;
-            let vault = deploy(&node.url, from, Bytes::from(vault_code)).await;
-            let executor = deploy(&node.url, from, Bytes::from(exec_code)).await;
+            let weth = deploy_raw(&mut sender, Bytes::from(weth_code.clone())).await;
+            let usdc = deploy_raw(&mut sender, Bytes::from(weth_code)).await;
+            let cheap = deploy_raw(&mut sender, with_addrs(pair_code.clone(), &[weth, usdc])).await;
+            let rich = deploy_raw(&mut sender, with_addrs(pair_code, &[weth, usdc])).await;
+            let vault = deploy_raw(&mut sender, Bytes::from(vault_code)).await;
+            let (executor, _) = sender
+                .deploy_executor(&[from, from, weth])
+                .await
+                .expect("exec deploy");
 
-            call(&node.url, from, weth, selector_call("setWithdrawer()")).await;
+            call_raw(&mut sender, weth, selector_call("setWithdrawer()")).await;
             let ten = eth(10);
             let hundred = eth(100);
-            call(&node.url, from, weth, mint_data(cheap, ten)).await;
-            call(&node.url, from, usdc, mint_data(cheap, eth(20_000))).await;
-            call(&node.url, from, cheap, selector_call("sync()")).await;
-            call(&node.url, from, weth, mint_data(rich, ten)).await;
-            call(&node.url, from, usdc, mint_data(rich, eth(30_000))).await;
-            call(&node.url, from, rich, selector_call("sync()")).await;
-            call(&node.url, from, weth, mint_data(vault, hundred)).await;
+            call_raw(&mut sender, weth, mint_data(cheap, ten)).await;
+            call_raw(&mut sender, usdc, mint_data(cheap, eth(20_000))).await;
+            call_raw(&mut sender, cheap, selector_call("sync()")).await;
+            call_raw(&mut sender, weth, mint_data(rich, ten)).await;
+            call_raw(&mut sender, usdc, mint_data(rich, eth(30_000))).await;
+            call_raw(&mut sender, rich, selector_call("sync()")).await;
+            call_raw(&mut sender, weth, mint_data(vault, hundred)).await;
             rpc(
                 &node.url,
                 "anvil_setBalance",
@@ -479,14 +619,13 @@ mod tests {
             .await
             .expect("fund weth");
 
-            let plan = sample_plan(vault, weth, usdc, rich, cheap, from, eth(1));
+            let plan = sample_plan(vault, weth, usdc, rich, cheap, eth(1));
             let data = crate::exec::encode_execute(&plan);
-            let first = send_exec(&node.url, from, executor, data.clone())
+            let first = sender
+                .send_exec(executor, data.clone())
                 .await
                 .expect("first");
-            let second = send_exec(&node.url, from, executor, data)
-                .await
-                .expect("second");
+            let second = sender.send_exec(executor, data).await.expect("second");
 
             assert!(first.status, "first candidate should land: {first:?}");
             assert!(first.tx_hash.is_some() && second.tx_hash.is_some());
@@ -502,10 +641,29 @@ mod tests {
         });
     }
 
-    fn forge_creation(contract: &str) -> Vec<u8> {
+    fn foundry_bin(name: &str) -> String {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default();
+        let candidate = std::path::PathBuf::from(home)
+            .join(".foundry")
+            .join("bin")
+            .join(if cfg!(windows) {
+                format!("{name}.exe")
+            } else {
+                name.to_string()
+            });
+        if candidate.exists() {
+            candidate.to_string_lossy().into_owned()
+        } else {
+            name.to_string()
+        }
+    }
+
+    fn forge_creation(forge: &str, contract: &str) -> Vec<u8> {
         let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../contracts");
         let path = find_artifact(&dir.join("out"), contract).unwrap_or_else(|| {
-            let out = std::process::Command::new("forge")
+            let out = std::process::Command::new(forge)
                 .arg("build")
                 .current_dir(&dir)
                 .output()
@@ -586,7 +744,6 @@ mod tests {
         usdc: Address,
         rich: Address,
         cheap: Address,
-        profit_to: Address,
         amount: U256,
     ) -> crate::exec::plan::ExecPlan {
         use crate::exec::plan::{ExecLeg, ExecPlan};
@@ -595,6 +752,8 @@ mod tests {
             vault,
             borrow_token: weth,
             amount,
+            min_profit: U256::from(1u64),
+            deadline: u64::MAX / 2,
             legs: vec![
                 ExecLeg {
                     pool: rich,
@@ -611,17 +770,18 @@ mod tests {
                     fee: 30,
                 },
             ],
-            profit_to,
-            weth,
             provider: FlashLoanProvider::Balancer,
         }
     }
 
-    async fn deploy(url: &str, from: Address, code: Bytes) -> Address {
-        let hash = send_tx(url, from, None, code, 8_000_000)
+    async fn deploy_raw(sender: &mut AnvilSender, code: Bytes) -> Address {
+        let hash = sender
+            .send(None, code, 8_000_000)
             .await
             .expect("deploy send");
-        let receipt = wait_receipt(url, &hash).await.expect("deploy receipt");
+        let receipt = wait_receipt(&sender.url, &hash)
+            .await
+            .expect("deploy receipt");
         assert_status(&receipt, "deploy");
         receipt
             .get("contractAddress")
@@ -631,11 +791,11 @@ mod tests {
             .expect("address")
     }
 
-    async fn call(url: &str, from: Address, to: Address, data: Bytes) {
-        let hash = send_tx(url, from, Some(to), data, 2_000_000)
+    async fn call_raw(sender: &mut AnvilSender, to: Address, data: Bytes) {
+        let hash = sender.send(Some(to), data, 2_000_000).await.expect("call");
+        let receipt = wait_receipt(&sender.url, &hash)
             .await
-            .expect("call");
-        let receipt = wait_receipt(url, &hash).await.expect("call receipt");
+            .expect("call receipt");
         assert_status(&receipt, "call");
     }
 

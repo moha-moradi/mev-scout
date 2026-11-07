@@ -53,6 +53,8 @@ pub struct WhatIfRun {
     /// Per-address native balance deltas (post − pre) for accounts touched by
     /// this tx, coinbase excluded. Zero deltas are dropped.
     pub deltas: Vec<(Address, i128)>,
+    /// CREATE address when the tx deployed a contract; `None` otherwise.
+    pub created: Option<Address>,
 }
 
 impl WhatIfRun {
@@ -108,12 +110,16 @@ pub fn executed_map(runs: &[WhatIfRun], keys: &[String]) -> ExecutedNetMap {
 /// Execute a candidate bundle against a caller-supplied database as one EVM
 /// block, returning one [`WhatIfRun`] per tx. Txs commit sequentially, so the
 /// N-th runs against the post-state of txs `0..N` (bundle semantics).
-pub fn execute_whatif(
-    db: CacheDB<CachedRpcDb>,
+pub fn execute_whatif<ExtDB>(
+    db: CacheDB<ExtDB>,
     cfg: CfgEnv,
     block: BlockEnv,
     txs: &[TxEnv],
-) -> anyhow::Result<(Vec<WhatIfRun>, CacheDB<CachedRpcDb>)> {
+) -> anyhow::Result<(Vec<WhatIfRun>, CacheDB<ExtDB>)>
+where
+    ExtDB: DatabaseRef,
+    <ExtDB as DatabaseRef>::Error: std::fmt::Display + Send + Sync + 'static,
+{
     let beneficiary = block.beneficiary;
     let mut evm = Context::mainnet()
         .with_db(db)
@@ -137,12 +143,14 @@ pub fn execute_whatif(
                     gas_used: tx.gas_limit,
                     committed: false,
                     deltas: Vec::new(),
+                    created: None,
                 });
                 continue;
             }
         };
         let status = exec_and_state.result.is_success();
         let gas_used = exec_and_state.result.tx_gas_used();
+        let created = exec_and_state.result.created_address();
         let mut deltas: Vec<(Address, i128)> = Vec::new();
         for (addr, acc) in &exec_and_state.state {
             if *addr == beneficiary {
@@ -162,6 +170,7 @@ pub fn execute_whatif(
             gas_used,
             committed: true,
             deltas,
+            created,
         });
     }
     let db = evm.ctx.journaled_state.database;
@@ -169,7 +178,11 @@ pub fn execute_whatif(
 }
 
 /// Pre-tx balance of `addr` from revm's un-committed database.
-fn balance_of(db: &CacheDB<CachedRpcDb>, addr: Address) -> anyhow::Result<U256> {
+fn balance_of<ExtDB>(db: &CacheDB<ExtDB>, addr: Address) -> anyhow::Result<U256>
+where
+    ExtDB: DatabaseRef,
+    <ExtDB as DatabaseRef>::Error: std::fmt::Display + Send + Sync + 'static,
+{
     db.basic_ref(addr)
         .map(|a| a.map(|info| info.balance).unwrap_or(U256::ZERO))
         .map_err(|e| anyhow::anyhow!("what-if balance read for {addr:#x}: {e}"))
@@ -282,6 +295,7 @@ impl BlockReplayer {
                             gas_used: tx.gas_limit,
                             committed: false,
                             deltas: Vec::new(),
+                            created: None,
                         },
                     ));
                     continue;
@@ -289,6 +303,7 @@ impl BlockReplayer {
             };
             let status = exec_and_state.result.is_success();
             let gas_used = exec_and_state.result.tx_gas_used();
+            let created = exec_and_state.result.created_address();
             let mut deltas: Vec<(Address, i128)> = Vec::new();
             for (addr, acc) in &exec_and_state.state {
                 if *addr == beneficiary {
@@ -310,6 +325,7 @@ impl BlockReplayer {
                     gas_used,
                     committed: true,
                     deltas,
+                    created,
                 },
             ));
         }

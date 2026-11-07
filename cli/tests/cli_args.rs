@@ -98,6 +98,10 @@ fn live_help_lists_ledger_flags() {
             "live --help missing ledger flag '{flag}'"
         );
     }
+    assert!(
+        !out.stdout.to_ascii_lowercase().contains("testnet"),
+        "live --help must not mention testnet"
+    );
     // Price-injection and internal tuning knobs moved to config-only.
     for removed in [
         "--initial-balance-usd",
@@ -109,6 +113,25 @@ fn live_help_lists_ledger_flags() {
             "live --help still lists removed flag '{removed}'"
         );
     }
+}
+
+#[test]
+fn live_exec_testnet_is_rejected() {
+    let ws = temp_ws("args_live_exec_testnet");
+    let cfg_path = make_cfg(&ws, &[]);
+    let out = run(
+        &ws,
+        &[
+            "-f", &cfg_path, "live", "--exec", "testnet", "--blocks", "1",
+        ],
+    );
+    expect_fail(&out, "live --exec testnet");
+    let combined = out.combined().to_ascii_lowercase();
+    assert!(
+        combined.contains("expected") || combined.contains("invalid"),
+        "expected rejection of testnet, got:\n{}",
+        out.combined()
+    );
 }
 
 /// Removed / unknown CLI surface — one table-driven gate instead of N clones.

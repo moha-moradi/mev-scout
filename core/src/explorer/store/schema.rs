@@ -37,6 +37,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v10_pricing_flags,
     migrate_v11_paper_fill_verification,
     migrate_v12_paper_exec,
+    migrate_v13_paper_exec_cost,
 ];
 
 /// Current schema head (`PRAGMA user_version` after a full migrate).
@@ -299,7 +300,7 @@ fn migrate_v11_paper_fill_verification(conn: &Connection) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// Execution columns for `--exec revm|anvil|testnet`. Assumed/state fills leave them null.
+/// Execution columns for `--exec revm|anvil`. Assumed/state fills leave them null.
 fn migrate_v12_paper_exec(conn: &Connection) -> anyhow::Result<()> {
     ExplorerStore::ensure_column(conn, "paper_sessions", "exec_mode", "TEXT")?;
     ExplorerStore::ensure_column(conn, "paper_sessions", "exec_ok", "INTEGER")?;
@@ -309,6 +310,14 @@ fn migrate_v12_paper_exec(conn: &Connection) -> anyhow::Result<()> {
     ExplorerStore::ensure_column(conn, "paper_fills", "exec_gas_used", "INTEGER")?;
     ExplorerStore::ensure_column(conn, "paper_fills", "exec_net_wei", "TEXT")?;
     ExplorerStore::ensure_column(conn, "paper_fills", "tx_hash", "TEXT")?;
+    Ok(())
+}
+
+/// Revert/loss/setup gas totals for virtual-wallet accounting.
+fn migrate_v13_paper_exec_cost(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_column(conn, "paper_sessions", "revert_gas_wei", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "paper_sessions", "exec_loss_wei", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "paper_sessions", "setup_gas_wei", "TEXT")?;
     Ok(())
 }
 

@@ -32,10 +32,7 @@ pub use index::cmd_index;
 pub use report::cmd_explorer_report;
 
 /// Run `explorer dashboard` from clap [`crate::cli::DashboardArgs`].
-pub async fn run_dashboard(
-    config: &Config,
-    a: &crate::cli::DashboardArgs,
-) -> anyhow::Result<()> {
+pub async fn run_dashboard(config: &Config, a: &crate::cli::DashboardArgs) -> anyhow::Result<()> {
     let repeat = match a.repeat.as_deref() {
         None => None,
         Some(s) => Some(

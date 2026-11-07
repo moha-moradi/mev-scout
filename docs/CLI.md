@@ -169,7 +169,7 @@ mev-scout live --exec anvil --blocks 8        # same path on a local Anvil fork
 | `--initial-balance <wei>` | Virtual wallet seed; overrides `[paper].starting_gas_wei` |
 | `--reserve <wei>` | Gas kept back from the wallet; overrides `[paper].reserve_wei` |
 | `--sim <assumed\|state>` | Ledger fill mode; overrides `[paper].sim` (default `assumed`) |
-| `--exec <none\|revm\|anvil\|testnet>` | Virtual FlashArb backend; overrides `[paper].exec` (default `none`). Never mainnet broadcast |
+| `--exec <none\|revm\|anvil>` | Virtual FlashArb backend; overrides `[paper].exec` (default `none`). Local only — never mainnet broadcast |
 
 #### Implicit bootstrap
 
@@ -576,28 +576,30 @@ Fill modes (`--sim` / `[paper].sim`):
 | `state` | Quote legs against seeded pool state (`apply_simulated`) |
 
 Virtual execution (`--exec` / `[paper].exec`) — opt-in FlashArb path via
-`contracts/FlashArbExecutor` (Balancer flash → V2/V3 legs). Default `none`
-leaves `--sim` alone:
+`contracts/FlashArbExecutor` ABI v2 (operator-only execute, immutable
+withdrawer/weth, `minProfit` + `deadline`; Balancer flash → V2/V3 legs).
+Default `none` leaves `--sim` alone:
 
 | Mode | Backend |
 |---|---|
 | `none` | Paper / state-sim only |
-| `revm` | In-process EVM on historical RPC state; ledger from executed net |
-| `anvil` | Local Anvil mainnet-fork; real txs, Anvil tx hashes in report |
-| `testnet` | Known testnets only (Sepolia, Amoy, Fuji, …); needs `exec_key` / `MEV_SCOUT_EXEC_KEY` |
+| `revm` | Real CREATE deploy + in-process EVM on positioned historical state; ledger from executed net (revert gas debited) |
+| `anvil` | Local Anvil mainnet-fork; signed EIP-1559 raw txs (`exec_key` or Anvil #0); wallet funded from ledger |
 
 With `--exec` + `--sim state`, `live` also runs state-vs-exec recon
 (`recon: state vs exec N pass / M fail / …`). JIT and non-V2/V3 paths skip
-explicitly (`ExecStrategyUnsupported`).
+explicitly (`ExecStrategyUnsupported`). Session summary may show
+`revert gas` / `loss` / `setup` (deploy overhead is observe-only).
 
 The standalone `paper` command was removed — see §3.2 for the flags.
 
 `[paper]` TOML: `starting_gas_wei`, `reserve_wei`, `max_fills_per_block`
 (hard-capped at 32/block), `sim_max_candidates_per_block` (wired via
-`LiveOpts` / `LedgerPolicy` / `with_sim_seeds`), `sim`, `exec`, `exec_key`,
-`executor_address`, `anvil_bin`, `anvil_url`. Balance and reserve may be
+`LiveOpts` / `LedgerPolicy` / `with_sim_seeds`), `sim`, `exec`, `exec_key`
+(also selects the Anvil signer), `anvil_bin`, `anvil_url`. Balance and reserve may be
 overridden per session; `max_fills_per_block` and
-`sim_max_candidates_per_block` are TOML-only:
+`sim_max_candidates_per_block` are TOML-only. `paper_sessions` also stores
+`revert_gas_wei`, `exec_loss_wei`, `setup_gas_wei`.
 
 ```powershell
 mev-scout live --initial-balance 1000000000000000000
@@ -609,7 +611,7 @@ mev-scout live --sim state --exec revm --blocks 32
 flowchart TB
   detect["live / opportunities"] --> gate{"exec mode"}
   gate -->|none| ledger["assumed or state-sim"]
-  gate -->|revm / anvil / testnet| build["FlashArb bundle"]
+  gate -->|revm / anvil| build["FlashArb bundle"]
   build --> run["EVM backend"]
   run --> ledger
   ledger --> sess["paper_sessions + paper_fills"]

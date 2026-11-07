@@ -2,13 +2,13 @@
 pragma solidity 0.8.24;
 
 /// @title FlashArbExecutor
-/// @notice ABI v1 flash-arb executor. Borrows from Balancer V2 (fee 0), runs
+/// @notice ABI v2 flash-arb executor. Borrows from Balancer V2 (fee 0), runs
 ///         V2 `swap` / V3 exact-input pool `swap` (the pool-level equivalent of
 ///         `exactInputSingle` — no router address, so any V3 fork works),
-///         repays the vault, and forwards leftover borrow-token to `profitTo`.
-///         When the borrow token is WETH, the leftover is unwrapped so the
-///         searcher's native balance delta is the profit.
-/// @dev No profit sizing lives here. A short repay reverts the whole tx.
+///         repays the vault, and forwards leftover borrow-token to the
+///         immutable `withdrawer`. When the borrow token is WETH, leftover is
+///         unwrapped so the withdrawer's native balance delta is the profit.
+/// @dev Operator-only `execute`. `minProfit` is in borrow-token units.
 interface IERC20 {
     function balanceOf(address) external view returns (uint256);
     function transfer(address, uint256) external returns (bool);
@@ -45,22 +45,32 @@ interface IUniswapV3Pool {
 
 contract FlashArbExecutor {
     /// Bump when the `execute` / `Leg` ABI changes. Rust embeds the same number.
-    uint8 public constant ABI_VERSION = 1;
+    uint8 public constant ABI_VERSION = 2;
 
     /// Uniswap V3 tick-math limits. +1 / -1 keeps the pool from reverting on the boundary.
     uint160 internal constant MIN_SQRT_RATIO = 4295128739 + 1;
     uint160 internal constant MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342 - 1;
 
+    address public immutable operator;
+    address public immutable withdrawer;
+    address public immutable weth;
+
     address internal activeVault;
     address internal expectedV3Pool;
+    uint256 internal borrowBalanceBefore;
 
+    error NotOperator();
+    error Expired();
+    error Reentrant();
     error NotVault();
     error NotPool();
     error RepayFailed();
+    error MinProfit();
     error UnknownKind();
     error ZeroAmount();
     error TransferFailed();
     error EthForwardFailed();
+    error ZeroAddress();
 
     struct Leg {
         address pool;
@@ -75,15 +85,31 @@ contract FlashArbExecutor {
         address vault;
         address borrowToken;
         uint256 amount;
+        uint256 minProfit; // borrow-token units, not USD/wei
+        uint256 deadline; // unix seconds, checked against block.timestamp
         Leg[] legs;
-        address profitTo;
-        address weth;
+    }
+
+    constructor(address operator_, address withdrawer_, address weth_) {
+        if (operator_ == address(0) || withdrawer_ == address(0) || weth_ == address(0)) {
+            revert ZeroAddress();
+        }
+        operator = operator_;
+        withdrawer = withdrawer_;
+        weth = weth_;
     }
 
     receive() external payable {}
 
     function execute(Plan calldata plan) external {
+        if (msg.sender != operator) revert NotOperator();
+        if (block.timestamp > plan.deadline) revert Expired();
+        if (activeVault != address(0)) revert Reentrant();
         if (plan.amount == 0) revert ZeroAmount();
+        if (plan.vault == address(0)) revert ZeroAddress();
+        if (plan.legs.length == 0) revert ZeroAmount();
+
+        borrowBalanceBefore = IERC20(plan.borrowToken).balanceOf(address(this));
         activeVault = plan.vault;
 
         address[] memory tokens = new address[](1);
@@ -91,9 +117,10 @@ contract FlashArbExecutor {
         uint256[] memory amounts = new uint256[](1);
         amounts[0] = plan.amount;
 
-        bytes memory userData = abi.encode(plan.legs, plan.profitTo, plan.weth);
+        bytes memory userData = abi.encode(plan.legs, plan.minProfit);
         IBalancerVault(plan.vault).flashLoan(address(this), tokens, amounts, userData);
         activeVault = address(0);
+        borrowBalanceBefore = 0;
     }
 
     function receiveFlashLoan(
@@ -104,8 +131,7 @@ contract FlashArbExecutor {
     ) external {
         if (msg.sender != activeVault) revert NotVault();
 
-        (Leg[] memory legs, address profitTo, address weth) =
-            abi.decode(userData, (Leg[], address, address));
+        (Leg[] memory legs, uint256 minProfit) = abi.decode(userData, (Leg[], uint256));
 
         uint256 amount = amounts[0];
         for (uint256 i = 0; i < legs.length; i++) {
@@ -118,14 +144,33 @@ contract FlashArbExecutor {
         _transfer(tokens[0], msg.sender, repay);
 
         uint256 left = bal - repay;
-        if (left == 0 || profitTo == address(0)) return;
-        if (weth != address(0) && tokens[0] == weth) {
-            IWETH(weth).withdraw(left);
-            (bool ok,) = profitTo.call{value: left}("");
+        uint256 net = left > borrowBalanceBefore ? left - borrowBalanceBefore : 0;
+        if (net < minProfit) revert MinProfit();
+        if (net == 0) return;
+
+        if (tokens[0] == weth) {
+            IWETH(weth).withdraw(net);
+            (bool ok,) = withdrawer.call{value: net}("");
             if (!ok) revert EthForwardFailed();
         } else {
-            _transfer(tokens[0], profitTo, left);
+            _transfer(tokens[0], withdrawer, net);
         }
+    }
+
+    /// Operator-only recovery. Always sends to the immutable withdrawer.
+    function sweep(address token) external {
+        if (msg.sender != operator) revert NotOperator();
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        if (bal == 0) return;
+        _transfer(token, withdrawer, bal);
+    }
+
+    function sweepEth() external {
+        if (msg.sender != operator) revert NotOperator();
+        uint256 bal = address(this).balance;
+        if (bal == 0) return;
+        (bool ok,) = withdrawer.call{value: bal}("");
+        if (!ok) revert EthForwardFailed();
     }
 
     /// V3 pools pull the input token from this contract inside the callback.

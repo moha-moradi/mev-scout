@@ -68,12 +68,31 @@ fn addr_from_last_byte(b: u8) -> Address {
 
 /// Select EVM spec ID based on chain and block number.
 ///
+/// Ethereum mainnet block activations:
+/// - Frontier: 0
+/// - Homestead: 1,150,000
+/// - Tangerine Whistle: 2,463,000
+/// - Spurious Dragon: 2,675,000
+/// - Byzantium: 4,370,000
+/// - Petersburg (Constantinople fixes): 7,280,000
+/// - Istanbul: 9,069,000
+/// - Berlin: 12,244,000
+/// - London: 12,965,000
+/// - Merge: 15,537,394
+/// - Shanghai: 17,034,870
+/// - Cancun: 19,426,587
+/// - Prague: 22,431,084
+/// - Osaka: 23,935,694 (Amsterdam is not scheduled; use the latest live fork)
+///
 /// Polygon hardfork activation blocks (Bor):
 /// - Bhilai (EIP-7702 / Pectra): 73,440,256
 /// - Agra (Cancun): 50,523,000
 /// - London: 23,850,000
+///
+/// Chains without a known schedule use revm's latest spec (`NEXT`).
 pub fn spec_id_for_block(chain_id: u64, block_number: u64) -> SpecId {
     match chain_id {
+        1 => ethereum_spec_id(block_number),
         137 => {
             if block_number >= 73_440_256 {
                 SpecId::PRAGUE
@@ -86,6 +105,38 @@ pub fn spec_id_for_block(chain_id: u64, block_number: u64) -> SpecId {
             }
         }
         _ => SpecId::NEXT,
+    }
+}
+
+fn ethereum_spec_id(block_number: u64) -> SpecId {
+    if block_number >= 23_935_694 {
+        SpecId::OSAKA
+    } else if block_number >= 22_431_084 {
+        SpecId::PRAGUE
+    } else if block_number >= 19_426_587 {
+        SpecId::CANCUN
+    } else if block_number >= 17_034_870 {
+        SpecId::SHANGHAI
+    } else if block_number >= 15_537_394 {
+        SpecId::MERGE
+    } else if block_number >= 12_965_000 {
+        SpecId::LONDON
+    } else if block_number >= 12_244_000 {
+        SpecId::BERLIN
+    } else if block_number >= 9_069_000 {
+        SpecId::ISTANBUL
+    } else if block_number >= 7_280_000 {
+        SpecId::PETERSBURG
+    } else if block_number >= 4_370_000 {
+        SpecId::BYZANTIUM
+    } else if block_number >= 2_675_000 {
+        SpecId::SPURIOUS_DRAGON
+    } else if block_number >= 2_463_000 {
+        SpecId::TANGERINE
+    } else if block_number >= 1_150_000 {
+        SpecId::HOMESTEAD
+    } else {
+        SpecId::FRONTIER
     }
 }
 
@@ -300,6 +351,30 @@ impl BlockReplayer {
         }
     }
 
+    /// Next-block env for pending inclusion: N+1, timestamp+12, basefee×1.125.
+    pub(crate) fn build_next_block_env(&self, prev: &BlockData) -> BlockEnv {
+        let next_num = prev.number.saturating_add(1);
+        let spec = spec_id_for_block(self.chain_id, next_num);
+        let blob_excess_gas_and_price = if spec >= SpecId::CANCUN {
+            Some(BlobExcessGasAndPrice::new_with_spec(0, spec))
+        } else {
+            None
+        };
+        let base = prev.base_fee_per_gas.unwrap_or(0);
+        let next_base = base.saturating_mul(9) / 8; // ×1.125
+        BlockEnv {
+            number: U256::from(next_num),
+            beneficiary: prev.coinbase,
+            timestamp: U256::from(prev.timestamp.saturating_add(12)),
+            gas_limit: prev.gas_limit,
+            basefee: next_base as u64,
+            difficulty: prev.difficulty,
+            prevrandao: Some(prev.mix_hash),
+            blob_excess_gas_and_price,
+            slot_num: 0,
+        }
+    }
+
     pub(crate) fn tx_data_to_tx_env(&self, tx: &TxData) -> TxEnv {
         let kind = match tx.to {
             Some(addr) => TxKind::Call(addr),
@@ -312,8 +387,8 @@ impl BlockReplayer {
             value: tx.value,
             data: tx.input.clone(),
             gas_limit: tx.gas_limit,
-            gas_price: tx.max_fee_per_gas,
-            gas_priority_fee: tx.max_priority_fee_per_gas,
+            gas_price: tx.gas_price.unwrap_or(tx.max_fee_per_gas),
+            gas_priority_fee: tx.max_priority_fee_per_gas.or(tx.gas_price),
             nonce: tx.nonce,
             access_list: AccessList(
                 tx.access_list
@@ -698,5 +773,65 @@ impl BlockReplayer {
             output: Bytes::new(),
             error: Some(error_msg.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ethereum_mainnet_uses_its_fork_schedule() {
+        let cases = [
+            (0, SpecId::FRONTIER),
+            (1_149_999, SpecId::FRONTIER),
+            (1_150_000, SpecId::HOMESTEAD),
+            (2_462_999, SpecId::HOMESTEAD),
+            (2_463_000, SpecId::TANGERINE),
+            (2_674_999, SpecId::TANGERINE),
+            (2_675_000, SpecId::SPURIOUS_DRAGON),
+            (4_369_999, SpecId::SPURIOUS_DRAGON),
+            (4_370_000, SpecId::BYZANTIUM),
+            (7_279_999, SpecId::BYZANTIUM),
+            (7_280_000, SpecId::PETERSBURG),
+            (9_068_999, SpecId::PETERSBURG),
+            (9_069_000, SpecId::ISTANBUL),
+            (12_243_999, SpecId::ISTANBUL),
+            (12_244_000, SpecId::BERLIN),
+            (12_964_999, SpecId::BERLIN),
+            (12_965_000, SpecId::LONDON),
+            (15_537_393, SpecId::LONDON),
+            (15_537_394, SpecId::MERGE),
+            (17_034_869, SpecId::MERGE),
+            (17_034_870, SpecId::SHANGHAI),
+            (19_426_586, SpecId::SHANGHAI),
+            (19_426_587, SpecId::CANCUN),
+            (22_431_083, SpecId::CANCUN),
+            (22_431_084, SpecId::PRAGUE),
+            (23_935_693, SpecId::PRAGUE),
+            (23_935_694, SpecId::OSAKA),
+            (u64::MAX, SpecId::OSAKA),
+        ];
+        for (block, expected) in cases {
+            assert_eq!(
+                spec_id_for_block(1, block),
+                expected,
+                "Ethereum block {block}"
+            );
+        }
+    }
+
+    #[test]
+    fn polygon_keeps_its_own_schedule() {
+        assert_eq!(spec_id_for_block(137, 0), SpecId::BERLIN);
+        assert_eq!(spec_id_for_block(137, 23_849_999), SpecId::BERLIN);
+        assert_eq!(spec_id_for_block(137, 23_850_000), SpecId::LONDON);
+        assert_eq!(spec_id_for_block(137, 50_523_000), SpecId::CANCUN);
+        assert_eq!(spec_id_for_block(137, 73_440_256), SpecId::PRAGUE);
+    }
+
+    #[test]
+    fn unknown_chains_keep_the_latest_spec() {
+        assert_eq!(spec_id_for_block(999_999, 1), SpecId::NEXT);
     }
 }

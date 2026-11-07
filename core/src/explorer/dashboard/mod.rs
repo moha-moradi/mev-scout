@@ -18,7 +18,7 @@ use serde::Serialize;
 use crate::explorer::store::{ExplorerStore, SCHEMA_HEAD};
 
 use caps::StoreCaps;
-use reduce::{reject_ladder, reduce, ReducedPanels, RejectRow, TruncationInfo};
+use reduce::{reduce, reject_ladder, ReducedPanels, RejectRow, TruncationInfo};
 
 /// Envelope API version embedded in every artifact.
 pub const API_VERSION: u32 = 1;
@@ -314,8 +314,7 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
 
     let sync = load_sync_state(&tx)?;
     let ops = load_ops_window(&tx, &caps, opts.window.since_ts, opts.window.until_ts)?;
-    let mut sorted_blocks =
-        load_block_timestamps(&tx, opts.window.since_ts, opts.window.until_ts)?;
+    let mut sorted_blocks = load_block_timestamps(&tx, opts.window.since_ts, opts.window.until_ts)?;
     let blocks_in_window = sorted_blocks.len() as i64;
     sorted_blocks.sort_unstable();
     let min_block_ts = sorted_blocks.first().copied();
@@ -440,8 +439,9 @@ fn open_with_wal_retry(path: &Path) -> anyhow::Result<ExplorerStore> {
             let msg = format!("{e:#}");
             if msg.contains("disk I/O") || msg.contains("locked") || msg.contains("busy") {
                 std::thread::sleep(std::time::Duration::from_millis(500));
-                ExplorerStore::open_read_only(path)
-                    .map_err(|e2| anyhow::anyhow!("read-only open retry failed: {e2:#} (first: {msg})"))
+                ExplorerStore::open_read_only(path).map_err(|e2| {
+                    anyhow::anyhow!("read-only open retry failed: {e2:#} (first: {msg})")
+                })
             } else {
                 Err(e)
             }
@@ -663,13 +663,12 @@ fn load_sync_state(conn: &rusqlite::Connection) -> anyhow::Result<Option<SyncSta
 
 fn load_labels(conn: &rusqlite::Connection) -> anyhow::Result<HashMap<String, String>> {
     let mut map = HashMap::new();
-    let Ok(mut stmt) = conn.prepare("SELECT address, COALESCE(name, entity, kind, address) FROM labels")
+    let Ok(mut stmt) =
+        conn.prepare("SELECT address, COALESCE(name, entity, kind, address) FROM labels")
     else {
         return Ok(map);
     };
-    let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     for row in rows {
         let (addr, label) = row?;
         map.insert(addr, label);
@@ -771,9 +770,9 @@ fn load_oracle_feeds(conn: &rusqlite::Connection) -> anyhow::Result<Vec<OracleFe
 
 fn load_prices(conn: &rusqlite::Connection) -> anyhow::Result<Vec<PriceRow>> {
     let mut out = Vec::new();
-    let Ok(mut stmt) =
-        conn.prepare("SELECT token, hour, usd, COALESCE(source, '') FROM prices ORDER BY hour DESC LIMIT 50")
-    else {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT token, hour, usd, COALESCE(source, '') FROM prices ORDER BY hour DESC LIMIT 50",
+    ) else {
         return Ok(out);
     };
     let rows = stmt.query_map([], |r| {
@@ -797,10 +796,7 @@ fn load_table_counts(
     let mut out = Vec::new();
     for table in tables {
         // table names come from sqlite_master; still quote via identity check
-        if !table
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
+        if !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             continue;
         }
         let n: i64 = conn
@@ -901,11 +897,7 @@ fn enforce_budget(panels: &mut ReducedPanels, budget: usize) {
     if budget == 0 {
         return;
     }
-    let measure = |p: &ReducedPanels| {
-        serde_json::to_vec(p)
-            .map(|v| v.len())
-            .unwrap_or(usize::MAX)
-    };
+    let measure = |p: &ReducedPanels| serde_json::to_vec(p).map(|v| v.len()).unwrap_or(usize::MAX);
     if measure(panels) <= budget {
         return;
     }
@@ -961,9 +953,7 @@ mod tests {
         let path = dir.join("explorer-avalanche.sqlite");
         {
             let store = ExplorerStore::open(&path).expect("create");
-            store
-                .set_sync_state(43114, 100, 100)
-                .expect("sync");
+            store.set_sync_state(43114, 100, 100).expect("sync");
             let _ = store;
         }
         let snap = build(&BuildOptions {
@@ -1061,7 +1051,9 @@ mod tests {
             if cell.ops == 0 && cell.gross_usd == 0.0 && cell.net_usd == 0.0 {
                 continue;
             }
-            let e = dash_by_kind.entry(cell.kind.clone()).or_insert((0, 0.0, 0.0));
+            let e = dash_by_kind
+                .entry(cell.kind.clone())
+                .or_insert((0, 0.0, 0.0));
             e.0 += cell.ops;
             e.1 += cell.gross_usd;
             e.2 += cell.net_usd;

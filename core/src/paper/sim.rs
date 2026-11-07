@@ -289,7 +289,12 @@ pub fn record_seeds_for_block(
 
 fn next_token(pool: &PoolState, token_in: Address) -> Option<Address> {
     match pool {
-        PoolState::Curve(c) => c.token_index.keys().filter(|k| **k != token_in).min().copied(),
+        PoolState::Curve(c) => c
+            .token_index
+            .keys()
+            .filter(|k| **k != token_in)
+            .min()
+            .copied(),
         PoolState::Balancer(b) => b
             .token_index
             .keys()
@@ -347,10 +352,7 @@ fn ensure_pools_seeded(
             }
             continue;
         }
-        let state = snapshot
-            .get(addr)
-            .ok_or(SimFail::PathUnavailable)?
-            .clone();
+        let state = snapshot.get(addr).ok_or(SimFail::PathUnavailable)?.clone();
         overlay.insert(*addr, state);
     }
     Ok(drifted)
@@ -427,8 +429,10 @@ pub fn simulate_candidate(
         return Err(SimFail::PriceConsumed);
     }
 
-    let post_pools: Vec<(Address, PoolState)> =
-        path.iter().filter_map(|a| scratch.remove(a).map(|s| (*a, s))).collect();
+    let post_pools: Vec<(Address, PoolState)> = path
+        .iter()
+        .filter_map(|a| scratch.remove(a).map(|s| (*a, s)))
+        .collect();
 
     Ok(SimOutcome {
         sim_gross_wei: sim_gross,

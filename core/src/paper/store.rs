@@ -28,7 +28,10 @@ impl ExplorerStore {
               log_only_blocks INTEGER,
               exec_mode TEXT,
               exec_ok INTEGER,
-              exec_revert INTEGER
+              exec_revert INTEGER,
+              revert_gas_wei TEXT,
+              exec_loss_wei TEXT,
+              setup_gas_wei TEXT
             );
             CREATE INDEX IF NOT EXISTS paper_sessions_created
               ON paper_sessions(created_at);
@@ -88,8 +91,9 @@ impl ExplorerStore {
                starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
                net_profit_wei, max_drawdown_wei, created_at,
                sim_mode, replay_blocks, log_only_blocks,
-               exec_mode, exec_ok, exec_revert
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+               exec_mode, exec_ok, exec_revert,
+               revert_gas_wei, exec_loss_wei, setup_gas_wei
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
             rusqlite::params![
                 session_id,
                 chain,
@@ -111,6 +115,9 @@ impl ExplorerStore {
                 ledger.exec_mode.as_str(),
                 ledger.exec_ok as i64,
                 ledger.exec_revert as i64,
+                ledger.revert_gas_wei.to_string(),
+                ledger.exec_loss_wei.to_string(),
+                ledger.setup_gas_wei.to_string(),
             ],
         )?;
         for f in &ledger.fills {
@@ -171,7 +178,8 @@ impl ExplorerStore {
                     starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
                     net_profit_wei, max_drawdown_wei, created_at,
                     sim_mode, replay_blocks, log_only_blocks,
-                    exec_mode, exec_ok, exec_revert
+                    exec_mode, exec_ok, exec_revert,
+                    revert_gas_wei, exec_loss_wei, setup_gas_wei
              FROM paper_sessions WHERE session_id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![session_id])?;
@@ -194,7 +202,8 @@ impl ExplorerStore {
                     starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
                     net_profit_wei, max_drawdown_wei, created_at,
                     sim_mode, replay_blocks, log_only_blocks,
-                    exec_mode, exec_ok, exec_revert
+                    exec_mode, exec_ok, exec_revert,
+                    revert_gas_wei, exec_loss_wei, setup_gas_wei
              FROM paper_sessions
              WHERE linked_run_id = ?1
              ORDER BY created_at DESC
@@ -220,7 +229,8 @@ impl ExplorerStore {
                     starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
                     net_profit_wei, max_drawdown_wei, created_at,
                     sim_mode, replay_blocks, log_only_blocks,
-                    exec_mode, exec_ok, exec_revert
+                    exec_mode, exec_ok, exec_revert,
+                    revert_gas_wei, exec_loss_wei, setup_gas_wei
              FROM paper_sessions
              WHERE created_at >= ?1
              ORDER BY created_at DESC
@@ -302,9 +312,7 @@ impl ExplorerStore {
                 exec_mode: r.get(17)?,
                 exec_status: r.get(18)?,
                 exec_gas_used: r.get::<_, Option<i64>>(19)?.map(|v| v as u64),
-                exec_net_wei: r
-                    .get::<_, Option<String>>(20)?
-                    .and_then(|s| s.parse().ok()),
+                exec_net_wei: r.get::<_, Option<String>>(20)?.and_then(|s| s.parse().ok()),
                 tx_hash: r.get(21)?,
             })
         })?;
@@ -338,6 +346,9 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<PaperSession> {
         exec_mode: r.get(17)?,
         exec_ok: r.get::<_, Option<i64>>(18)?.map(|v| v as u64),
         exec_revert: r.get::<_, Option<i64>>(19)?.map(|v| v as u64),
+        revert_gas_wei: r.get(20)?,
+        exec_loss_wei: r.get(21)?,
+        setup_gas_wei: r.get(22)?,
     })
 }
 
