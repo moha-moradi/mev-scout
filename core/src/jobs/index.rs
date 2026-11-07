@@ -82,6 +82,11 @@ pub async fn job_index(
                 stop_cancel.store(true, Ordering::Relaxed);
                 break;
             }
+            // The deadline task shares this flag. Without this arm, `join!`
+            // would wait forever on this poller after `run_live` returns.
+            if stop_cancel.load(Ordering::Relaxed) {
+                break;
+            }
         }
     };
     let deadline_dur = opts

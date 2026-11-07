@@ -1,0 +1,5271 @@
+{
+  "api_version": 1,
+  "generator": {
+    "version": "0.1.0",
+    "generated_at": 1794068187
+  },
+  "db": {
+    "path": "cache/explorer-avalanche.sqlite",
+    "chain_label": "avalanche",
+    "chain_id": 43114,
+    "size_bytes": 294912,
+    "user_version": 13,
+    "schema_head": 13,
+    "status": "at_head"
+  },
+  "caps": {
+    "user_version": 13,
+    "schema_head": 13,
+    "has_subkind": true,
+    "has_excluded_from_net": true,
+    "has_volume_usd": true,
+    "has_flashloan_fee_usd": true,
+    "has_pricing_flags": true,
+    "has_ops_ts_index": true,
+    "has_ops_natural_key": true,
+    "tables": [
+      "blocks",
+      "blocks_classified",
+      "jit_open_positions",
+      "labels",
+      "mev_ops",
+      "opportunities",
+      "oracle_answers",
+      "paper_fills",
+      "paper_sessions",
+      "prices",
+      "rejected_candidates",
+      "reserve_rates",
+      "swaps",
+      "sync_state",
+      "transfers",
+      "txs"
+    ]
+  },
+  "window": {
+    "label": "all",
+    "since_ts": 1700000000,
+    "until_ts": 1794067771
+  },
+  "semantics": {
+    "null_usd_means": "not priceable — never zero",
+    "usd_columns_are": "f64 approximations; prefix ≈; never balances",
+    "net_excludes": "rows with excluded_from_net=1 (when column present)",
+    "amounts_are": "raw U256 decimal strings; humanize only with known decimals"
+  },
+  "coverage": {
+    "head": 99686475,
+    "indexed_to": 99686475,
+    "last_indexed_at": 1794067785,
+    "blocks_in_window": 38,
+    "ops_in_window": 4,
+    "min_block_ts": 1700000000,
+    "max_block_ts": 1794067771,
+    "gap_count": null,
+    "first_gap": null,
+    "last_gap": null
+  },
+  "gaps": {
+    "enabled": false,
+    "scanned_from": null,
+    "scanned_to": null,
+    "gap_count": 0,
+    "first_gap": null,
+    "last_gap": null,
+    "ranges": [],
+    "sample": [],
+    "note": "Pass --with-gaps to sample unclassified blocks near tip (expensive CTE)."
+  },
+  "panels": {
+    "kpi": {
+      "ops": 4,
+      "volume_usd": 591.8608414955776,
+      "volume_priced": 3,
+      "gross_usd": 15.523924295998945,
+      "gross_priced": 4,
+      "gas_usd": 0.6096096186891881,
+      "gas_priced": 4,
+      "flash_fee_usd": 0.0,
+      "flash_fee_priced": 2,
+      "net_usd": 14.914314677309756,
+      "net_priced": 4,
+      "net_gating_available": true,
+      "highest_single_usd": 12.5,
+      "searchers": 4,
+      "competitors": 4,
+      "quality": {
+        "ops_priced": 4,
+        "ops_unpriced": 0,
+        "ops_exact": 2,
+        "ops_inferred": 2,
+        "net_usd_exact": 12.107665782537756,
+        "net_usd_inferred": 2.8066488947719996,
+        "ops_approx": 2,
+        "ops_native_unpriced": 0,
+        "ops_multi_asset": 0,
+        "ops_pricing_clamped": 0,
+        "ops_flash_fee_unpriced": 0,
+        "ops_excluded_from_net": 0,
+        "pricing_coverage_pct": 100.0,
+        "pricing_flags_available": true
+      }
+    },
+    "series": [
+      {
+        "bucket_start": 1699874139,
+        "ops": 2,
+        "net_usd": 14.899999999999999,
+        "blocks_indexed": 1
+      },
+      {
+        "bucket_start": 1700004788,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1700135437,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1700266086,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1700396735,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1700527384,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1700658033,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1700788682,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1700919331,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1701049980,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1701180629,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1701311278,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1701441927,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1701572576,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1701703225,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1701833874,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1701964523,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1702095172,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1702225821,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1702356470,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1702487119,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1702617768,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1702748417,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1702879066,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1703009715,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1703140364,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1703271013,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1703401662,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1703532311,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1703662960,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1703793609,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1703924258,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1704054907,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1704185556,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1704316205,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1704446854,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1704577503,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1704708152,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1704838801,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1704969450,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1705100099,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1705230748,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1705361397,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1705492046,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1705622695,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1705753344,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1705883993,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1706014642,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1706145291,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1706275940,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1706406589,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1706537238,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1706667887,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1706798536,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1706929185,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1707059834,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1707190483,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1707321132,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1707451781,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1707582430,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1707713079,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1707843728,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1707974377,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1708105026,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1708235675,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1708366324,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1708496973,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1708627622,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1708758271,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1708888920,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1709019569,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1709150218,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1709280867,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1709411516,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1709542165,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1709672814,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1709803463,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1709934112,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1710064761,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1710195410,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1710326059,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1710456708,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1710587357,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1710718006,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1710848655,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1710979304,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1711109953,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1711240602,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1711371251,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1711501900,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1711632549,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1711763198,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1711893847,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1712024496,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1712155145,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1712285794,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1712416443,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1712547092,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1712677741,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1712808390,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1712939039,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1713069688,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1713200337,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1713330986,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1713461635,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1713592284,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1713722933,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1713853582,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1713984231,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1714114880,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1714245529,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1714376178,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1714506827,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1714637476,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1714768125,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1714898774,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1715029423,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1715160072,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1715290721,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1715421370,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1715552019,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1715682668,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1715813317,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1715943966,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1716074615,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1716205264,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1716335913,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1716466562,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1716597211,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1716727860,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1716858509,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1716989158,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1717119807,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1717250456,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1717381105,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1717511754,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1717642403,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1717773052,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1717903701,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1718034350,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1718164999,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1718295648,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1718426297,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1718556946,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1718687595,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1718818244,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1718948893,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1719079542,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1719210191,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1719340840,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1719471489,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1719602138,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1719732787,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1719863436,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1719994085,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1720124734,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1720255383,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1720386032,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1720516681,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1720647330,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1720777979,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1720908628,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1721039277,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1721169926,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1721300575,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1721431224,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1721561873,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1721692522,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1721823171,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1721953820,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1722084469,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1722215118,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1722345767,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1722476416,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1722607065,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1722737714,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1722868363,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1722999012,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1723129661,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1723260310,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1723390959,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1723521608,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1723652257,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1723782906,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1723913555,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1724044204,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1724174853,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1724305502,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1724436151,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1724566800,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1724697449,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1724828098,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1724958747,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1725089396,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1725220045,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1725350694,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1725481343,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1725611992,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1725742641,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1725873290,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1726003939,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1726134588,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1726265237,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1726395886,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1726526535,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1726657184,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1726787833,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1726918482,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1727049131,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1727179780,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1727310429,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1727441078,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1727571727,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1727702376,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1727833025,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1727963674,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1728094323,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1728224972,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1728355621,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1728486270,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1728616919,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1728747568,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1728878217,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1729008866,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1729139515,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1729270164,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1729400813,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1729531462,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1729662111,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1729792760,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1729923409,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1730054058,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1730184707,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1730315356,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1730446005,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1730576654,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1730707303,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1730837952,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1730968601,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1731099250,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1731229899,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1731360548,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1731491197,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1731621846,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1731752495,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1731883144,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1732013793,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1732144442,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1732275091,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1732405740,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1732536389,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1732667038,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1732797687,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1732928336,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1733058985,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1733189634,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1733320283,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1733450932,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1733581581,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1733712230,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1733842879,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1733973528,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1734104177,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1734234826,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1734365475,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1734496124,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1734626773,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1734757422,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1734888071,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1735018720,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1735149369,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1735280018,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1735410667,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1735541316,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1735671965,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1735802614,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1735933263,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1736063912,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1736194561,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1736325210,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1736455859,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1736586508,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1736717157,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1736847806,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1736978455,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1737109104,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1737239753,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1737370402,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1737501051,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1737631700,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1737762349,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1737892998,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1738023647,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1738154296,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1738284945,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1738415594,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1738546243,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1738676892,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1738807541,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1738938190,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1739068839,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1739199488,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1739330137,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1739460786,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1739591435,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1739722084,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1739852733,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1739983382,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1740114031,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1740244680,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1740375329,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1740505978,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1740636627,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1740767276,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1740897925,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1741028574,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1741159223,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1741289872,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1741420521,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1741551170,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1741681819,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1741812468,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1741943117,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1742073766,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1742204415,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1742335064,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1742465713,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1742596362,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1742727011,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1742857660,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1742988309,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1743118958,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1743249607,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1743380256,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1743510905,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1743641554,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1743772203,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1743902852,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1744033501,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1744164150,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1744294799,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1744425448,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1744556097,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1744686746,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1744817395,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1744948044,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1745078693,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1745209342,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1745339991,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1745470640,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1745601289,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1745731938,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1745862587,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1745993236,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1746123885,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1746254534,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1746385183,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1746515832,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1746646481,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1746777130,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1746907779,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1747038428,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1747169077,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1747299726,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1747430375,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1747561024,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1747691673,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1747822322,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1747952971,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1748083620,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1748214269,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1748344918,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1748475567,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1748606216,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1748736865,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1748867514,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1748998163,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1749128812,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1749259461,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1749390110,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1749520759,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1749651408,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1749782057,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1749912706,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1750043355,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1750174004,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1750304653,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1750435302,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1750565951,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1750696600,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1750827249,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1750957898,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1751088547,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1751219196,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1751349845,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1751480494,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1751611143,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1751741792,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1751872441,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1752003090,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1752133739,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1752264388,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1752395037,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1752525686,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1752656335,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1752786984,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1752917633,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1753048282,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1753178931,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1753309580,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1753440229,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1753570878,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1753701527,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1753832176,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1753962825,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1754093474,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1754224123,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1754354772,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1754485421,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1754616070,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1754746719,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1754877368,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1755008017,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1755138666,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1755269315,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1755399964,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1755530613,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1755661262,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1755791911,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1755922560,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1756053209,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1756183858,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1756314507,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1756445156,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1756575805,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1756706454,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1756837103,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1756967752,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1757098401,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1757229050,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1757359699,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1757490348,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1757620997,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1757751646,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1757882295,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1758012944,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1758143593,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1758274242,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1758404891,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1758535540,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1758666189,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1758796838,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1758927487,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1759058136,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1759188785,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1759319434,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1759450083,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1759580732,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1759711381,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1759842030,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1759972679,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1760103328,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1760233977,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1760364626,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1760495275,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1760625924,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1760756573,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1760887222,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1761017871,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1761148520,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1761279169,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1761409818,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1761540467,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1761671116,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1761801765,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1761932414,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1762063063,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1762193712,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1762324361,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1762455010,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1762585659,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1762716308,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1762846957,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1762977606,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1763108255,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1763238904,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1763369553,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1763500202,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1763630851,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1763761500,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1763892149,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1764022798,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1764153447,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1764284096,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1764414745,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1764545394,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1764676043,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1764806692,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1764937341,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1765067990,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1765198639,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1765329288,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1765459937,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1765590586,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1765721235,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1765851884,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1765982533,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1766113182,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1766243831,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1766374480,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1766505129,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1766635778,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1766766427,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1766897076,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1767027725,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1767158374,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1767289023,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1767419672,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1767550321,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1767680970,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1767811619,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1767942268,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1768072917,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1768203566,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1768334215,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1768464864,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1768595513,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1768726162,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1768856811,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1768987460,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1769118109,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1769248758,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1769379407,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1769510056,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1769640705,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1769771354,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1769902003,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1770032652,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1770163301,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1770293950,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1770424599,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1770555248,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1770685897,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1770816546,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1770947195,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1771077844,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1771208493,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1771339142,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1771469791,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1771600440,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1771731089,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1771861738,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1771992387,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1772123036,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1772253685,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1772384334,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1772514983,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1772645632,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1772776281,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1772906930,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1773037579,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1773168228,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1773298877,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1773429526,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1773560175,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1773690824,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1773821473,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1773952122,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1774082771,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1774213420,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1774344069,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1774474718,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1774605367,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1774736016,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1774866665,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1774997314,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1775127963,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1775258612,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1775389261,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1775519910,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1775650559,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1775781208,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1775911857,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1776042506,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1776173155,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1776303804,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1776434453,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1776565102,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1776695751,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1776826400,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1776957049,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1777087698,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1777218347,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1777348996,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1777479645,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1777610294,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1777740943,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1777871592,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1778002241,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1778132890,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1778263539,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1778394188,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1778524837,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1778655486,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1778786135,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1778916784,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1779047433,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1779178082,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1779308731,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1779439380,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1779570029,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1779700678,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1779831327,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1779961976,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1780092625,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1780223274,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1780353923,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1780484572,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1780615221,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1780745870,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1780876519,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1781007168,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1781137817,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1781268466,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1781399115,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1781529764,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1781660413,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1781791062,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1781921711,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1782052360,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1782183009,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1782313658,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1782444307,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1782574956,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1782705605,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1782836254,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1782966903,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1783097552,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1783228201,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1783358850,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1783489499,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1783620148,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1783750797,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1783881446,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1784012095,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1784142744,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1784273393,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1784404042,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1784534691,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1784665340,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1784795989,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1784926638,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1785057287,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1785187936,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1785318585,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1785449234,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1785579883,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1785710532,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1785841181,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1785971830,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1786102479,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1786233128,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1786363777,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1786494426,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1786625075,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1786755724,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1786886373,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1787017022,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1787147671,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1787278320,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1787408969,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1787539618,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1787670267,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1787800916,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1787931565,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1788062214,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1788192863,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1788323512,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1788454161,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1788584810,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1788715459,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1788846108,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1788976757,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1789107406,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1789238055,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1789368704,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1789499353,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1789630002,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1789760651,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1789891300,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1790021949,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1790152598,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1790283247,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1790413896,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1790544545,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1790675194,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1790805843,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1790936492,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1791067141,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1791197790,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1791328439,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1791459088,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1791589737,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1791720386,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1791851035,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1791981684,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1792112333,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1792242982,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1792373631,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1792504280,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1792634929,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1792765578,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1792896227,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1793026876,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1793157525,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1793288174,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1793418823,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1793549472,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1793680121,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1793810770,
+        "ops": 0,
+        "net_usd": 0.0,
+        "blocks_indexed": 0
+      },
+      {
+        "bucket_start": 1793941419,
+        "ops": 2,
+        "net_usd": 0.014314677309756076,
+        "blocks_indexed": 37
+      }
+    ],
+    "bucket_secs": 130649,
+    "kind_matrix": [
+      {
+        "kind": "arb_atomic",
+        "subkind": null,
+        "confidence": "exact",
+        "ops": 2,
+        "gross_usd": 12.517275401226945,
+        "net_usd": 12.107665782537756
+      },
+      {
+        "kind": "arb_atomic",
+        "subkind": null,
+        "confidence": "inferred",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "backrun",
+        "subkind": null,
+        "confidence": "exact",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "backrun",
+        "subkind": null,
+        "confidence": "inferred",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "frontrun",
+        "subkind": null,
+        "confidence": "exact",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "frontrun",
+        "subkind": null,
+        "confidence": "inferred",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "jit",
+        "subkind": null,
+        "confidence": "exact",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "jit",
+        "subkind": null,
+        "confidence": "inferred",
+        "ops": 1,
+        "gross_usd": 3.0,
+        "net_usd": 2.8
+      },
+      {
+        "kind": "jit_arb",
+        "subkind": null,
+        "confidence": "exact",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "jit_arb",
+        "subkind": null,
+        "confidence": "inferred",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "liquidation",
+        "subkind": null,
+        "confidence": "exact",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "liquidation",
+        "subkind": null,
+        "confidence": "inferred",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "sandwich",
+        "subkind": null,
+        "confidence": "exact",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "sandwich",
+        "subkind": null,
+        "confidence": "inferred",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "skim",
+        "subkind": null,
+        "confidence": "exact",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "skim",
+        "subkind": null,
+        "confidence": "inferred",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "utility",
+        "subkind": null,
+        "confidence": "exact",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "utility",
+        "subkind": null,
+        "confidence": "inferred",
+        "ops": 0,
+        "gross_usd": 0.0,
+        "net_usd": 0.0
+      },
+      {
+        "kind": "utility",
+        "subkind": "bundler",
+        "confidence": "inferred",
+        "ops": 1,
+        "gross_usd": 0.006648894772,
+        "net_usd": 0.006648894772
+      }
+    ],
+    "unknown_rewritten": 0,
+    "actors": [
+      {
+        "competitor": "0xabc",
+        "eoa": "0xabc",
+        "contract": null,
+        "label": null,
+        "ops": 1,
+        "gross_usd": 12.5,
+        "net_usd": 12.1,
+        "excluded_ops": 0
+      },
+      {
+        "competitor": "0xdef",
+        "eoa": "0xdef",
+        "contract": null,
+        "label": null,
+        "ops": 1,
+        "gross_usd": 3.0,
+        "net_usd": 2.8,
+        "excluded_ops": 0
+      },
+      {
+        "competitor": "0x3dbddadf5d0c933e6827af9a58836dd3338b7205",
+        "eoa": "0xe055622353dbee59943b877b7ffa2dd34410dc48",
+        "contract": "0x3dbddadf5d0c933e6827af9a58836dd3338b7205",
+        "label": "searcher-contract",
+        "ops": 1,
+        "gross_usd": 0.017275401226944,
+        "net_usd": 0.007665782537756075,
+        "excluded_ops": 0
+      },
+      {
+        "competitor": "0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789",
+        "eoa": "0xba9cfe6a44979adddbf9f4342c65c4da9c5b207b",
+        "contract": "0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789",
+        "label": "searcher-contract",
+        "ops": 1,
+        "gross_usd": 0.006648894772,
+        "net_usd": 0.006648894772,
+        "excluded_ops": 0
+      }
+    ],
+    "pools": [
+      {
+        "pool": "0xpool1",
+        "ops": 1,
+        "gross_usd": 12.5,
+        "net_usd": 12.1,
+        "gas_usd": 0.4,
+        "priced_ops": 1,
+        "amm_mix": {
+          "v3": 1
+        },
+        "unique_competitors": 1,
+        "top_kind": "arb_atomic"
+      },
+      {
+        "pool": "0x4580081202c0fe4ee962506cd61d326687517bfe",
+        "ops": 1,
+        "gross_usd": 0.017275401226944,
+        "net_usd": 0.007665782537756075,
+        "gas_usd": 0.009609618689187926,
+        "priced_ops": 1,
+        "amm_mix": {
+          "v2": 1,
+          "v3": 1
+        },
+        "unique_competitors": 1,
+        "top_kind": "arb_atomic"
+      },
+      {
+        "pool": "0x65f83ccacabaac4ed2f80289a02df4d35d744ae8",
+        "ops": 1,
+        "gross_usd": 0.017275401226944,
+        "net_usd": 0.007665782537756075,
+        "gas_usd": 0.009609618689187926,
+        "priced_ops": 1,
+        "amm_mix": {
+          "v2": 1,
+          "v3": 1
+        },
+        "unique_competitors": 1,
+        "top_kind": "arb_atomic"
+      }
+    ],
+    "tokens": [
+      {
+        "token": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e",
+        "ops": 1,
+        "gross_usd": 0.017275401226944,
+        "net_usd": 0.007665782537756075,
+        "priced_ops": 1
+      },
+      {
+        "token": "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7",
+        "ops": 1,
+        "gross_usd": 0.006648894772,
+        "net_usd": 0.006648894772,
+        "priced_ops": 1
+      }
+    ],
+    "tag_facets": [
+      {
+        "value": "bundler",
+        "ops": 1,
+        "gross_usd": 0.006648894772,
+        "net_usd": 0.006648894772,
+        "out_of_catalogue": false
+      },
+      {
+        "value": "erc4337",
+        "ops": 1,
+        "gross_usd": 0.006648894772,
+        "net_usd": 0.006648894772,
+        "out_of_catalogue": false
+      },
+      {
+        "value": "flash_arb",
+        "ops": 1,
+        "gross_usd": 12.5,
+        "net_usd": 12.1,
+        "out_of_catalogue": false
+      },
+      {
+        "value": "long_tail",
+        "ops": 1,
+        "gross_usd": 0.017275401226944,
+        "net_usd": 0.007665782537756075,
+        "out_of_catalogue": false
+      }
+    ],
+    "reason_facets": [
+      {
+        "value": "VOLUME_PARTIAL",
+        "ops": 1,
+        "gross_usd": 0.017275401226944,
+        "net_usd": 0.007665782537756075,
+        "out_of_catalogue": false
+      }
+    ],
+    "events": [
+      {
+        "id": 1,
+        "block_number": 1,
+        "tx_index": 0,
+        "tx_hash": "0xdeadbeef",
+        "ts": 1700000000,
+        "kind": "arb_atomic",
+        "subkind": null,
+        "confidence": "exact",
+        "eoa": "0xabc",
+        "contract": null,
+        "profit_usd": 12.5,
+        "net_profit_usd": 12.1,
+        "gas_cost_usd": 0.4,
+        "volume_usd": 500.0,
+        "detector": "seed",
+        "excluded_from_net": false,
+        "pnl_basis": "R"
+      },
+      {
+        "id": 2,
+        "block_number": 1,
+        "tx_index": 1,
+        "tx_hash": "0xjit1",
+        "ts": 1700000000,
+        "kind": "jit",
+        "subkind": null,
+        "confidence": "inferred",
+        "eoa": "0xdef",
+        "contract": null,
+        "profit_usd": 3.0,
+        "net_profit_usd": 2.8,
+        "gas_cost_usd": 0.2,
+        "volume_usd": 50.0,
+        "detector": "seed",
+        "excluded_from_net": false,
+        "pnl_basis": null
+      },
+      {
+        "id": 3,
+        "block_number": 99686451,
+        "tx_index": 0,
+        "tx_hash": "0x131787bd29e4f4fb04d9b3ce74bbe6c659c6f58455eb87564aeeda1d13835f83",
+        "ts": 1794067747,
+        "kind": "utility",
+        "subkind": "bundler",
+        "confidence": "inferred",
+        "eoa": "0xba9cfe6a44979adddbf9f4342c65c4da9c5b207b",
+        "contract": "0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789",
+        "profit_usd": 0.006648894772,
+        "net_profit_usd": 0.006648894772,
+        "gas_cost_usd": 0.0,
+        "volume_usd": null,
+        "detector": "explorer",
+        "excluded_from_net": false,
+        "pnl_basis": "gas_cost_as_profit"
+      },
+      {
+        "id": 4,
+        "block_number": 99686456,
+        "tx_index": 2,
+        "tx_hash": "0x2da4b4d17e22d0cc322df820d0dc885de5cb912c484144adae9b6ec6470b4cfc",
+        "ts": 1794067752,
+        "kind": "arb_atomic",
+        "subkind": null,
+        "confidence": "exact",
+        "eoa": "0xe055622353dbee59943b877b7ffa2dd34410dc48",
+        "contract": "0x3dbddadf5d0c933e6827af9a58836dd3338b7205",
+        "profit_usd": 0.017275401226944,
+        "net_profit_usd": 0.007665782537756075,
+        "gas_cost_usd": 0.009609618689187926,
+        "volume_usd": 41.860841495577596,
+        "detector": "explorer",
+        "excluded_from_net": false,
+        "pnl_basis": "R"
+      }
+    ],
+    "evidence": [
+      {
+        "tx_hash": "0xdeadbeef",
+        "block_number": 1,
+        "kind": "arb_atomic",
+        "subkind": null,
+        "confidence": "exact",
+        "detector": "seed",
+        "eoa": "0xabc",
+        "contract": null,
+        "profit_usd": 12.5,
+        "net_profit_usd": 12.1,
+        "gas_cost_usd": 0.4,
+        "volume_usd": 500.0,
+        "flashloan_fee_usd": 0.0,
+        "profit_token": null,
+        "profit_amount": null,
+        "profit_amount_human": null,
+        "excluded_from_net": false,
+        "route": [
+          {
+            "pool": "0xpool1",
+            "amm": "v3",
+            "token_in": "0xt1",
+            "token_out": "0xt2",
+            "token_source": "registry",
+            "amount_in": null,
+            "amount_out": null
+          }
+        ],
+        "victim_hashes": [],
+        "tags": [
+          "flash_arb"
+        ],
+        "reasons": [],
+        "pnl_basis": "R",
+        "arb_meta": null,
+        "details": {
+          "tags": [
+            "flash_arb"
+          ],
+          "reasons": [],
+          "pnl_basis": "R"
+        }
+      },
+      {
+        "tx_hash": "0xjit1",
+        "block_number": 1,
+        "kind": "jit",
+        "subkind": null,
+        "confidence": "inferred",
+        "detector": "seed",
+        "eoa": "0xdef",
+        "contract": null,
+        "profit_usd": 3.0,
+        "net_profit_usd": 2.8,
+        "gas_cost_usd": 0.2,
+        "volume_usd": 50.0,
+        "flashloan_fee_usd": 0.0,
+        "profit_token": null,
+        "profit_amount": null,
+        "profit_amount_human": null,
+        "excluded_from_net": false,
+        "route": [],
+        "victim_hashes": [],
+        "tags": [],
+        "reasons": [],
+        "pnl_basis": null,
+        "arb_meta": null,
+        "details": {}
+      },
+      {
+        "tx_hash": "0x131787bd29e4f4fb04d9b3ce74bbe6c659c6f58455eb87564aeeda1d13835f83",
+        "block_number": 99686451,
+        "kind": "utility",
+        "subkind": "bundler",
+        "confidence": "inferred",
+        "detector": "explorer",
+        "eoa": "0xba9cfe6a44979adddbf9f4342c65c4da9c5b207b",
+        "contract": "0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789",
+        "profit_usd": 0.006648894772,
+        "net_profit_usd": 0.006648894772,
+        "gas_cost_usd": 0.0,
+        "volume_usd": null,
+        "flashloan_fee_usd": null,
+        "profit_token": "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7",
+        "profit_amount": "809853200000000",
+        "profit_amount_human": "0.000810",
+        "excluded_from_net": false,
+        "route": [],
+        "victim_hashes": [],
+        "tags": [
+          "bundler",
+          "erc4337"
+        ],
+        "reasons": [],
+        "pnl_basis": "gas_cost_as_profit",
+        "arb_meta": null,
+        "details": {
+          "protocol": "erc4337",
+          "tags": [
+            "bundler",
+            "erc4337"
+          ],
+          "sender": "0x8a525c3e6cbbd99616d167f561ef657109a32488",
+          "paymaster": "0x3f383d232344e297c1d98ea4b59217ae338b6223",
+          "pnl_basis": "gas_cost_as_profit",
+          "pnl": {
+            "basis": "R",
+            "actual_gas_cost": "809853200000000"
+          }
+        }
+      },
+      {
+        "tx_hash": "0x2da4b4d17e22d0cc322df820d0dc885de5cb912c484144adae9b6ec6470b4cfc",
+        "block_number": 99686456,
+        "kind": "arb_atomic",
+        "subkind": null,
+        "confidence": "exact",
+        "detector": "explorer",
+        "eoa": "0xe055622353dbee59943b877b7ffa2dd34410dc48",
+        "contract": "0x3dbddadf5d0c933e6827af9a58836dd3338b7205",
+        "profit_usd": 0.017275401226944,
+        "net_profit_usd": 0.007665782537756075,
+        "gas_cost_usd": 0.009609618689187926,
+        "volume_usd": 41.860841495577596,
+        "flashloan_fee_usd": null,
+        "profit_token": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e",
+        "profit_amount": "17280",
+        "profit_amount_human": "0.017280",
+        "excluded_from_net": false,
+        "route": [
+          {
+            "pool": "0x4580081202c0fe4ee962506cd61d326687517bfe",
+            "amm": "v3",
+            "token_in": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e",
+            "token_out": "0xc891eb4cbdeff6e073e859e987815ed1505c2acd",
+            "token_source": "proximity",
+            "amount_in": "41871985",
+            "amount_out": "46565905"
+          },
+          {
+            "pool": "0x65f83ccacabaac4ed2f80289a02df4d35d744ae8",
+            "amm": "v2",
+            "token_in": "0xc891eb4cbdeff6e073e859e987815ed1505c2acd",
+            "token_out": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e",
+            "token_source": "registry",
+            "amount_in": "41871985",
+            "amount_out": "46583185"
+          }
+        ],
+        "victim_hashes": [],
+        "tags": [
+          "long_tail"
+        ],
+        "reasons": [
+          "VOLUME_PARTIAL"
+        ],
+        "pnl_basis": "R",
+        "arb_meta": {
+          "hop_count": 2,
+          "pool_count": 2,
+          "dex_count": 2,
+          "is_cross_dex": true,
+          "flashloan_funded": false,
+          "arb_shape": "two_pool",
+          "unique_tokens": 2
+        },
+        "details": {
+          "mode": "realized",
+          "tags": [
+            "long_tail"
+          ],
+          "pnl_basis": "R",
+          "pnl": {
+            "basis": "R",
+            "profit_amount": "17280",
+            "profit_token": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e"
+          },
+          "other_residuals": [],
+          "route": [
+            {
+              "pool": "0x4580081202c0fe4ee962506cd61d326687517bfe",
+              "amm": "v3",
+              "token_in": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e",
+              "token_out": "0xc891eb4cbdeff6e073e859e987815ed1505c2acd",
+              "token_source": "proximity",
+              "amount_in": "41871985",
+              "amount_out": "46565905"
+            },
+            {
+              "pool": "0x65f83ccacabaac4ed2f80289a02df4d35d744ae8",
+              "amm": "v2",
+              "token_in": "0xc891eb4cbdeff6e073e859e987815ed1505c2acd",
+              "token_out": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e",
+              "token_source": "registry",
+              "amount_in": "41871985",
+              "amount_out": "46583185"
+            }
+          ],
+          "arb_meta": {
+            "hop_count": 2,
+            "pool_count": 2,
+            "dex_count": 2,
+            "is_cross_dex": true,
+            "flashloan_funded": false,
+            "arb_shape": "two_pool",
+            "unique_tokens": 2
+          },
+          "profit_tokens": [
+            {
+              "token": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e",
+              "amount": "17280"
+            }
+          ],
+          "reasons": [
+            "VOLUME_PARTIAL"
+          ],
+          "usd_approximate": true
+        }
+      }
+    ],
+    "truncation": {
+      "max_ops": 5000,
+      "ops_total": 4,
+      "ops_emitted": 4,
+      "max_evidence": 50,
+      "evidence_emitted": 4,
+      "hit_budget": false
+    }
+  },
+  "rejects": {
+    "recording_empty": true,
+    "total": 0,
+    "ladder": [
+      {
+        "reason": "no_pool",
+        "count": 0
+      },
+      {
+        "reason": "no_path",
+        "count": 0
+      },
+      {
+        "reason": "quote_nonpositive",
+        "count": 0
+      },
+      {
+        "reason": "below_min_profit",
+        "count": 0
+      },
+      {
+        "reason": "gas_dominates",
+        "count": 0
+      },
+      {
+        "reason": "max_candidates",
+        "count": 0
+      },
+      {
+        "reason": "state_stale",
+        "count": 0
+      },
+      {
+        "reason": "unresolved_cycle",
+        "count": 0
+      },
+      {
+        "reason": "mixed_flow_owner",
+        "count": 0
+      },
+      {
+        "reason": "net_zero_searcher",
+        "count": 0
+      },
+      {
+        "reason": "material_deficit",
+        "count": 0
+      },
+      {
+        "reason": "open_inventory",
+        "count": 0
+      },
+      {
+        "reason": "builder_tip",
+        "count": 0
+      },
+      {
+        "reason": "other",
+        "count": 0
+      },
+      {
+        "reason": "cycle_not_closed",
+        "count": 0
+      },
+      {
+        "reason": "no_counterparty_leg",
+        "count": 0
+      },
+      {
+        "reason": "causal_window_too_wide",
+        "count": 0
+      },
+      {
+        "reason": "causal_price_move_below_floor",
+        "count": 0
+      },
+      {
+        "reason": "victim_set_empty",
+        "count": 0
+      },
+      {
+        "reason": "skim_pool_not_v2_like",
+        "count": 0
+      },
+      {
+        "reason": "skim_looks_like_swap",
+        "count": 0
+      },
+      {
+        "reason": "jit_pairing_unmatched",
+        "count": 0
+      },
+      {
+        "reason": "liquidation_not_reconciled",
+        "count": 0
+      }
+    ],
+    "note": "No rejected_candidates rows in window — recording may be off (record_rejections default false), not proof of zero rejects."
+  },
+  "jit_open": [
+    {
+      "pool": "0x8ac5707f8d4bde1d771d34c7afd81c3922b73379",
+      "owner": "0x744b88a45ba9d1ce01f9a8a0c5d42dff786711b4",
+      "tick_lower": 8337539,
+      "tick_upper": 8337539,
+      "opened_block": 99684957,
+      "liquidity": "1"
+    }
+  ],
+  "oracle_feeds": [
+    {
+      "feed": "0x8c8da958396815469f289768b980dbcacfe9f279",
+      "answers": 2,
+      "last_block": 99686469
+    },
+    {
+      "feed": "0x9ff520924dc295074f43a8a01ee30a4d39a4223b",
+      "answers": 1,
+      "last_block": 99684953
+    },
+    {
+      "feed": "0xbb50e5f42480b4c6722ab15f36158a3fc686f733",
+      "answers": 1,
+      "last_block": 99684959
+    },
+    {
+      "feed": "0xc54d8293a7f98ef887be882311e4c274be67f927",
+      "answers": 1,
+      "last_block": 99684952
+    }
+  ],
+  "prices": [
+    {
+      "token": "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e",
+      "hour": 498352,
+      "price_usd": 0.9997338673,
+      "source": "llama"
+    },
+    {
+      "token": "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7",
+      "hour": 498352,
+      "price_usd": 8.21,
+      "source": "coingecko"
+    },
+    {
+      "token": "0x0000000000000000000000000000000000000000",
+      "hour": 498352,
+      "price_usd": 8.21,
+      "source": "coingecko"
+    }
+  ],
+  "storage": [
+    {
+      "table": "transfers",
+      "rows": 160
+    },
+    {
+      "table": "txs",
+      "rows": 86
+    },
+    {
+      "table": "swaps",
+      "rows": 51
+    },
+    {
+      "table": "blocks",
+      "rows": 38
+    },
+    {
+      "table": "blocks_classified",
+      "rows": 37
+    },
+    {
+      "table": "opportunities",
+      "rows": 28
+    },
+    {
+      "table": "paper_sessions",
+      "rows": 8
+    },
+    {
+      "table": "oracle_answers",
+      "rows": 5
+    },
+    {
+      "table": "labels",
+      "rows": 4
+    },
+    {
+      "table": "mev_ops",
+      "rows": 4
+    },
+    {
+      "table": "prices",
+      "rows": 3
+    },
+    {
+      "table": "jit_open_positions",
+      "rows": 1
+    },
+    {
+      "table": "reserve_rates",
+      "rows": 1
+    },
+    {
+      "table": "sync_state",
+      "rows": 1
+    },
+    {
+      "table": "paper_fills",
+      "rows": 0
+    },
+    {
+      "table": "rejected_candidates",
+      "rows": 0
+    }
+  ],
+  "truncation": {
+    "max_ops": 5000,
+    "ops_total": 4,
+    "ops_emitted": 4,
+    "max_evidence": 50,
+    "evidence_emitted": 4,
+    "hit_budget": false
+  }
+}

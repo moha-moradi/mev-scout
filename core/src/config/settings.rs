@@ -57,9 +57,6 @@ pub struct GasConfig {
     /// priority fee with no auction modeling. Must be finite and non-negative.
     #[serde(default = "default_winning_bid_premium")]
     pub winning_bid_premium: f64,
-    /// Optional per-strategy gas limit overrides
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub gas_limits: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -498,7 +495,6 @@ impl Default for GasConfig {
             gas_limit: default_gas_limit(),
             priority_fee_gwei: default_priority_fee_gwei(),
             winning_bid_premium: default_winning_bid_premium(),
-            gas_limits: HashMap::new(),
         }
     }
 }

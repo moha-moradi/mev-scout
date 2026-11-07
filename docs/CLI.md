@@ -144,6 +144,9 @@ The zero-config entrypoint. `mev-scout` with no subcommand is `mev-scout live`;
 the run is bounded and exits, so it is safe to invoke from a script or a
 scheduled job. Same engine as the removed range scanner, against chain tip.
 
+For the end-to-end ops checklist, safety rails, and the dead-code/simplify
+audit matrix, see [live_explorer_ops_checklist.md](live_explorer_ops_checklist.md).
+
 ```powershell
 cargo run -p mev-scout-cli -- --config mev-scout.toml live
 cargo run -p mev-scout-cli --                 # identical to the line above
@@ -389,6 +392,8 @@ flowchart LR
 Forensic reconstruction of MEV that was actually extracted on-chain — the
 counterpart to the scanner's simulated opportunities. Pipeline: ingest → decode
 → classify → profit → store (`explorer-{chain}.sqlite`) → query surface below.
+Runnable explorer steps and acceptance metrics live in
+[live_explorer_ops_checklist.md](live_explorer_ops_checklist.md).
 Scanner `run`/`live` persist opportunities into the same store; `record_rejections = true`
 adds rejected candidates for offline analysis.
 

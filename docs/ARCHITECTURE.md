@@ -27,7 +27,7 @@ flowchart TB
         direction TB
 
         subgraph ORCH["Orchestration"]
-            COREJOBS["jobs<br/>live · discover · tokens · report<br/>index · backfill · run<br/>(tokens/run/backfill: library-only)"]
+            COREJOBS["jobs<br/>live · discover · report<br/>index · backfill · run<br/>(run/backfill: library-only)"]
             PIPE["pipeline<br/>BacktestRunner · run_block / run_range(_hybrid)<br/>aggregate · gas model · activity scanner"]
         end
 
@@ -99,8 +99,8 @@ flowchart TB
 **Key relationships**
 
 - The CLI is the only host: `CLI → core`. Shared long-running flows live in `core::jobs`.
-  CLI hosts `live` / `discover` / `report` / `config` / `explorer`; `job_run`,
-  `job_tokens`, and `job_backfill` remain library-only.
+  CLI hosts `live` / `discover` / `report` / `config` / `explorer`; `job_run`
+  and `job_backfill` remain library-only.
 - `pipeline` is the hub: `BacktestRunner` owns `BlockReplayer` + `PoolManager` and drives every detector per transaction.
 - `cache` (SQLite) is the local-first backbone — `live` fetches blocks into it; the runner reads from it; pool discovery persists pools/tokens into it.
 - `rpc` fronts the chain for everything: fetching, `eth_call` pool state, and replay's on-demand state misses (via `CachedRpcDb`).
