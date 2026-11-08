@@ -50,6 +50,11 @@ mod tests {
         assert!(TEMPLATE.contains("Data Health") || TEMPLATE.contains("data health"));
         assert!(TEMPLATE.contains("sliceKey"));
         assert!(TEMPLATE.contains("usdAxisValue") || TEMPLATE.contains("function usd("));
+        assert!(TEMPLATE.contains("id=\"filter-bar\""));
+        assert!(TEMPLATE.contains("id=\"f-slice\""));
+        assert!(TEMPLATE.contains("id=\"f-tags\""));
+        assert!(TEMPLATE.contains("filteredScatter"));
+        assert!(TEMPLATE.contains("tag_facets"));
         assert!(!TEMPLATE.contains("fonts.googleapis"));
         assert!(!TEMPLATE.contains("cdn.jsdelivr"));
         assert!(!TEMPLATE.contains("Fraunces"));

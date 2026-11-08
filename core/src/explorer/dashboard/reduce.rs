@@ -135,6 +135,8 @@ pub struct EventRow {
     pub detector: String,
     pub excluded_from_net: bool,
     pub pnl_basis: Option<String>,
+    /// `details.tags` — enables client-side tag facet filters without evidence join.
+    pub tags: Vec<String>,
 }
 
 /// Per-bucket ops/net by kind/subkind slice (full-window; not truncated events).
@@ -154,6 +156,8 @@ pub struct ScatterPoint {
     pub tx_hash: String,
     pub ts: u64,
     pub slice_key: String,
+    pub confidence: String,
+    pub tags: Vec<String>,
     pub net_profit_usd: Option<f64>,
     pub volume_usd: Option<f64>,
     pub volume_partial: bool,
@@ -334,6 +338,8 @@ fn reduce_scatter_points(ops: &[OpRecord], max_points: usize) -> Vec<ScatterPoin
                 tx_hash: o.tx_hash.clone(),
                 ts: o.ts,
                 slice_key: slice_key(&o.kind, o.subkind.as_deref()),
+                confidence: o.confidence.clone(),
+                tags: details_tags(o.details_json.as_deref()),
                 net_profit_usd: if o.excluded_from_net.unwrap_or(false) {
                     None
                 } else {
@@ -345,6 +351,23 @@ fn reduce_scatter_points(ops: &[OpRecord], max_points: usize) -> Vec<ScatterPoin
             }
         })
         .collect()
+}
+
+fn details_tags(details_json: Option<&str>) -> Vec<String> {
+    let Some(raw) = details_json.filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    v.get("tags")
+        .and_then(|t| t.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn details_has_token(details_json: Option<&str>, needle: &str) -> bool {
@@ -841,15 +864,25 @@ fn reduce_facets(
 }
 
 fn event_row(o: &OpRecord) -> EventRow {
-    let pnl_basis = o
+    let details = o
         .details_json
         .as_deref()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-        .and_then(|v| {
-            v.get("pnl_basis")
-                .and_then(|b| b.as_str())
-                .map(str::to_string)
-        });
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+    let pnl_basis = details.as_ref().and_then(|v| {
+        v.get("pnl_basis")
+            .and_then(|b| b.as_str())
+            .map(str::to_string)
+    });
+    let tags = details
+        .as_ref()
+        .and_then(|v| v.get("tags"))
+        .and_then(|t| t.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_else(|| details_tags(o.details_json.as_deref()));
     EventRow {
         id: o.id,
         block_number: o.block_number,
@@ -868,6 +901,7 @@ fn event_row(o: &OpRecord) -> EventRow {
         detector: o.detector.clone(),
         excluded_from_net: o.excluded_from_net.unwrap_or(false),
         pnl_basis,
+        tags,
     }
 }
 

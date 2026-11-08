@@ -68,9 +68,37 @@ a:hover { text-decoration: underline; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .search, .chip-select {
   background: rgba(14,21,32,.9); border: 1px solid var(--line); border-radius: 999px;
-  padding: 9px 14px; min-width: 240px; outline: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.02);
+  padding: 9px 14px; min-width: 160px; outline: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.02);
 }
+.search { min-width: 240px; }
 .search:focus, .chip-select:focus { border-color: rgba(45,212,191,.55); box-shadow: 0 0 0 3px rgba(45,212,191,.12); }
+.filter-bar {
+  display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-start;
+  margin-bottom: 14px; padding: 12px 14px; border-radius: 14px;
+  background: rgba(14,21,32,.72); border: 1px solid var(--line);
+}
+.filter-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.filter-group label {
+  font: 10px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+}
+.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; max-width: 100%; }
+.tag-chip {
+  appearance: none; border: 1px solid var(--line); background: rgba(19,28,42,.95);
+  color: var(--muted); border-radius: 999px; padding: 5px 10px; cursor: pointer;
+  font: 11px/1.2 var(--mono); transition: border-color .12s, color .12s, background .12s;
+}
+.tag-chip:hover { color: var(--ink); border-color: rgba(45,212,191,.45); }
+.tag-chip.active {
+  color: var(--teal); border-color: rgba(45,212,191,.55);
+  background: rgba(45,212,191,.12);
+}
+.tag-chip .n { opacity: .7; margin-left: 4px; }
+.filter-meta { margin-left: auto; align-self: center; color: var(--muted); font: 11px/1.3 var(--mono); }
+.filter-reset {
+  appearance: none; border: 1px solid var(--line); background: transparent; color: var(--muted);
+  border-radius: 999px; padding: 8px 12px; cursor: pointer; font: 11px/1 var(--mono);
+}
+.filter-reset:hover { color: var(--ink); border-color: rgba(251,191,36,.45); }
 .status {
   display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 999px;
   background: rgba(52,211,153,.1); color: var(--mint); font: 11px/1 var(--mono);
@@ -201,6 +229,42 @@ pre.raw {
       </div>
     </div>
     <div class="banner" id="trunc-banner"></div>
+    <div class="filter-bar" id="filter-bar" aria-label="Strategy filters">
+      <div class="filter-group">
+        <label for="f-slice">Strategy</label>
+        <select class="chip-select" id="f-slice"></select>
+      </div>
+      <div class="filter-group">
+        <label for="f-conf">Confidence</label>
+        <select class="chip-select" id="f-conf">
+          <option value="all">Exact + inferred</option>
+          <option value="exact">Exact only</option>
+          <option value="inferred">Inferred only</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="f-priced">Pricing</label>
+        <select class="chip-select" id="f-priced">
+          <option value="all">Priced + unpriced</option>
+          <option value="priced">Priced only</option>
+          <option value="unpriced">Unpriced only</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label for="f-utility">Scope</label>
+        <select class="chip-select" id="f-utility">
+          <option value="include">MEV + utility</option>
+          <option value="mev">MEV only</option>
+          <option value="utility">Utility only</option>
+        </select>
+      </div>
+      <div class="filter-group" style="flex:1 1 220px">
+        <label>Tags</label>
+        <div class="filter-chips" id="f-tags"></div>
+      </div>
+      <button type="button" class="filter-reset" id="f-reset">Reset filters</button>
+      <div class="filter-meta" id="filter-meta"></div>
+    </div>
 
     <section class="view active" id="view-overview">
       <div class="grid kpis" id="overview-kpis"></div>
@@ -327,7 +391,16 @@ pre.raw {
   var C = S.coverage || {};
   var T = P.truncation || {};
   var charts = {};
-  var state = { view: "overview", opHash: null, q: "" };
+  var state = {
+    view: "overview",
+    opHash: null,
+    q: "",
+    slice: "all",
+    confidence: "all",
+    priced: "all",
+    utility: "include",
+    tag: null
+  };
 
   var SLICE_COLORS = {
     "utility/bundler": "#4fd1c5",
@@ -438,10 +511,37 @@ pre.raw {
     return { color: "#8b9bb3", fontFamily: "Cascadia Mono, monospace", fontSize: 11 };
   }
 
+  function isUtilitySlice(key) {
+    return String(key || "").indexOf("utility/") === 0 || String(key || "") === "utility";
+  }
+  function passesSlice(key) {
+    return state.slice === "all" || key === state.slice;
+  }
+  function passesUtility(key) {
+    if (state.utility === "mev") return !isUtilitySlice(key);
+    if (state.utility === "utility") return isUtilitySlice(key);
+    return true;
+  }
+  function passesConfidence(conf) {
+    return state.confidence === "all" || String(conf || "") === state.confidence;
+  }
+  function passesPriced(priced) {
+    if (state.priced === "all") return true;
+    if (state.priced === "priced") return !!priced;
+    return !priced;
+  }
+  function passesTag(tags) {
+    if (!state.tag) return true;
+    var arr = tags || [];
+    for (var i = 0; i < arr.length; i++) if (arr[i] === state.tag) return true;
+    return false;
+  }
+
   function rollMix() {
     var map = {};
     (P.kind_matrix || []).forEach(function (c) {
       var key = sliceKey(c.kind, c.subkind);
+      if (!passesSlice(key) || !passesUtility(key) || !passesConfidence(c.confidence)) return;
       if (!map[key]) map[key] = { ops: 0, net: 0, gross: 0 };
       map[key].ops += c.ops || 0;
       map[key].net += c.net_usd || 0;
@@ -453,6 +553,22 @@ pre.raw {
       .sort(function (a, b) { return b.ops - a.ops; });
   }
 
+  function filteredStrategySeries() {
+    return (P.strategy_series || []).filter(function (p) {
+      return passesSlice(p.slice_key) && passesUtility(p.slice_key);
+    });
+  }
+
+  function filteredScatter() {
+    return (P.scatter_points || []).filter(function (p) {
+      return passesSlice(p.slice_key)
+        && passesUtility(p.slice_key)
+        && passesConfidence(p.confidence)
+        && passesPriced(p.priced)
+        && passesTag(p.tags);
+    });
+  }
+
   function evidenceByHash() {
     var m = {};
     (P.evidence || []).forEach(function (e) { m[e.tx_hash] = e; });
@@ -461,15 +577,81 @@ pre.raw {
 
   function filteredEvents() {
     var q = (state.q || "").trim().toLowerCase();
-    var rows = P.events || [];
-    if (!q) return rows;
-    return rows.filter(function (e) {
+    return (P.events || []).filter(function (e) {
+      var key = sliceKey(e.kind, e.subkind);
+      if (!passesSlice(key) || !passesUtility(key)) return false;
+      if (!passesConfidence(e.confidence)) return false;
+      if (!passesPriced(e.profit_usd != null)) return false;
+      if (!passesTag(e.tags)) return false;
+      if (!q) return true;
+      var tagHay = (e.tags || []).join(" ").toLowerCase();
       return String(e.tx_hash).toLowerCase().indexOf(q) >= 0
         || String(e.eoa).toLowerCase().indexOf(q) >= 0
         || String(e.contract || "").toLowerCase().indexOf(q) >= 0
         || String(e.block_number).indexOf(q) >= 0
-        || sliceKey(e.kind, e.subkind).toLowerCase().indexOf(q) >= 0;
+        || key.toLowerCase().indexOf(q) >= 0
+        || tagHay.indexOf(q) >= 0;
     });
+  }
+
+  function availableSlices() {
+    var seen = {};
+    var out = [];
+    function add(key) {
+      if (!key || seen[key]) return;
+      seen[key] = 1;
+      out.push(key);
+    }
+    (P.kind_matrix || []).forEach(function (c) {
+      if ((c.ops || 0) > 0) add(sliceKey(c.kind, c.subkind));
+    });
+    (P.events || []).forEach(function (e) { add(sliceKey(e.kind, e.subkind)); });
+    out.sort(function (a, b) { return sliceLabel(a).localeCompare(sliceLabel(b)); });
+    return out;
+  }
+
+  function renderFilterBar() {
+    var sel = $("f-slice");
+    if (sel && sel.options.length <= 1) {
+      var opts = '<option value="all">All strategies</option>';
+      availableSlices().forEach(function (k) {
+        opts += '<option value="' + esc(k) + '">' + esc(sliceLabel(k)) + "</option>";
+      });
+      sel.innerHTML = opts;
+    }
+    if (sel) sel.value = state.slice;
+    if ($("f-conf")) $("f-conf").value = state.confidence;
+    if ($("f-priced")) $("f-priced").value = state.priced;
+    if ($("f-utility")) $("f-utility").value = state.utility;
+
+    var facets = P.tag_facets || [];
+    var host = $("f-tags");
+    if (host) {
+      if (!facets.length) {
+        host.innerHTML = '<span class="null">No tags in window</span>';
+      } else {
+        host.innerHTML = facets.slice(0, 24).map(function (f) {
+          var active = state.tag === f.value ? " active" : "";
+          var warn = f.out_of_catalogue ? ' title="out of catalogue"' : "";
+          return '<button type="button" class="tag-chip' + active + '" data-tag="'
+            + esc(f.value) + '"' + warn + ">" + esc(f.value)
+            + '<span class="n">' + (f.ops || 0) + "</span></button>";
+        }).join("");
+      }
+    }
+    var n = filteredEvents().length;
+    var total = (P.events || []).length;
+    var bits = [];
+    if (state.slice !== "all") bits.push(sliceLabel(state.slice));
+    if (state.confidence !== "all") bits.push(state.confidence);
+    if (state.priced !== "all") bits.push(state.priced);
+    if (state.utility !== "include") bits.push(state.utility === "mev" ? "MEV only" : "utility only");
+    if (state.tag) bits.push("#" + state.tag);
+    $("filter-meta").textContent = (bits.length ? bits.join(" · ") + " · " : "")
+      + n + "/" + total + " ops shown"
+      + (state.tag || state.priced !== "all"
+        ? " · tag/priced → ops+scatter"
+        : "");
   }
 
   function unpricedJitCount() {
@@ -585,7 +767,7 @@ pre.raw {
     });
 
     var mix = rollMix();
-    var ss = P.strategy_series || [];
+    var ss = filteredStrategySeries();
     var buckets = [];
     var slices = [];
     var seenB = {}, seenS = {};
@@ -778,7 +960,7 @@ pre.raw {
         }]
       });
     }
-    var pts = (P.scatter_points || []).filter(function (p) {
+    var pts = filteredScatter().filter(function (p) {
       return p.priced && p.volume_usd != null && p.net_profit_usd != null && p.volume_usd > 0;
     });
     var cSc = chart("chart-pools-scatter");
@@ -807,7 +989,7 @@ pre.raw {
         }]
       });
     }
-    var unp = (P.scatter_points || []).filter(function (p) { return !p.priced; }).length;
+    var unp = filteredScatter().filter(function (p) { return !p.priced; }).length;
     $("pools-scatter-cap").textContent = unp
       + " unpriced operations excluded from USD axes · volume on log scale";
   }
@@ -819,7 +1001,7 @@ pre.raw {
 
   function renderAnalytics() {
     var mix = rollMix();
-    var ss = P.strategy_series || [];
+    var ss = filteredStrategySeries();
     var buckets = [];
     var slices = [];
     var seenB = {}, seenS = {};
@@ -870,6 +1052,13 @@ pre.raw {
         }]
       });
     }
+    var confExact = 0, confInf = 0;
+    (P.kind_matrix || []).forEach(function (c) {
+      var key = sliceKey(c.kind, c.subkind);
+      if (!passesSlice(key) || !passesUtility(key) || !passesConfidence(c.confidence)) return;
+      if (c.confidence === "exact") confExact += c.ops || 0;
+      else if (c.confidence === "inferred") confInf += c.ops || 0;
+    });
     var cConf = chart("chart-analytics-conf");
     if (cConf) {
       cConf.setOption({
@@ -880,8 +1069,8 @@ pre.raw {
         series: [{
           type: "bar",
           data: [
-            { value: Q.ops_exact || 0, itemStyle: { color: "#4fd1c5" } },
-            { value: Q.ops_inferred || 0, itemStyle: { color: "#a78bfa" } }
+            { value: confExact, itemStyle: { color: "#4fd1c5" } },
+            { value: confInf, itemStyle: { color: "#a78bfa" } }
           ]
         }]
       });
@@ -940,7 +1129,7 @@ pre.raw {
       });
     }
 
-    var pts = (P.scatter_points || []).filter(function (p) {
+    var pts = filteredScatter().filter(function (p) {
       return p.priced && p.volume_usd != null && p.net_profit_usd != null
         && p.volume_usd > 0;
     });
@@ -978,7 +1167,7 @@ pre.raw {
         }]
       });
     }
-    var unp = (P.scatter_points || []).filter(function (p) { return !p.priced; }).length;
+    var unp = filteredScatter().filter(function (p) { return !p.priced; }).length;
     $("analytics-scatter-cap").textContent = unp
       + " unpriced operations excluded from USD axes · volume outliers keep raw magnitude (log scale)";
   }
@@ -1240,6 +1429,7 @@ pre.raw {
   }
 
   function renderView() {
+    renderFilterBar();
     if (state.view === "overview") renderOverview();
     else if (state.view === "analytics") renderAnalytics();
     else if (state.view === "operations") renderOpDetail();
@@ -1251,6 +1441,15 @@ pre.raw {
         if (charts[id]) try { charts[id].resize(); } catch (e) {}
       });
     }, 30);
+  }
+
+  function resetFilters() {
+    state.slice = "all";
+    state.confidence = "all";
+    state.priced = "all";
+    state.utility = "include";
+    state.tag = null;
+    renderView();
   }
 
   function parseHash() {
@@ -1273,6 +1472,25 @@ pre.raw {
     state.q = e.target.value || "";
     renderView();
   });
+  ["f-slice", "f-conf", "f-priced", "f-utility"].forEach(function (id) {
+    var el = $(id);
+    if (!el) return;
+    el.addEventListener("change", function () {
+      if (id === "f-slice") state.slice = el.value || "all";
+      if (id === "f-conf") state.confidence = el.value || "all";
+      if (id === "f-priced") state.priced = el.value || "all";
+      if (id === "f-utility") state.utility = el.value || "include";
+      renderView();
+    });
+  });
+  $("f-tags").addEventListener("click", function (e) {
+    var btn = e.target.closest("button[data-tag]");
+    if (!btn) return;
+    var tag = btn.getAttribute("data-tag");
+    state.tag = state.tag === tag ? null : tag;
+    renderView();
+  });
+  $("f-reset").addEventListener("click", resetFilters);
   document.body.addEventListener("click", function (e) {
     var tr = e.target.closest("tr[data-hash]");
     if (tr) openOp(tr.getAttribute("data-hash"));
