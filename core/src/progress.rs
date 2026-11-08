@@ -4,8 +4,9 @@
 use serde::{Deserialize, Serialize};
 
 /// One stage-progress event emitted by the engine's long-running paths.
-/// Fields mirror the historical NDJSON `--progress json` contract so the
-/// CLI JSON surface stays stable.
+/// Field layout matches the historical NDJSON progress contract (kept for
+/// embedding hosts using `StdoutJsonProgress`; the binary has no `--progress`
+/// flag).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressEvent {
     pub stage: String,

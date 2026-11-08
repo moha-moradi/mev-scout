@@ -1,8 +1,12 @@
 //! Job progress sinks for the CLI binary. The shared trait/event types live
 //! in `mev_scout_core::progress`; here we pick a presentation sink per mode:
-//! indicatif bar for `live` and `explorer index`, noop otherwise.
+//! indicatif bar for `live` and `explorer index`, log-only otherwise.
 //!
-//! [`StdoutJsonProgress`] remains available for embedding hosts that want NDJSON.
+//! [`StdoutJsonProgress`] is a public embedding sink (NDJSON). The binary itself
+//! never selects it — there is no `--progress` flag.
+//!
+//! CLI [`NoopProgress`] still prints `log` lines (unlike
+//! `mev_scout_core::progress::NoopProgress`, which is silent for library hosts).
 pub use mev_scout_core::progress::{JobProgress, ProgressEvent};
 
 /// Sink for the CLI's plain mode: fetch/backfill indicatif bar (or spinner
@@ -96,8 +100,8 @@ impl JobProgress for BarProgress {
     }
 }
 
-/// Sink for the CLI's `--progress json` mode: emits each event as an NDJSON
-/// line on stdout (same contract as the old hard-coded prints).
+/// Public embedding sink: each event as one NDJSON line on stdout.
+/// Not wired into the `mev-scout` binary (no `--progress` flag).
 pub struct StdoutJsonProgress;
 
 impl JobProgress for StdoutJsonProgress {
@@ -116,8 +120,8 @@ impl JobProgress for StdoutJsonProgress {
     }
 }
 
-/// Sink that swallows events and never cancels (commands with no progress
-/// output, e.g. `tokens`).
+/// Binary sink for commands without an indicatif bar: swallow stage events,
+/// still print `log` lines to stdout.
 pub struct NoopProgress;
 
 impl JobProgress for NoopProgress {

@@ -145,6 +145,9 @@ pub async fn cmd_live(
     // Ledger flags are validated in `resolve_ledger_policy` /
     // `resolve_native_price` so the rules live in one place and apply to any
     // caller, not just this CLI.
+    // Library-only overrides (`initial_balance_usd`, `native_usd`,
+    // `max_fills_per_block`, `sim_max_candidates_per_block`) stay at
+    // `Default` — no clap surface; callers/tests set them explicitly.
     let opts = LiveOpts {
         loop_enabled: args.r#loop,
         duration: args.duration.clone(),
@@ -153,13 +156,10 @@ pub async fn cmd_live(
         max_blocks: args.max_blocks,
         single_pass_blocks: args.blocks,
         initial_balance_wei: args.initial_balance,
-        initial_balance_usd: None,
         reserve_wei: args.reserve,
-        max_fills_per_block: None,
-        native_usd: None,
         sim: args.sim.clone(),
-        sim_max_candidates_per_block: None,
         exec: args.exec.clone(),
+        ..Default::default()
     };
 
     match job_live(config, &opts, progress).await? {

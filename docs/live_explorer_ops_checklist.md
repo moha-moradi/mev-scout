@@ -119,10 +119,9 @@ These are candidates for §7, not necessarily dead everywhere:
 
 - `LiveOpts.initial_balance_usd`, `LiveOpts.native_usd`,
   `LiveOpts.max_fills_per_block`, `LiveOpts.sim_max_candidates_per_block`:
-  no clap flag; `cli/src/commands/live.rs` constructs them as `None`. They are
-  library/test-only knobs today.
-- `StdoutJsonProgress`: defined in `cli/src/job_progress.rs`, no constructor
-  or dispatch path uses it.
+  no clap flag; CLI leaves them at `Default`. Library/test-only knobs.
+- `StdoutJsonProgress`: defined in `cli/src/job_progress.rs` for embedding
+  hosts; the binary has no `--progress` flag and never selects it.
 - `Fetcher::with_sig_resolver` and `core::sigs`: no callers from jobs; the
   signature DB is not wired into ingest.
 - `jobs::job_run`: library-only, used by core integration tests. `jobs::job_tokens`:
@@ -378,11 +377,11 @@ to remove** = no non-negotiable goal and no live test depends on it; **Tests**
 |---|---|---|---|---|---|---|---|---|
 | 1 | `gas.gas_limits` config | Parsed in `settings.rs`; no reader in `core/` or `cli/` | not in resolved dump; absent by default | no | yes | none found | none | **removed** |
 | 2 | `[backtest].batch_rpc` | Read only by `job_run`; `live` never reads it | `live` unaffected | library `job_run` | no | core corpus via `job_run` | library API | keep |
-| 3 | `LiveOpts.initial_balance_usd` | No clap; CLI sets `None` | CLI never sets it | library-only | no | `core/src/jobs/live.rs` unit tests | paper ledger flags | defer (library API) |
-| 4 | `LiveOpts.native_usd` | No clap; CLI sets `None` | CLI never sets it | library-only | no | `core/src/jobs/live.rs` unit tests | ledger USD display | defer (library API) |
-| 5 | `LiveOpts.max_fills_per_block` | No clap; CLI sets `None` | CLI never sets it | library-only | no | `core/src/jobs/live.rs` unit tests | paper fill cap | defer (library API) |
-| 6 | `LiveOpts.sim_max_candidates_per_block` | No clap; CLI sets `None` | CLI never sets it | library-only | no | none found | state-sim seed budget | defer (library API) |
-| 7 | `StdoutJsonProgress` | Defined; no constructor/dispatch | unused | none | yes (in-repo) | none found | none in-repo | keep (public embedding sink) |
+| 3 | `LiveOpts.initial_balance_usd` | No clap; CLI uses `..Default` | CLI never sets it | library-only | no | `core/src/jobs/live.rs` unit tests | paper ledger flags | defer (library API); CLI honesty via `Default` |
+| 4 | `LiveOpts.native_usd` | No clap; CLI uses `..Default` | CLI never sets it | library-only | no | `core/src/jobs/live.rs` unit tests | ledger USD display | defer (library API); CLI honesty via `Default` |
+| 5 | `LiveOpts.max_fills_per_block` | No clap; CLI uses `..Default` | CLI never sets it | library-only | no | `core/src/jobs/live.rs` unit tests | paper fill cap | defer (library API); CLI honesty via `Default` |
+| 6 | `LiveOpts.sim_max_candidates_per_block` | No clap; CLI uses `..Default` | CLI never sets it | library-only | no | none found | state-sim seed budget | defer (library API); CLI honesty via `Default` |
+| 7 | `StdoutJsonProgress` | Defined; no binary dispatch (no `--progress` flag) | unused by binary | embedding-only | no | none found | embedding contract | keep (public embedding sink) |
 | 8 | `Fetcher::with_sig_resolver` + `sigs` | No job caller; `ARCHITECTURE.md` documents "not wired" | unused | none | no | none found | future tx decoding | keep (documented future) |
 | 9 | `jobs::job_run` | Library-only; core integration tests use it | not invoked by CLI | library-only | no | `core/tests/paper_corpus.rs`, `mev_corpus.rs` | library API | keep |
 | 10 | `jobs::job_tokens` | No callers in binary or tests | never invoked | none | yes | none found | none | **removed** |
@@ -400,9 +399,9 @@ unaffected**, **Optional = no/library-only**, **Safe = yes**, and **Goal impact
 Everything else is either a live library API, a documented future, or required
 by another product surface.
 
-### 7.1 Evidence log (2026-11-07, Avalanche)
+### 7.1 Evidence log
 
-Commands run from the repo root with `-f mev-scout.toml`:
+#### 2026-11-07 (Avalanche, full checklist)
 
 | Step | Result |
 |---|---|
@@ -427,25 +426,48 @@ Commands run from the repo root with `-f mev-scout.toml`:
 `report` / bare `explorer` counters instead of direct SQL. The explorer DB
 contained 11 classified blocks and 0 `mev_ops` after the bounded index.
 
+#### 2026-11-08 (re-verify after second simplify pass)
+
+| Step | Result |
+|---|---|
+| `live --duration 15m` | exit 1: `--duration requires --loop` |
+| `live --max-blocks 5` | exit 1: `--max-blocks requires --loop` |
+| `live --loop --duration notatime` | exit 1: invalid duration |
+| `live --exec testnet` | exit 1: expected `none` / `revm` / `anvil` |
+| `explorer index --duration 30s` | exit 1: requires `--loop` |
+| `explorer index --loop --days 3` | exit 1: cannot combine with `--loop` |
+| `explorer --windows 1d index` | exit 1: report flags belong on bare `explorer` |
+| bare `explorer --windows 1d --top 5` | exit 0; offline revenue tables from existing DB |
+| `explorer dashboard --db … --format json` | exit 0; `schema=13 ops=111`; wrote `results/dash_evidence.json` |
+| `cargo test -p mev-scout-cli --lib` | 6 passed |
+| `cargo test -p mev-scout-core --lib` | 498 passed |
+
+RPC one-shot / `index` rows from 2026-11-07 remain the acceptance evidence for
+network paths. No new `safe=yes` / `goal impact=none` candidates appeared;
+rows 3–6 stay deferred library API with CLI `..Default` honesty.
+
 ---
 
 ## 8. Phase B execution order (after the matrix is filled)
 
-**Status (2026-11-07):** first pass executed. Removed `gas.gas_limits` and
+**Status (2026-11-07 / 2026-11-08):** first pass removed `gas.gas_limits` and
 `job_tokens` (rows 1 and 10) and fixed the `index --loop` termination bug
-(row 11). The remaining candidates are deferred: they are live library APIs,
-used by `job_run`/corpus tests, or explicitly documented as future work.
+(row 11). Second pass: CLI `LiveOpts` construction uses `..Default::default()`
+for library-only fields (rows 3–6 honesty without removing the library API);
+stale `--progress` / `tokens job` comments cleaned. Remaining candidates stay
+deferred: live library APIs, `job_run`/corpus tests, or documented future work.
 
-1. **Config surface** — remove/deprecate parsed-but-unused keys from
-   `settings.rs` and `mev-scout.example.toml`; make `strategies` emptiness-only
-   semantics explicit in docs/example, or wire membership.
-2. **CLI / `LiveOpts` honesty** — remove or expose the no-clap fields; delete
-   dead progress types.
-3. **Dead library commands** — `job_run` / `job_tokens` / sigs: wire to the
-   binary, keep with `pub(crate)` + reason, or remove.
-4. **Dedup** — one validation and duration-parse path.
+1. **Config surface** — done for `gas_limits`; `strategies` emptiness-only
+   documented in `mev-scout.example.toml` + `docs/CLI.md`; corpus knobs kept.
+2. **CLI / `LiveOpts` honesty** — library-only fields stay on `LiveOpts` for
+   tests/embeds; binary no longer names them. `StdoutJsonProgress` kept as
+   public embedding sink (not binary-wired).
+3. **Dead library commands** — `job_tokens` removed; `job_run` kept for corpus;
+   `sigs` kept as documented future.
+4. **Dedup** — dual CLI+job duration/`--max-blocks` checks kept deliberately
+   (fail-fast before bootstrap vs job re-entry).
 5. **Docs sync** — `docs/CLI.md`, this checklist, and `mev-scout.example.toml`
-   must describe the same surface.
+   describe the same surface.
 
 Acceptance after simplify:
 
