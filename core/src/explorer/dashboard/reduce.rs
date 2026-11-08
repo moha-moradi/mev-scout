@@ -137,6 +137,29 @@ pub struct EventRow {
     pub pnl_basis: Option<String>,
 }
 
+/// Per-bucket ops/net by kind/subkind slice (full-window; not truncated events).
+#[derive(Debug, Clone, Serialize)]
+pub struct StrategySeriesPoint {
+    pub bucket_start: i64,
+    pub slice_key: String,
+    pub ops: i64,
+    pub net_usd: f64,
+    pub priced_ops: i64,
+}
+
+/// Cap-friendly scatter row for Analytics (built from full ops, not truncated events).
+#[derive(Debug, Clone, Serialize)]
+pub struct ScatterPoint {
+    pub id: i64,
+    pub tx_hash: String,
+    pub ts: u64,
+    pub slice_key: String,
+    pub net_profit_usd: Option<f64>,
+    pub volume_usd: Option<f64>,
+    pub volume_partial: bool,
+    pub priced: bool,
+}
+
 /// Full reducer output for the snapshot panels.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReducedPanels {
@@ -152,6 +175,8 @@ pub struct ReducedPanels {
     pub reason_facets: Vec<FacetRow>,
     pub events: Vec<EventRow>,
     pub evidence: Vec<OpEvidence>,
+    pub strategy_series: Vec<StrategySeriesPoint>,
+    pub scatter_points: Vec<ScatterPoint>,
     pub truncation: TruncationInfo,
 }
 
@@ -186,6 +211,9 @@ pub fn reduce(
     let pools = reduce_pools(ops, caps);
     let tokens = reduce_tokens(ops, caps);
     let (tag_facets, reason_facets) = reduce_facets(ops, catalogue_tags, caps);
+    let strategy_series = reduce_strategy_series(ops, window, bucket_secs);
+    let scatter_cap = max_ops.max(2_000);
+    let scatter_points = reduce_scatter_points(ops, scatter_cap);
 
     let ops_total = ops.len();
     let emit_ops = ops.len().min(max_ops);
@@ -212,6 +240,11 @@ pub fn reduce(
                 o.profit_token.as_deref(),
                 o.profit_amount.as_deref(),
                 o.excluded_from_net.unwrap_or(false),
+                o.usd_approximate.unwrap_or(false),
+                o.native_unpriced.unwrap_or(false),
+                o.multi_asset_pricing.unwrap_or(false),
+                o.pricing_clamped.unwrap_or(false),
+                o.flash_fee_unpriced.unwrap_or(false),
                 o.route_json.as_deref(),
                 o.victim_hashes.as_deref(),
                 o.details_json.as_deref(),
@@ -235,6 +268,8 @@ pub fn reduce(
         reason_facets,
         events,
         evidence,
+        strategy_series,
+        scatter_points,
         truncation: TruncationInfo {
             max_ops,
             ops_total,
@@ -244,6 +279,89 @@ pub fn reduce(
             hit_budget,
         },
     }
+}
+
+/// Stable kind/subkind key — never collapse utility subkinds.
+pub fn slice_key(kind: &str, subkind: Option<&str>) -> String {
+    match subkind.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => format!("{kind}/{s}"),
+        None => kind.to_string(),
+    }
+}
+
+fn reduce_strategy_series(
+    ops: &[OpRecord],
+    window: &WindowSpec,
+    bucket_secs: i64,
+) -> Vec<StrategySeriesPoint> {
+    let mut map: BTreeMap<(i64, String), (i64, f64, i64)> = BTreeMap::new();
+    for o in ops {
+        let b = (o.ts as i64 / bucket_secs) * bucket_secs;
+        if b < window.since_ts || b > window.until_ts {
+            continue;
+        }
+        let key = (b, slice_key(&o.kind, o.subkind.as_deref()));
+        let e = map.entry(key).or_insert((0, 0.0, 0));
+        e.0 += 1;
+        if o.profit_usd.is_some() {
+            e.2 += 1;
+        }
+        let excluded = o.excluded_from_net.unwrap_or(false);
+        if !excluded {
+            if let Some(n) = o.net_profit_usd {
+                e.1 += n;
+            }
+        }
+    }
+    map.into_iter()
+        .map(|((bucket_start, slice_key), (ops, net_usd, priced_ops))| StrategySeriesPoint {
+            bucket_start,
+            slice_key,
+            ops,
+            net_usd,
+            priced_ops,
+        })
+        .collect()
+}
+
+fn reduce_scatter_points(ops: &[OpRecord], max_points: usize) -> Vec<ScatterPoint> {
+    ops.iter()
+        .take(max_points)
+        .map(|o| {
+            let volume_partial = details_has_token(o.details_json.as_deref(), "VOLUME_PARTIAL");
+            ScatterPoint {
+                id: o.id,
+                tx_hash: o.tx_hash.clone(),
+                ts: o.ts,
+                slice_key: slice_key(&o.kind, o.subkind.as_deref()),
+                net_profit_usd: if o.excluded_from_net.unwrap_or(false) {
+                    None
+                } else {
+                    o.net_profit_usd
+                },
+                volume_usd: o.volume_usd,
+                volume_partial,
+                priced: o.profit_usd.is_some(),
+            }
+        })
+        .collect()
+}
+
+fn details_has_token(details_json: Option<&str>, needle: &str) -> bool {
+    let Some(raw) = details_json.filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return raw.contains(needle);
+    };
+    for key in ["tags", "reasons", "pricing_issues"] {
+        if let Some(arr) = v.get(key).and_then(|x| x.as_array()) {
+            if arr.iter().any(|x| x.as_str() == Some(needle)) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn reduce_kpi(ops: &[OpRecord], caps: &StoreCaps) -> KpiPanel {
@@ -689,6 +807,11 @@ fn reduce_facets(
             o.profit_token.as_deref(),
             o.profit_amount.as_deref(),
             o.excluded_from_net.unwrap_or(false),
+            o.usd_approximate.unwrap_or(false),
+            o.native_unpriced.unwrap_or(false),
+            o.multi_asset_pricing.unwrap_or(false),
+            o.pricing_clamped.unwrap_or(false),
+            o.flash_fee_unpriced.unwrap_or(false),
             o.route_json.as_deref(),
             o.victim_hashes.as_deref(),
             o.details_json.as_deref(),

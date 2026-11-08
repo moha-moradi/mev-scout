@@ -3,921 +3,1293 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>mev-scout · forensic MEV view</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap"/>
+<title>MEV SCOUT · dashboard</title>
 <style>
 :root {
-  --paper: #F7F4EF;
-  --raised: #FCFAF7;
-  --ink: #1A1A1A;
-  --ink-soft: #45423E;
-  --muted: #8C867E;
-  --rule: #E2DCD2;
-  --rule-strong: #C9C1B4;
+  --bg: #070b12;
+  --panel: #0e1520;
+  --panel2: #131c2a;
+  --line: #1c2838;
+  --ink: #eef3fb;
+  --muted: #7f91ab;
+  --teal: #2dd4bf;
+  --mint: #34d399;
+  --coral: #fb7185;
+  --purple: #a78bfa;
+  --blue: #38bdf8;
+  --amber: #fbbf24;
   --accent: #E84142;
-  --wash: #FCEDEC;
-  --gain: #3B6E4F;
-  --loss: #B3261E;
-  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
-  --serif: "Fraunces", Georgia, "Times New Roman", serif;
-  --mono: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+  --glow: 0 0 24px rgba(45,212,191,.18);
+  --sans: "Segoe UI", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --mono: "Cascadia Mono", "IBM Plex Mono", ui-monospace, Consolas, monospace;
 }
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-body {
-  margin: 0; background: var(--paper); color: var(--ink);
-  font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased;
+html, body {
+  margin: 0; height: 100%; color: var(--ink); font: 13px/1.45 var(--sans);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(45,212,191,.08), transparent 55%),
+    radial-gradient(900px 500px at 90% 0%, rgba(167,139,250,.07), transparent 50%),
+    var(--bg);
 }
-.wrap { max-width: 1100px; margin: 0 auto; padding: 0 28px 72px; }
-
-/* masthead */
-.masthead {
-  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
-  gap: 12px 24px; padding: 40px 0 14px; border-bottom: 1px solid var(--ink);
+button, input, select { font: inherit; color: inherit; }
+a { color: var(--teal); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.app { display: grid; grid-template-columns: 188px 1fr; min-height: 100vh; }
+.sidebar {
+  background: rgba(7,11,18,.92); border-right: 1px solid var(--line); padding: 20px 10px;
+  display: flex; flex-direction: column; gap: 4px; position: sticky; top: 0; height: 100vh;
+  backdrop-filter: blur(8px);
 }
-.wordmark { font: 600 30px/1 var(--serif); letter-spacing: -.015em; margin: 0; }
-.chain { color: var(--ink-soft); font-size: 13px; margin-top: 7px; }
-.chain em { font-style: normal; color: var(--accent); }
-.mh-meta { font: 400 11px/1.8 var(--mono); color: var(--muted); text-align: right; }
-.mh-meta b { color: var(--ink-soft); font-weight: 500; }
-
-/* honesty ribbon */
-.ribbon {
-  display: flex; flex-wrap: wrap; gap: 3px 22px; margin: 14px 0 0; padding: 10px 14px;
-  background: var(--wash); border-left: 2px solid var(--accent); font-size: 12.5px; color: var(--ink-soft);
+.brand { display: flex; align-items: center; gap: 10px; padding: 2px 10px 22px; }
+.brand-mark {
+  width: 24px; height: 24px; border-radius: 7px;
+  background: linear-gradient(145deg, #ff5a5a, #8b1212); box-shadow: 0 0 18px rgba(232,65,66,.45);
 }
-.ribbon b { font-weight: 500; color: var(--loss); }
-
-/* hero */
-.hero { padding: 46px 0 30px; }
-.kicker {
-  font: 500 10px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--muted);
+.brand b { font-size: 13px; letter-spacing: .12em; font-weight: 700; }
+.navbtn {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: transparent; border: 0; border-radius: 10px; padding: 11px 12px;
+  color: var(--muted); cursor: pointer; transition: background .15s, color .15s, box-shadow .15s;
 }
-.figure { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 20px; margin-top: 12px; }
-.amount { font: 600 clamp(46px, 9vw, 78px)/1 var(--serif); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
-.amount .approx { color: var(--muted); font-weight: 500; }
-.amount.neg { color: var(--loss); }
-.amount.neg .approx { color: var(--loss); opacity: .55; }
-.cov-chip {
-  font: 400 11px/1 var(--mono); color: var(--ink-soft); background: var(--raised);
-  border: 1px solid var(--rule-strong); padding: 5px 9px; white-space: nowrap;
+.navbtn:hover { background: rgba(45,212,191,.06); color: var(--ink); }
+.navbtn.active {
+  background: linear-gradient(90deg, rgba(45,212,191,.16), rgba(45,212,191,.04));
+  color: var(--teal); box-shadow: inset 0 0 0 1px rgba(45,212,191,.35), var(--glow);
 }
-.cov-chip.warn { border-color: var(--accent); color: var(--loss); }
-.cov-bar { width: 170px; height: 3px; background: var(--rule); margin-top: 18px; }
-.cov-bar i { display: block; height: 100%; background: var(--ink); }
-.companions { display: flex; flex-wrap: wrap; gap: 26px 52px; margin-top: 32px; }
-.companion .label {
-  font: 400 10px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+.nav-ico { width: 18px; text-align: center; opacity: .9; font-size: 12px; }
+.side-foot { margin-top: auto; padding: 12px 10px; color: var(--muted); font: 11px/1.45 var(--mono); opacity: .85; }
+.main { padding: 18px 22px 48px; min-width: 0; }
+.topbar {
+  display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; justify-content: space-between;
+  margin-bottom: 18px;
 }
-.companion .value { font: 500 19px/1.3 var(--mono); margin-top: 9px; font-variant-numeric: tabular-nums; }
-.companion .sub { font: 400 10px/1.4 var(--mono); color: var(--muted); margin-top: 4px; }
-.honest {
-  margin-top: 30px; padding-top: 16px; border-top: 1px solid var(--rule);
-  font: 400 12px/1.7 var(--mono); color: var(--muted);
+.topbar h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
+.meta { color: var(--muted); font: 12px/1.4 var(--mono); }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.search, .chip-select {
+  background: rgba(14,21,32,.9); border: 1px solid var(--line); border-radius: 999px;
+  padding: 9px 14px; min-width: 240px; outline: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.02);
 }
-.honest b { color: var(--ink-soft); font-weight: 500; }
-
-/* filters */
-.filters {
-  display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center;
-  padding: 13px 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+.search:focus, .chip-select:focus { border-color: rgba(45,212,191,.55); box-shadow: 0 0 0 3px rgba(45,212,191,.12); }
+.status {
+  display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 999px;
+  background: rgba(52,211,153,.1); color: var(--mint); font: 11px/1 var(--mono);
+  border: 1px solid rgba(52,211,153,.2);
 }
-.f-label { font: 400 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
-.field { display: flex; align-items: center; gap: 8px; }
-input[type=search], select {
-  font: 400 12px/1 var(--mono); color: var(--ink); background: transparent; border: 0;
-  border-bottom: 1px solid var(--rule-strong); padding: 6px 2px; border-radius: 0;
+.status i { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); display: inline-block; box-shadow: 0 0 8px var(--mint); }
+.banner {
+  margin-bottom: 12px; padding: 8px 12px; border-radius: 10px;
+  background: rgba(251,191,36,.08); border: 1px solid rgba(251,191,36,.25); color: var(--amber);
+  font: 12px/1.4 var(--mono); display: none;
 }
-input[type=search]:focus, select:focus { outline: none; border-bottom-color: var(--accent); }
-input[type=search] { min-width: 210px; }
-.toggle { display: flex; align-items: center; gap: 7px; cursor: pointer; font: 400 12px/1 var(--mono); color: var(--ink-soft); }
-.toggle input { accent-color: var(--accent); }
-
-/* blocks */
-section.block { padding: 40px 0 0; }
-.block h2 {
-  font: 500 10px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase;
-  color: var(--muted); margin: 0 0 6px;
+.banner.show { display: block; }
+.view { display: none; }
+.view.active { display: block; }
+.grid { display: grid; gap: 14px; }
+.kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.card {
+  background: linear-gradient(180deg, rgba(18,26,38,.95), rgba(14,21,32,.98));
+  border: 1px solid var(--line); border-radius: 14px; padding: 14px 14px 12px;
+  min-width: 0; box-shadow: 0 8px 28px rgba(0,0,0,.22);
 }
-.lede { font: 400 11.5px/1.5 var(--mono); color: var(--muted); margin: 0 0 16px; }
-.lede b { color: var(--ink-soft); font-weight: 500; }
-
-/* tables */
-table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
-thead th {
-  position: sticky; top: 0; background: var(--paper); border-bottom: 1px solid var(--ink);
-  font: 400 9.5px/1.6 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+.card h2, .card h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
+.kpi {
+  position: relative; overflow: hidden;
 }
-tbody td { font: 400 12.5px/1.5 var(--mono); font-variant-numeric: tabular-nums; }
-tbody tr:hover td { background: var(--raised); }
-.num { text-align: right; }
+.kpi-label { color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.kpi-value { margin-top: 10px; font: 700 23px/1.05 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.kpi-sub { margin-top: 6px; color: var(--muted); font: 11px/1.3 var(--mono); }
+.kpi-spark { position: absolute; right: 8px; bottom: 8px; width: 88px; height: 36px; opacity: .9; }
+.gain { color: var(--mint); }
+.loss { color: var(--coral); }
 .null { color: var(--muted); }
-.gain { color: var(--gain); }
-.loss { color: var(--loss); }
-.hex { color: var(--ink-soft); }
-.txlink { text-decoration: none; color: var(--ink); border-bottom: 1px solid var(--rule-strong); }
-.txlink:hover, .txlink.active { color: var(--accent); border-bottom-color: var(--accent); }
-.kind { font-weight: 500; }
-.conf { font-size: 10px; color: var(--muted); margin-left: 6px; }
-.conf.exact { color: var(--gain); }
-.rank { color: var(--muted); width: 24px; }
-.empty td { color: var(--muted); }
-#live tbody tr { cursor: pointer; }
-#live tbody tr.sel td { background: var(--wash); }
-.more {
-  margin-top: 14px; font: 400 11px/1 var(--mono); color: var(--ink-soft); background: none;
-  border: 1px solid var(--rule-strong); padding: 8px 13px; cursor: pointer;
+.row2 { grid-template-columns: 1.6fr 1fr; }
+.row2b { grid-template-columns: 1fr 1fr; }
+.row3 { grid-template-columns: 1.2fr 1fr 1fr; }
+.chart { width: 100%; height: 280px; }
+.chart-sm { height: 220px; }
+.chart-tall { height: 320px; }
+.chart-gauge { height: 140px; }
+.table-wrap { overflow: auto; max-height: 340px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { color: var(--muted); font: 10px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; position: sticky; top: 0; background: var(--panel); }
+td { font: 12px/1.35 var(--mono); font-variant-numeric: tabular-nums; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td, tr.active td { background: rgba(79,209,197,.08); }
+.pill {
+  display: inline-block; padding: 2px 8px; border-radius: 999px; font: 11px/1.4 var(--mono);
+  background: rgba(96,165,250,.15); color: var(--blue);
 }
-.more:hover { border-color: var(--accent); color: var(--accent); }
-
-/* chart */
-.chart svg { display: block; width: 100%; height: auto; }
-svg text { fill: var(--muted); font: 400 9px var(--mono); }
-svg .axis { stroke: var(--rule-strong); stroke-width: 1; }
-.legend { display: flex; flex-wrap: wrap; gap: 4px 22px; margin-top: 12px; font: 400 11px/1 var(--mono); color: var(--muted); }
-.legend i { display: inline-block; width: 15px; height: 2px; margin-right: 7px; vertical-align: middle; }
-.legend .l-ops { background: var(--ink); }
-.legend .l-net { background: var(--accent); }
-.legend .l-band { background: var(--rule-strong); width: 4px; height: 9px; }
-
-/* boards */
-.boards { display: grid; grid-template-columns: 1fr 1fr; gap: 0 44px; }
-.boards > section { min-width: 0; }
-
-/* details drawer */
-.details-bar {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px;
-  margin-top: 54px; padding-top: 22px; border-top: 1px solid var(--ink);
+.pill.bundler { background: rgba(79,209,197,.15); color: var(--teal); }
+.pill.arb_atomic, .pill.arbitrage { background: rgba(167,139,250,.18); color: var(--purple); }
+.pill.jit { background: rgba(52,211,153,.15); color: var(--mint); }
+.pill.claim_and_sell { background: rgba(96,165,250,.18); color: var(--blue); }
+.pill.warn { background: rgba(251,191,36,.15); color: var(--amber); }
+.pill.bad { background: rgba(248,113,113,.15); color: var(--coral); }
+.pill.ok { background: rgba(52,211,153,.15); color: var(--mint); }
+.badge-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.searcher-row { display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.searcher-row:last-child { border-bottom: 0; }
+.bar { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 4px; }
+.bar > i { display: block; height: 100%; background: var(--teal); }
+.caption { margin-top: 8px; color: var(--muted); font: 11px/1.4 var(--mono); }
+.footer-note { margin-top: 18px; color: var(--muted); font: 11px/1.5 var(--mono); text-align: center; }
+.ops-layout { display: grid; grid-template-columns: 340px 1fr; gap: 12px; min-height: 70vh; }
+.ops-list { max-height: calc(100vh - 120px); overflow: auto; }
+.op-head { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.op-head h1 { margin: 0; font-size: 22px; }
+.btn {
+  background: transparent; border: 1px solid rgba(79,209,197,.45); color: var(--teal);
+  border-radius: 8px; padding: 7px 10px; cursor: pointer;
 }
-.details-bar h2 { font: 500 10px/1 var(--mono); letter-spacing: .18em; text-transform: uppercase; color: var(--muted); margin: 0; }
-.details-bar .lede { margin: 0; }
-.details-toggle {
-  font: 500 12px/1 var(--mono); color: var(--ink); background: none; border: 0;
-  border-bottom: 1px solid var(--ink); padding: 3px 0; cursor: pointer; margin-left: auto;
+.btn:hover { background: rgba(79,209,197,.1); }
+.facts { width: 100%; }
+.facts td:first-child { color: var(--muted); width: 38%; }
+.route {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center;
+  min-height: 120px; padding: 12px 0;
 }
-.details-toggle:hover { color: var(--accent); border-bottom-color: var(--accent); }
-.drawer { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .3s ease; }
-.drawer > .drawer-inner { overflow: hidden; visibility: hidden; transition: visibility 0s .3s; }
-.drawer.open { grid-template-rows: 1fr; }
-.drawer.open > .drawer-inner { visibility: visible; transition: visibility 0s 0s; }
-.cluster { padding: 28px 0; border-bottom: 1px solid var(--rule); }
-.cluster:last-child { border-bottom: 0; }
-.cluster h3 { font: 600 16px/1.3 var(--serif); margin: 0 0 4px; }
-.cluster h4 { font: 500 10px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin: 22px 0 8px; }
-.note { font: 400 11px/1.6 var(--mono); color: var(--muted); margin: 0 0 14px; }
-.note b { color: var(--loss); font-weight: 500; }
-.attrs { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 0 34px; }
-.attr { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; padding: 6px 0; border-bottom: 1px solid var(--rule); }
-.attr .k { font: 400 11px/1.5 var(--mono); color: var(--muted); }
-.attr .v { font: 400 11.5px/1.5 var(--mono); text-align: right; word-break: break-all; }
-.chip {
-  display: inline-block; font: 400 10px/1 var(--mono); border: 1px solid var(--rule-strong);
-  padding: 4px 7px; margin: 0 5px 5px 0; color: var(--ink-soft);
+.route-node {
+  min-width: 110px; padding: 12px; border-radius: 999px; text-align: center;
+  background: var(--panel2); border: 1px solid var(--line); font: 11px/1.35 var(--mono);
 }
-.chip.off { border-color: var(--accent); color: var(--loss); }
-
-/* drill slide-over */
-.backdrop { position: fixed; inset: 0; background: #1A1A1A26; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 15; }
-.backdrop.show { opacity: 1; pointer-events: auto; }
-.drill {
-  position: fixed; top: 0; right: 0; height: 100%; width: min(560px, 92vw); z-index: 20;
-  background: var(--raised); border-left: 1px solid var(--ink); box-shadow: -18px 0 40px #1A1A1A14;
-  transform: translateX(100%); transition: transform .28s ease; overflow: auto;
-}
-.drill.show { transform: translateX(0); }
-.drill header {
-  position: sticky; top: 0; display: flex; align-items: center; gap: 12px; z-index: 1;
-  background: var(--raised); padding: 18px 22px 12px; border-bottom: 1px solid var(--ink);
-}
-.drill .title { font: 600 16px/1.2 var(--serif); }
-.drill .close { margin-left: auto; font: 400 12px/1 var(--mono); background: none; border: 0; cursor: pointer; color: var(--muted); }
-.drill .close:hover { color: var(--accent); }
-.drill .body { padding: 6px 22px 44px; }
-.drill dl { display: grid; grid-template-columns: 104px 1fr; gap: 2px 14px; margin: 16px 0; }
-.drill dt { font: 400 9.5px/1.9 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-.drill dd { margin: 0; font: 400 12px/1.7 var(--mono); word-break: break-all; }
-.leg { border-left: 2px solid var(--rule-strong); padding: 5px 0 5px 11px; margin-bottom: 9px; font: 400 11.5px/1.6 var(--mono); }
-.leg-registry { border-left-color: var(--accent); }
-.leg-transfer { border-left-color: var(--gain); }
+.route-node.v3 { border-color: rgba(79,209,197,.45); }
+.route-node.v2 { border-color: rgba(167,139,250,.45); }
+.route-node.v4 { border-color: rgba(96,165,250,.45); }
+.route-node.lb { border-color: rgba(251,191,36,.45); }
+.route-edge { color: var(--muted); font: 11px/1.3 var(--mono); max-width: 140px; text-align: center; }
+.health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cap-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.empty { color: var(--muted); padding: 24px; text-align: center; }
+details.raw { margin-top: 10px; }
+details.raw summary { cursor: pointer; color: var(--teal); }
 pre.raw {
-  font: 400 11px/1.6 var(--mono); color: var(--ink-soft); background: var(--paper);
-  border: 1px solid var(--rule); padding: 12px; overflow: auto; max-height: 340px;
-  white-space: pre-wrap; word-break: break-word;
+  margin: 8px 0 0; padding: 10px; background: #0a1018; border-radius: 8px; overflow: auto;
+  max-height: 280px; font: 11px/1.4 var(--mono); color: var(--muted);
 }
-.flow { font: 400 12px/1.7 var(--mono); word-break: break-all; margin: 0; }
-
-/* motion */
-@keyframes rise { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
-.hero, section.block, .details-bar { animation: rise .5s ease both; }
-#activity { animation-delay: .06s; }
-#pools { animation-delay: .1s; }
-#searchers { animation-delay: .14s; }
-@media (prefers-reduced-motion: reduce) {
-  html { scroll-behavior: auto; }
-  .hero, section.block, .details-bar { animation: none; }
-  .drawer, .drill, .backdrop { transition: none; }
-}
-@media (max-width: 820px) {
-  .wrap { padding: 0 18px 56px; }
-  .boards { grid-template-columns: 1fr; gap: 30px 0; }
-  .masthead { flex-direction: column; align-items: flex-start; }
-  .mh-meta { text-align: left; }
+@media (max-width: 1100px) {
+  .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .row2, .row2b, .row3, .ops-layout, .health-grid { grid-template-columns: 1fr; }
+  .app { grid-template-columns: 1fr; }
+  .sidebar { position: relative; height: auto; flex-direction: row; flex-wrap: wrap; }
+  .side-foot { display: none; }
 }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header class="masthead" id="masthead"></header>
-  <div id="ribbon-slot"></div>
-  <section class="hero" id="hero"></section>
-  <div class="filters" id="filters"></div>
-  <section class="block" id="live"></section>
-  <section class="block" id="activity"></section>
-  <div class="boards">
-    <section class="block" id="pools"></section>
-    <section class="block" id="searchers"></section>
-  </div>
-  <div class="details-bar">
-    <h2>Details</h2>
-    <p class="lede">reality · coverage · gaps · quality · kinds · tokens · facets · rejects · jit · oracles · storage</p>
-    <button class="details-toggle" id="details-toggle" type="button" aria-expanded="false" aria-controls="details">Show</button>
-  </div>
-  <div class="drawer" id="details"><div class="drawer-inner" id="drawer-inner"></div></div>
+<div class="app">
+  <aside class="sidebar" id="nav">
+    <div class="brand"><span class="brand-mark"></span><b>MEV SCOUT</b></div>
+    <button class="navbtn active" data-view="overview" type="button"><span class="nav-ico">◈</span>Overview</button>
+    <button class="navbtn" data-view="operations" type="button"><span class="nav-ico">☰</span>Operations</button>
+    <button class="navbtn" data-view="searchers" type="button"><span class="nav-ico">◉</span>Searchers</button>
+    <button class="navbtn" data-view="pools" type="button"><span class="nav-ico">▦</span>Pools</button>
+    <button class="navbtn" data-view="analytics" type="button"><span class="nav-ico">▣</span>Analytics</button>
+    <button class="navbtn" data-view="health" type="button"><span class="nav-ico">♡</span>Data Health</button>
+    <div class="side-foot" id="side-meta"></div>
+  </aside>
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <h1 id="page-title">Network overview</h1>
+        <div class="meta" id="page-sub"></div>
+      </div>
+      <div class="controls">
+        <input class="search" id="global-search" type="search" placeholder="Search tx, address, block…"/>
+        <span class="status" id="sync-status"><i></i><span>Indexed</span></span>
+      </div>
+    </div>
+    <div class="banner" id="trunc-banner"></div>
+
+    <section class="view active" id="view-overview">
+      <div class="grid kpis" id="overview-kpis"></div>
+      <div class="grid row2" style="margin-top:14px">
+        <div class="card"><h2>Profit &amp; activity</h2><div class="chart" id="chart-overview-pulse"></div><div class="caption" id="overview-pulse-cap"></div></div>
+        <div class="card">
+          <h2>Operation mix</h2>
+          <div class="chart chart-sm" id="chart-overview-mix"></div>
+          <div class="chart chart-gauge" id="chart-overview-priced"></div>
+          <div class="caption">utility subkinds stay split · bundler ≠ MEV strategy</div>
+        </div>
+      </div>
+      <div class="grid row2b" style="margin-top:14px">
+        <div class="card"><h2>Top searchers</h2><div id="overview-searchers"></div></div>
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+            <h2 style="margin:0">Live operations</h2>
+            <span class="pill warn" id="overview-unpriced-badge" style="display:none"></span>
+          </div>
+          <div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>Time</th><th>Kind</th><th>Tx</th><th class="num">Net</th></tr></thead><tbody id="overview-ops"></tbody></table></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-searchers">
+      <div class="grid row2">
+        <div class="card"><h2>Searcher leaderboard</h2><div id="searchers-board"></div></div>
+        <div class="card"><h2>Net by strategy</h2><div class="chart chart-tall" id="chart-searchers-net"></div><div class="caption" id="searchers-net-cap"></div></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-pools">
+      <div class="grid row2">
+        <div class="card"><h2>Pools</h2><div class="table-wrap"><table><thead><tr><th>Pool</th><th>Ops</th><th>Net</th><th>AMM mix</th></tr></thead><tbody id="pools-tbody"></tbody></table></div></div>
+        <div class="card"><h2>AMM swap activity</h2><div class="chart chart-tall" id="chart-pools-amm"></div></div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <h2>Profit vs volume</h2>
+        <div class="chart chart-tall" id="chart-pools-scatter"></div>
+        <div class="caption" id="pools-scatter-cap"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-analytics">
+      <div class="grid row2">
+        <div class="card"><h2>Strategy activity</h2><div class="chart chart-tall" id="chart-analytics-heat"></div></div>
+        <div class="card">
+          <h2>Operation mix</h2>
+          <div class="chart chart-sm" id="chart-analytics-mix"></div>
+          <div class="chart chart-sm" id="chart-analytics-conf"></div>
+        </div>
+      </div>
+      <div class="grid row3" style="margin-top:12px">
+        <div class="card"><h2>Searcher leaderboard</h2><div id="analytics-searchers"></div></div>
+        <div class="card"><h2>Net by strategy</h2><div class="chart chart-sm" id="chart-analytics-net"></div><div class="caption" id="analytics-net-cap"></div></div>
+        <div class="card"><h2>AMM swap activity</h2><div class="chart chart-sm" id="chart-analytics-amm"></div></div>
+      </div>
+      <div class="card" style="margin-top:12px">
+        <h2>Profit vs volume</h2>
+        <div class="chart chart-tall" id="chart-analytics-scatter"></div>
+        <div class="caption" id="analytics-scatter-cap"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-operations">
+      <div class="ops-layout">
+        <div class="card ops-list">
+          <h2>Operations</h2>
+          <div class="table-wrap" style="max-height:none"><table><thead><tr><th>Time</th><th>Strategy</th><th>Net</th></tr></thead><tbody id="ops-tbody"></tbody></table></div>
+        </div>
+        <div class="card" id="op-detail">
+          <div class="empty" id="op-empty">Select an operation</div>
+          <div id="op-body" style="display:none">
+            <div class="op-head">
+              <div>
+                <div class="meta" id="op-crumb"></div>
+                <h1 id="op-title"></h1>
+                <div class="badge-row" id="op-badges" style="margin-top:8px"></div>
+              </div>
+              <div class="badge-row">
+                <button class="btn" type="button" id="op-copy">Copy link</button>
+                <a class="btn" id="op-explorer" target="_blank" rel="noopener">Explorer</a>
+              </div>
+            </div>
+            <div class="grid kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))" id="op-kpis"></div>
+            <div class="grid row2b" style="margin-top:12px">
+              <div class="card" style="background:var(--panel2)"><h3>Profit waterfall</h3><div class="chart chart-sm" id="chart-op-waterfall"></div></div>
+              <div class="card" style="background:var(--panel2)"><h3>Operation facts</h3><table class="facts" id="op-facts"></table></div>
+            </div>
+            <div class="card" style="margin-top:12px;background:var(--panel2)">
+              <h3>Route &amp; token flow</h3>
+              <div class="route" id="op-route"></div>
+              <div class="caption" id="op-route-cap"></div>
+            </div>
+            <div class="card" style="margin-top:12px;background:var(--panel2)">
+              <h3>Evidence</h3>
+              <div class="badge-row" id="op-tags"></div>
+              <div class="caption" id="op-victims" style="margin-top:8px"></div>
+              <details class="raw"><summary>Raw evidence JSON</summary><pre class="raw" id="op-raw"></pre></details>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-health">
+      <div class="grid health-grid" id="health-grid"></div>
+    </section>
+
+    <div class="footer-note" id="semantics-foot"></div>
+  </main>
 </div>
-<div class="backdrop" id="backdrop"></div>
-<aside class="drill" id="drill" aria-hidden="true"></aside>
 
+<script>/*__ECHARTS__*/</script>
 <script id="snapshot" type="application/json">/*__SNAPSHOT__*/</script>
-
 <script>
 (function () {
+  /* Data rules: null USD ≠ zero; unpriced countable but off USD axes; no headline volume;
+     show subkinds; confidence exact|inferred only; AMM = observed route.amm. */
   var S = JSON.parse(document.getElementById("snapshot").textContent);
-  var P = S.panels;
-  var K = P.kpi;
-  var Q = K.quality;
-  var C = S.coverage;
-  var T = P.truncation;
-  var state = { kind: "", confidence: "", q: "", pricedOnly: false, op: null, limit: 120, details: false };
+  var P = S.panels || {};
+  var K = P.kpi || {};
+  var Q = K.quality || {};
+  var C = S.coverage || {};
+  var T = P.truncation || {};
+  var charts = {};
+  var state = { view: "overview", opHash: null, q: "" };
+
+  var SLICE_COLORS = {
+    "utility/bundler": "#4fd1c5",
+    "utility/claim_and_sell": "#60a5fa",
+    "arb_atomic": "#a78bfa",
+    jit: "#34d399",
+    sandwich: "#f87171",
+    liquidation: "#c084fc",
+    frontrun: "#fb7185",
+    backrun: "#38bdf8",
+    jit_arb: "#2dd4bf",
+    skim: "#fbbf24"
+  };
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
-  function cap(s) { s = String(s || ""); return s.charAt(0).toUpperCase() + s.slice(1); }
-
-  /* null is never zero, and every USD figure keeps its approximate marker */
-  function usd(v, signed) {
-    if (v == null || Number.isNaN(v)) return '<span class="null">&mdash;</span>';
-    var a = Math.abs(v);
-    var s = a >= 1000 ? a.toLocaleString("en-US", { maximumFractionDigits: 0 })
-      : a >= 1 ? a.toFixed(2) : a.toFixed(4);
-    var body = "&asymp;$" + s;
-    if (!signed) return body;
-    return '<span class="' + (v < 0 ? "loss" : "gain") + '">' + (v < 0 ? "&minus;" : "") + body + "</span>";
-  }
-  function plain(v) { return v == null ? '<span class="null">&mdash;</span>' : esc(v); }
-  function cov(priced, total, note) {
-    return "priced " + priced + "/" + total + (note ? " · " + note : "");
-  }
   function short(addr) {
     var a = String(addr || "");
     return a.length > 14 ? a.slice(0, 8) + "…" + a.slice(-4) : a;
   }
+  function sliceKey(kind, subkind) {
+    if (subkind) return String(kind) + "/" + String(subkind);
+    return String(kind || "");
+  }
+  function sliceLabel(key) {
+    var map = {
+      "utility/bundler": "Bundler",
+      "utility/claim_and_sell": "Claim & sell",
+      "utility/keeper": "Keeper",
+      arb_atomic: "Atomic arbitrage",
+      jit: "JIT",
+      sandwich: "Sandwich",
+      liquidation: "Liquidation",
+      frontrun: "Frontrun",
+      backrun: "Backrun",
+      jit_arb: "JIT arb",
+      skim: "Skim",
+      utility: "Utility"
+    };
+    if (map[key]) return map[key];
+    if (key.indexOf("utility/") === 0) {
+      return key.slice("utility/".length).replace(/_/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+    }
+    return key.replace(/_/g, " ");
+  }
+  function familyLabel(key) {
+    return key.indexOf("utility/") === 0 ? "utility" : "mev";
+  }
+  function colorFor(key) {
+    if (SLICE_COLORS[key]) return SLICE_COLORS[key];
+    var h = 0;
+    for (var i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+    return "hsl(" + (h % 360) + " 70% 60%)";
+  }
+  function pillClass(key) {
+    var last = key.split("/").pop();
+    return "pill " + last;
+  }
+  /** Format Option USD — never coerce null to zero. */
+  function usd(v, signed) {
+    if (v == null || Number.isNaN(v)) return '<span class="null">—</span>';
+    var a = Math.abs(v);
+    var s = a >= 1e9 ? (a / 1e9).toFixed(2) + "B"
+      : a >= 1e6 ? (a / 1e6).toFixed(2) + "M"
+      : a >= 1000 ? a.toLocaleString("en-US", { maximumFractionDigits: 0 })
+      : a >= 1 ? a.toFixed(2) : a.toFixed(4);
+    var body = "≈$" + s;
+    if (!signed) return body;
+    return '<span class="' + (v < 0 ? "loss" : "gain") + '">' + (v < 0 ? "−" : "") + body + "</span>";
+  }
+  function usdAxisValue(v) {
+    if (v == null || Number.isNaN(v)) return null;
+    return v;
+  }
+  function confidenceBadge(c) {
+    var t = String(c || "");
+    if (t === "exact") return '<span class="pill ok">Exact</span>';
+    if (t === "inferred") return '<span class="pill">Inferred</span>';
+    return '<span class="pill">' + esc(t) + "</span>";
+  }
   function fmtTime(ts) {
-    if (ts == null) return '<span class="null">&mdash;</span>';
+    if (ts == null) return "—";
     return new Date(ts * 1000).toISOString().slice(11, 19);
   }
-  function fmtDay(ts) {
-    if (ts == null) return "";
-    return new Date(ts * 1000).toISOString().slice(0, 10);
+  function relTime(ts) {
+    if (ts == null) return "—";
+    var now = (S.generator && S.generator.generated_at) || Math.floor(Date.now() / 1000);
+    var d = Math.max(0, now - ts);
+    if (d < 60) return d + "s ago";
+    if (d < 3600) return Math.floor(d / 60) + "m ago";
+    if (d < 86400) return Math.floor(d / 3600) + "h ago";
+    return Math.floor(d / 86400) + "d ago";
   }
-  function fmtSpan(secs) {
-    if (secs == null || Number.isNaN(secs)) return "—";
-    if (secs < 60) return secs + "s";
-    if (secs < 3600) return (secs / 60).toFixed(secs < 600 ? 1 : 0) + " min";
-    if (secs < 86400) return (secs / 3600).toFixed(1) + " h";
-    return (secs / 86400).toFixed(1) + " d";
+  function dispose(id) {
+    if (charts[id]) { try { charts[id].dispose(); } catch (e) {} charts[id] = null; }
   }
-  function relAge(s) {
-    if (s < 60) return s + "s ago";
-    if (s < 3600) return Math.round(s / 60) + " min ago";
-    if (s < 86400) return (s / 3600).toFixed(1) + " h ago";
-    return (s / 86400).toFixed(1) + " d ago";
+  function chart(id) {
+    dispose(id);
+    var el = $(id);
+    if (!el || typeof echarts === "undefined") return null;
+    charts[id] = echarts.init(el, null, { renderer: "canvas" });
+    return charts[id];
+  }
+  function darkText() {
+    return { color: "#8b9bb3", fontFamily: "Cascadia Mono, monospace", fontSize: 11 };
   }
 
-  /* ---------- hash: filters and the open op are both shareable ---------- */
-  function parseHash() {
-    var h = location.hash || "";
-    var m = h.match(/^#\/op\/(0x[a-fA-F0-9]+)/);
-    if (m) return { op: m[1].toLowerCase() };
-    var params = {};
-    h.replace(/^#\/?/, "").split("&").forEach(function (pair) {
-      var kv = pair.split("=");
-      if (kv[0]) params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || "");
+  function rollMix() {
+    var map = {};
+    (P.kind_matrix || []).forEach(function (c) {
+      var key = sliceKey(c.kind, c.subkind);
+      if (!map[key]) map[key] = { ops: 0, net: 0, gross: 0 };
+      map[key].ops += c.ops || 0;
+      map[key].net += c.net_usd || 0;
+      map[key].gross += c.gross_usd || 0;
     });
-    return params;
-  }
-  function hashFor(st) {
-    if (st.op) return "#/op/" + st.op;
-    var parts = [];
-    if (st.kind) parts.push("kind=" + encodeURIComponent(st.kind));
-    if (st.confidence) parts.push("confidence=" + encodeURIComponent(st.confidence));
-    if (st.q) parts.push("q=" + encodeURIComponent(st.q));
-    if (st.pricedOnly) parts.push("priced=1");
-    return parts.length ? "#/" + parts.join("&") : "#/";
-  }
-  function syncHash() {
-    var want = hashFor(state);
-    if (location.hash !== want) location.hash = want;
+    return Object.keys(map).map(function (k) {
+      return { key: k, ops: map[k].ops, net: map[k].net, gross: map[k].gross };
+    }).filter(function (x) { return x.ops > 0; })
+      .sort(function (a, b) { return b.ops - a.ops; });
   }
 
-  /* events carry no label; actors do — join on competitor = COALESCE(contract, eoa) */
-  var labels = {};
-  (P.actors || []).forEach(function (a) {
-    if (!a.label) return;
-    labels[String(a.competitor).toLowerCase()] = a.label;
-    if (a.eoa) labels[String(a.eoa).toLowerCase()] = a.label;
-  });
-  function searcherOf(e) {
-    var key = String(e.contract || e.eoa || "").toLowerCase();
-    return { key: key, label: labels[key] || null };
+  function evidenceByHash() {
+    var m = {};
+    (P.evidence || []).forEach(function (e) { m[e.tx_hash] = e; });
+    return m;
   }
+
   function filteredEvents() {
+    var q = (state.q || "").trim().toLowerCase();
+    var rows = P.events || [];
+    if (!q) return rows;
+    return rows.filter(function (e) {
+      return String(e.tx_hash).toLowerCase().indexOf(q) >= 0
+        || String(e.eoa).toLowerCase().indexOf(q) >= 0
+        || String(e.contract || "").toLowerCase().indexOf(q) >= 0
+        || String(e.block_number).indexOf(q) >= 0
+        || sliceKey(e.kind, e.subkind).toLowerCase().indexOf(q) >= 0;
+    });
+  }
+
+  function unpricedJitCount() {
     return (P.events || []).filter(function (e) {
-      if (state.kind && e.kind !== state.kind) return false;
-      if (state.confidence && e.confidence !== state.confidence) return false;
-      if (state.pricedOnly && e.profit_usd == null) return false;
-      if (state.q) {
-        var q = state.q.toLowerCase();
-        var blob = (e.tx_hash + " " + e.eoa + " " + (e.contract || "") + " " + (searcherOf(e).label || "")).toLowerCase();
-        if (blob.indexOf(q) < 0) return false;
-      }
-      return true;
+      return e.kind === "jit" && e.profit_usd == null;
+    }).length || Math.max(0, (Q.ops_unpriced || 0) - ((P.events || []).filter(function (e) {
+      return e.kind !== "jit" && e.profit_usd == null;
+    }).length));
+  }
+
+  function setView(name) {
+    state.view = name;
+    document.querySelectorAll(".navbtn").forEach(function (b) {
+      b.classList.toggle("active", b.getAttribute("data-view") === name);
     });
-  }
-
-  function table(headers, rowsHtml) {
-    return "<table><thead><tr>" + headers.map(function (h) {
-      return "<th" + (h.num ? ' class="num"' : "") + ">" + esc(h.t) + "</th>";
-    }).join("") + "</tr></thead><tbody>" + rowsHtml + "</tbody></table>";
-  }
-  function kv(pairs) {
-    return '<div class="attrs">' + pairs.map(function (p) {
-      return '<div class="attr"><span class="k">' + esc(p[0]) + '</span><span class="v">' + p[1] + "</span></div>";
-    }).join("") + "</div>";
-  }
-
-  var span = (C.max_block_ts != null && C.min_block_ts != null)
-    ? C.max_block_ts - C.min_block_ts : null;
-
-  /* ---------- static composition ---------- */
-  function renderMasthead() {
-    var age = Math.max(0, Math.floor(Date.now() / 1000) - (S.generator.generated_at || 0));
-    $("masthead").innerHTML =
-      '<div><h1 class="wordmark">mev-scout</h1><div class="chain">' +
-      esc(S.db.chain_label) + " · C-Chain" +
-      (S.db.chain_id != null ? " <em>· " + S.db.chain_id + "</em>" : "") + "</div></div>" +
-      '<div class="mh-meta">window <b>' + esc(S.window.label) + "</b><br>" +
-      "snapshot <b>" + fmtDay(S.generator.generated_at) + " " + fmtTime(S.generator.generated_at) +
-      "</b> UTC · " + relAge(age) + "<br>generator " + esc(S.generator.version) + " · api v" + S.api_version + "</div>";
-  }
-
-  function renderRibbon() {
-    var notes = [];
-    if (S.db.status !== "at_head") {
-      notes.push("<b>schema " + S.db.user_version + " / head " + S.db.schema_head + "</b> — " +
-        esc(S.db.status) + ". Panels degrade via StoreCaps; this tool never migrated the DB.");
-    }
-    if (!S.caps.has_excluded_from_net) {
-      notes.push("<b>net ungated</b> — no excluded_from_net column, so net is gross minus gas on every op.");
-    }
-    if (S.truncation && S.truncation.hit_budget) {
-      notes.push("<b>truncated</b> — events " + S.truncation.ops_emitted + "/" + S.truncation.ops_total +
-        ", evidence " + S.truncation.evidence_emitted + "/" + S.truncation.max_evidence + ".");
-    }
-    if (span != null && span < 3600) {
-      notes.push("indexed wall span is only <b>" + fmtSpan(span) + "</b> — do not read this as multi-day revenue.");
-    }
-    if (notes.length) {
-      $("ribbon-slot").innerHTML = '<div class="ribbon">' +
-        notes.map(function (n) { return "<span>" + n + "</span>"; }).join("") + "</div>";
-    }
-  }
-
-  function renderHero() {
-    var neg = K.net_usd < 0;
-    var abs = Math.abs(K.net_usd);
-    var big = abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    var pct = K.ops > 0 ? Math.round((K.net_priced / K.ops) * 100) : 0;
-    $("hero").innerHTML =
-      '<div class="kicker">Net profit · ' + esc(S.window.label) + " window</div>" +
-      '<div class="figure"><div class="amount' + (neg ? " neg" : "") + '">' +
-      '<span class="approx">' + (neg ? "&minus;&asymp;$" : "&asymp;$") + "</span>" + big + "</div>" +
-      '<span class="cov-chip' + (K.net_priced < K.ops ? " warn" : "") + '">' +
-      esc(cov(K.net_priced, K.ops, K.net_gating_available ? "" : "ungated")) + "</span></div>" +
-      '<div class="cov-bar" title="' + esc(cov(K.net_priced, K.ops)) + " — " + pct + '% of ops priced"><i style="width:' + pct + '%"></i></div>' +
-      '<div class="companions">' +
-      companion("ops", String(K.ops), K.searchers + " searchers · " + K.competitors + " competitors") +
-      companion("gross", usd(K.gross_usd), cov(K.gross_priced, K.ops)) +
-      companion("gas", usd(K.gas_usd), cov(K.gas_priced, K.ops)) +
-      "</div>" +
-      '<p class="honest">Window <b>' + esc(S.window.label) + "</b> covers <b>" + fmtSpan(span) +
-      "</b> of indexed chain time · " + fmtDay(C.min_block_ts) + " " + fmtTime(C.min_block_ts) +
-      " &rarr; " + fmtTime(C.max_block_ts) + " UTC · head <b>" + plain(C.head) +
-      "</b>, indexed to " + plain(C.indexed_to) + " · largest single op " + usd(K.highest_single_usd) +
-      ".<br>" + esc(cap(S.semantics.usd_columns_are)) + ". " + esc(cap(S.semantics.null_usd_means)) + ".</p>";
-  }
-  function companion(label, value, sub) {
-    return '<div class="companion"><div class="label">' + esc(label) + '</div><div class="value">' +
-      value + "</div>" + (sub ? '<div class="sub">' + esc(sub) + "</div>" : "") + "</div>";
-  }
-
-  function renderFilters() {
-    $("filters").innerHTML =
-      '<span class="field"><span class="f-label" id="lKind">kind</span><select id="fKind" aria-labelledby="lKind">' +
-      '<option value="">all</option></select></span>' +
-      '<span class="field"><span class="f-label" id="lConf">confidence</span><select id="fConf" aria-labelledby="lConf">' +
-      '<option value="">all</option><option value="exact">exact</option><option value="inferred">inferred</option></select></span>' +
-      '<label class="toggle"><input type="checkbox" id="fPriced"/> priced only</label>' +
-      '<input type="search" id="fQ" placeholder="search tx / eoa / contract / label" aria-label="search"/>';
-    var kinds = {};
-    (P.events || []).forEach(function (e) { kinds[e.kind] = 1; });
-    Object.keys(kinds).sort().forEach(function (k) {
-      var o = document.createElement("option");
-      o.value = k; o.textContent = k;
-      $("fKind").appendChild(o);
+    ["overview", "analytics", "operations", "searchers", "pools", "health"].forEach(function (v) {
+      var el = $("view-" + v);
+      if (el) el.classList.toggle("active", v === name);
     });
-    syncFilters();
-    $("fKind").onchange = function () { state.kind = this.value; afterFilter(); };
-    $("fConf").onchange = function () { state.confidence = this.value; afterFilter(); };
-    $("fPriced").onchange = function () { state.pricedOnly = this.checked; afterFilter(); };
-    $("fQ").oninput = function () { state.q = this.value.trim(); afterFilter(); };
-  }
-  function syncFilters() {
-    $("fKind").value = state.kind;
-    $("fConf").value = state.confidence;
-    $("fPriced").checked = state.pricedOnly;
-    $("fQ").value = state.q;
-  }
-  function afterFilter() {
-    state.op = null;
-    state.limit = 120;
-    renderLive();
-    renderDrill();
-    syncHash();
-  }
-
-  /* ---------- live feed ---------- */
-  function renderLive() {
-    var all = filteredEvents().slice().sort(function (a, b) {
-      return b.ts - a.ts || b.block_number - a.block_number;
-    });
-    var rows = all.slice(0, state.limit);
-    var body = "";
-    rows.forEach(function (e) {
-      var s = searcherOf(e);
-      var sel = state.op === String(e.tx_hash).toLowerCase();
-      body += '<tr class="' + (sel ? "sel" : "") + '" data-op="' + esc(e.tx_hash) + '">' +
-        "<td>" + fmtTime(e.ts) + "</td>" +
-        '<td class="num">' + e.block_number + "</td>" +
-        '<td><span class="kind">' + esc(e.kind) + (e.subkind ? "/" + esc(e.subkind) : "") + "</span>" +
-        '<span class="conf ' + esc(e.confidence) + '">' + esc(e.confidence) + "</span></td>" +
-        '<td><a class="txlink' + (sel ? " active" : "") + '" href="#/op/' + esc(e.tx_hash) + '">' +
-        esc(short(e.tx_hash)) + "</a></td>" +
-        "<td>" + (s.label ? esc(s.label) : '<span class="null">unlabelled</span>') +
-        '<br><span class="hex">' + esc(short(s.key)) + "</span></td>" +
-        '<td class="num">' + usd(e.profit_usd, true) + "</td>" +
-        '<td class="num">' + usd(e.net_profit_usd, true) + "</td></tr>";
-    });
-    $("live").innerHTML =
-      "<h2>MEV live</h2>" +
-      '<p class="lede">newest first · showing <b>' + rows.length + "</b> of <b>" + all.length +
-      "</b> matching · " + T.ops_emitted + " of " + T.ops_total + " ops carried into this file</p>" +
-      table([{ t: "time utc" }, { t: "block", num: 1 }, { t: "kind" }, { t: "tx" },
-             { t: "searcher" }, { t: "gross", num: 1 }, { t: "net", num: 1 }],
-        body || '<tr class="empty"><td colspan="7">no ops match these filters</td></tr>');
-    if (all.length > rows.length) {
-      var btn = document.createElement("button");
-      btn.className = "more";
-      btn.type = "button";
-      btn.textContent = "show " + Math.min(state.limit, all.length - rows.length) + " more";
-      btn.onclick = function () { state.limit *= 2; renderLive(); };
-      $("live").appendChild(btn);
+    var titles = {
+      overview: "Network overview",
+      analytics: "MEV analytics",
+      operations: "Operations",
+      searchers: "Searchers",
+      pools: "Pools",
+      health: "Data Health"
+    };
+    $("page-title").textContent = titles[name] || name;
+    renderView();
+    if (name === "operations") {
+      history.replaceState(null, "", state.opHash ? "#/op/" + state.opHash : "#/operations");
+    } else {
+      history.replaceState(null, "", "#/" + name);
     }
-    Array.prototype.forEach.call($("live").querySelectorAll("tbody tr[data-op]"), function (tr) {
-      tr.onclick = function (ev) {
-        if (ev.target.tagName === "A") return;
-        location.hash = "#/op/" + tr.getAttribute("data-op");
-      };
-    });
   }
 
-  /* ---------- activity ---------- */
-  function linePath(pts, x0, y0, w, h, ymin, ymax) {
-    if (!pts.length) return "";
-    var n = pts.length;
-    return pts.map(function (p, i) {
-      var x = x0 + (n === 1 ? w / 2 : (i / (n - 1)) * w);
-      var t = ymax === ymin ? 0.5 : (p - ymin) / (ymax - ymin);
-      var y = y0 + h - t * h;
-      return (i ? "L" : "M") + x.toFixed(1) + "," + y.toFixed(1);
-    }).join(" ");
+  function renderChrome() {
+    var chain = (S.db && S.db.chain_label) || "chain";
+    var win = (S.window && S.window.label) || "window";
+    $("page-sub").textContent = chain + " · window " + win
+      + (C.indexed_to != null ? " · indexed_to " + C.indexed_to : "");
+    $("side-meta").innerHTML = "v" + esc((S.generator && S.generator.version) || "?")
+      + "<br>" + esc((S.db && S.db.status) || "")
+      + "<br>schema " + esc((S.db && S.db.user_version) + "/" + (S.db && S.db.schema_head));
+    var lag = (C.head != null && C.indexed_to != null) ? (C.head - C.indexed_to) : null;
+    $("sync-status").innerHTML = "<i></i><span>" +
+      (lag == null ? "Indexed" : (lag <= 5 ? "Synced" : ("Lag " + lag))) + "</span>";
+    if (T.hit_budget || (T.ops_emitted != null && T.ops_total != null && T.ops_emitted < T.ops_total)) {
+      $("trunc-banner").className = "banner show";
+      $("trunc-banner").textContent = "Event/evidence rows truncated: "
+        + (T.ops_emitted || 0) + "/" + (T.ops_total || 0)
+        + " ops emitted. Aggregates (KPI, strategy_series, scatter) use full window.";
+    }
+    var sem = S.semantics || {};
+    $("semantics-foot").textContent =
+      (sem.usd_columns_are || "USD approximate") + " · " + (sem.null_usd_means || "null is unpriced, never zero");
   }
 
-  function renderActivity() {
+  function sparkOption(data, color) {
+    return {
+      backgroundColor: "transparent",
+      animation: false,
+      grid: { left: 0, right: 0, top: 2, bottom: 0 },
+      xAxis: { type: "category", show: false, data: data.map(function (_, i) { return i; }) },
+      yAxis: { type: "value", show: false, scale: true },
+      series: [{
+        type: "line", data: data, smooth: true, symbol: "none",
+        lineStyle: { width: 1.6, color: color || "#2dd4bf" },
+        areaStyle: { color: color || "#2dd4bf", opacity: 0.12 }
+      }]
+    };
+  }
+
+  function renderOverview() {
+    var priced = Q.ops_priced || 0;
+    var ops = K.ops || 0;
     var series = P.series || [];
-    var W = 1000, H = 210, pad = 40, top = 14, plotH = H - 56;
-    var ops = series.map(function (s) { return s.ops; });
-    var nets = series.map(function (s) { return s.net_usd; });
-    var maxOps = Math.max(1, Math.max.apply(null, ops.concat([1])));
-    var minNet = Math.min.apply(null, nets.concat([0]));
-    var maxNet = Math.max.apply(null, nets.concat([0]));
-    var bars = "", dots = "";
-    series.forEach(function (s, i) {
-      var n = series.length;
-      var x = pad + (n === 1 ? (W - pad * 2) / 2 : (i / (n - 1)) * (W - pad * 2));
-      var bh = s.blocks_indexed ? Math.min(15, 2 + s.blocks_indexed / 8) : 0;
-      if (bh) {
-        bars += '<rect x="' + (x - 1.6).toFixed(1) + '" y="' + (H - 28 - bh).toFixed(1) +
-          '" width="3.2" height="' + bh.toFixed(1) + '" fill="#C9C1B4"><title>block ' + s.bucket_start +
-          " · " + s.blocks_indexed + " indexed</title></rect>";
-      }
-      if (s.ops) {
-        var oy = top + plotH - (s.ops / maxOps) * plotH;
-        dots += '<circle cx="' + x.toFixed(1) + '" cy="' + oy.toFixed(1) +
-          '" r="2.1" fill="#1A1A1A"><title>' + fmtTime(s.bucket_start) + " UTC · " + s.ops +
-          " ops · net &asymp;$" + s.net_usd.toFixed(2) + "</title></circle>";
-      }
+    var netSpark = [];
+    var opsSpark = [];
+    var gasSpark = [];
+    var run = 0;
+    series.forEach(function (p) {
+      run += p.net_usd || 0;
+      netSpark.push(+run.toFixed(6));
+      opsSpark.push(p.ops || 0);
+      gasSpark.push(p.ops || 0);
     });
-    var pathOps = linePath(ops, pad, top, W - pad * 2, plotH, 0, maxOps);
-    var pathNet = linePath(nets, pad, top, W - pad * 2, plotH, minNet, maxNet === minNet ? minNet + 1 : maxNet);
-    $("activity").innerHTML =
-      "<h2>Activity</h2>" +
-      '<p class="lede">bucket <b>' + P.bucket_secs + "s</b> · ops against net usd · band = blocks indexed</p>" +
-      '<div class="chart"><svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="ops and net over time">' +
-      '<line class="axis" x1="' + pad + '" y1="' + (H - 28) + '" x2="' + (W - pad) + '" y2="' + (H - 28) + '"/>' +
-      bars +
-      '<path d="' + pathNet + '" fill="none" stroke="#E84142" stroke-width="1.6"/>' +
-      '<path d="' + pathOps + '" fill="none" stroke="#1A1A1A" stroke-width="1.6"/>' +
-      dots +
-      '<text x="' + pad + '" y="' + (H - 12) + '">' + fmtTime(series.length ? series[0].bucket_start : null) + "</text>" +
-      '<text x="' + (W - pad) + '" y="' + (H - 12) + '" text-anchor="end">' +
-      fmtTime(series.length ? series[series.length - 1].bucket_start : null) + "</text>" +
-      '<text x="' + (pad - 7) + '" y="' + (top + 3) + '" text-anchor="end">' + maxOps + "</text>" +
-      '<text x="' + (pad - 7) + '" y="' + (top + plotH) + '" text-anchor="end">0</text>' +
-      "</svg></div>" +
-      '<div class="legend"><span><i class="l-ops"></i>ops per bucket (peak ' + maxOps + ")</span>" +
-      '<span><i class="l-net"></i>net &asymp;$' + minNet.toFixed(2) + " … &asymp;$" + maxNet.toFixed(2) + "</span>" +
-      '<span><i class="l-band"></i>blocks indexed</span></div>';
-  }
-
-  /* ---------- boards ---------- */
-  function byNetDesc(list) {
-    return (list || []).slice().sort(function (a, b) { return (b.net_usd || 0) - (a.net_usd || 0); });
-  }
-  function renderPools() {
-    var body = "";
-    byNetDesc(P.pools).slice(0, 10).forEach(function (p, i) {
-      var mix = Object.keys(p.amm_mix || {}).map(function (k) { return k + ":" + p.amm_mix[k]; }).join(" ");
-      body += '<tr><td class="rank">' + (i + 1) + '</td><td><span class="hex">' + esc(short(p.pool)) + "</span>" +
-        (p.top_kind ? '<br><span class="null">' + esc(p.top_kind) + "</span>" : "") + "</td>" +
-        '<td class="num">' + usd(p.net_usd, true) + "</td>" +
-        '<td class="num">' + p.ops + "</td>" +
-        '<td class="num">' + p.priced_ops + "/" + p.ops + "</td>" +
-        '<td class="num">' + esc(mix || "—") + "</td></tr>";
+    var covSpark = series.map(function (p, i) {
+      return i + 1;
     });
-    $("pools").innerHTML = "<h2>Top pools</h2>" +
-      '<p class="lede">ranked by net · <b>' + (P.pools || []).length + "</b> pools touched</p>" +
-      table([{ t: "#" }, { t: "pool" }, { t: "net", num: 1 }, { t: "ops", num: 1 },
-             { t: "priced", num: 1 }, { t: "amm", num: 1 }],
-        body || '<tr class="empty"><td colspan="6">none in window</td></tr>');
-  }
-  function renderSearchers() {
-    var body = "";
-    byNetDesc(P.actors).slice(0, 10).forEach(function (a, i) {
-      body += '<tr><td class="rank">' + (i + 1) + "</td><td>" +
-        (a.label ? esc(a.label) : '<span class="null">unlabelled</span>') +
-        '<br><span class="hex">' + esc(short(a.competitor)) + "</span></td>" +
-        '<td class="num">' + usd(a.net_usd, true) + "</td>" +
-        '<td class="num">' + a.ops + "</td>" +
-        '<td class="num">' + usd(a.gross_usd) + "</td>" +
-        '<td class="num">' + (a.excluded_ops || 0) + "</td></tr>";
-    });
-    $("searchers").innerHTML = "<h2>Searchers</h2>" +
-      '<p class="lede">ranked by net · <b>' + (P.actors || []).length + "</b> actors (contract, else eoa)</p>" +
-      table([{ t: "#" }, { t: "searcher" }, { t: "net", num: 1 }, { t: "ops", num: 1 },
-             { t: "gross", num: 1 }, { t: "excl", num: 1 }],
-        body || '<tr class="empty"><td colspan="6">none in window</td></tr>');
-  }
-
-  /* ---------- details drawer ---------- */
-  function cluster(title, note, html) {
-    return '<div class="cluster"><h3>' + esc(title) + "</h3>" +
-      (note ? '<p class="note">' + note + "</p>" : "") + html + "</div>";
-  }
-  function facetTable(rows) {
-    var b = "";
-    (rows || []).forEach(function (r) {
-      b += "<tr><td>" + esc(r.value) +
-        (r.out_of_catalogue ? ' <span class="chip off">out-of-catalogue</span>' : "") +
-        '</td><td class="num">' + r.ops + '</td><td class="num">' + usd(r.gross_usd) +
-        '</td><td class="num">' + usd(r.net_usd, true) + "</td></tr>";
-    });
-    return table([{ t: "value" }, { t: "ops", num: 1 }, { t: "gross", num: 1 }, { t: "net", num: 1 }],
-      b || '<tr class="empty"><td colspan="4">none</td></tr>');
-  }
-
-  function renderDetails() {
-    var g = S.gaps || { enabled: false, note: "gaps payload missing", ranges: [], sample: [] };
-    var r = S.rejects || { ladder: [], total: 0, recording_empty: true, note: "" };
-    var parts = [];
-
-    parts.push(cluster("Data reality", esc(S.semantics.amounts_are) + ".", kv([
-      ["path", esc(S.db.path)],
-      ["chain", esc(S.db.chain_label) + (S.db.chain_id != null ? " (" + S.db.chain_id + ")" : "")],
-      ["size_bytes", plain(S.db.size_bytes)],
-      ["user_version", S.db.user_version + " / head " + S.db.schema_head],
-      ["status", esc(S.db.status)],
-      ["window", esc(S.window.label) + " [" + S.window.since_ts + " .. " + S.window.until_ts + "]"],
-      ["null usd means", esc(S.semantics.null_usd_means)],
-      ["usd columns", esc(S.semantics.usd_columns_are)],
-      ["net excludes", esc(S.semantics.net_excludes)],
-      ["unknown → utility", plain(P.unknown_rewritten)]
-    ])));
-
-    parts.push(cluster("Coverage / sync", "Read this before reading any USD figure.", kv([
-      ["head", plain(C.head)],
-      ["indexed_to", plain(C.indexed_to)],
-      ["last_indexed_at", C.last_indexed_at != null ? fmtDay(C.last_indexed_at) + " " + fmtTime(C.last_indexed_at) + " UTC" : "—"],
-      ["blocks in window", plain(C.blocks_in_window)],
-      ["ops in window", plain(C.ops_in_window)],
-      ["block ts span", span != null ? fmtSpan(span) : "—"],
-      ["gap count", C.gap_count != null ? plain(C.gap_count) : '<span class="null">n/a</span>'],
-      ["first gap", plain(C.first_gap)],
-      ["last gap", plain(C.last_gap)]
-    ])));
-
-    var rangeRows = "";
-    (g.ranges || []).forEach(function (x) {
-      rangeRows += '<tr><td class="num">' + x.from + '</td><td class="num">' + x.to +
-        '</td><td class="num">' + x.len + "</td></tr>";
-    });
-    parts.push(cluster("Index gaps",
-      g.enabled ? "scanned " + g.scanned_from + "–" + g.scanned_to + ". " + esc(g.note || "")
-        : "<b>not collected</b> — " + esc(g.note || "pass --with-gaps") + ".",
-      g.enabled
-        ? kv([["gap_count", plain(g.gap_count)], ["first_gap", plain(g.first_gap)], ["last_gap", plain(g.last_gap)]]) +
-          "<h4>ranges (capped)</h4>" +
-          table([{ t: "from", num: 1 }, { t: "to", num: 1 }, { t: "len", num: 1 }],
-            rangeRows || '<tr class="empty"><td colspan="3">none</td></tr>') +
-          "<h4>sample blocks</h4><p class=\"flow\">" +
-          (g.sample || []).map(function (b) { return esc(b); }).join(", ") + "</p>"
-        : ""));
-
-    parts.push(cluster("Pricing quality",
-      "Exact and inferred are never collapsed into one number. pricing_flags_available: " +
-      (Q.pricing_flags_available ? "yes" : "<b>no</b>") + ".",
-      kv([
-        ["ops priced", plain(Q.ops_priced)],
-        ["ops unpriced", plain(Q.ops_unpriced)],
-        ["pricing coverage", Q.pricing_coverage_pct.toFixed(1) + "%"],
-        ["ops exact", plain(Q.ops_exact)],
-        ["ops inferred", plain(Q.ops_inferred)],
-        ["net usd exact", usd(Q.net_usd_exact, true)],
-        ["net usd inferred", usd(Q.net_usd_inferred, true)],
-        ["ops approx", plain(Q.ops_approx)],
-        ["native unpriced", plain(Q.ops_native_unpriced)],
-        ["multi asset", plain(Q.ops_multi_asset)],
-        ["pricing clamped", plain(Q.ops_pricing_clamped)],
-        ["flash fee unpriced", plain(Q.ops_flash_fee_unpriced)],
-        ["excluded from net", plain(Q.ops_excluded_from_net)],
-        ["flash fee usd", usd(K.flash_fee_usd)],
-        ["volume usd", usd(K.volume_usd)]
-      ])));
-
-    var kindRows = "";
-    (P.kind_matrix || []).forEach(function (k) {
-      kindRows += "<tr><td>" + esc(k.kind) + "</td><td>" + esc(k.subkind || "—") + "</td><td>" +
-        esc(k.confidence) + '</td><td class="num">' + k.ops + '</td><td class="num">' + usd(k.gross_usd) +
-        '</td><td class="num">' + usd(k.net_usd, true) + "</td></tr>";
-    });
-    parts.push(cluster("Kind × subkind × confidence",
-      "Zeros stay visible rather than being hidden. unknown → utility: " + P.unknown_rewritten + " ops.",
-      table([{ t: "kind" }, { t: "subkind" }, { t: "confidence" }, { t: "ops", num: 1 },
-             { t: "gross", num: 1 }, { t: "net", num: 1 }],
-        kindRows || '<tr class="empty"><td colspan="6">none</td></tr>')));
-
-    var tokenRows = "";
-    (P.tokens || []).forEach(function (t) {
-      tokenRows += '<tr><td><span class="hex">' + esc(short(t.token)) + "</span></td>" +
-        '<td class="num">' + t.ops + '</td><td class="num">' + usd(t.gross_usd) +
-        '</td><td class="num">' + usd(t.net_usd, true) + '</td><td class="num">' + t.priced_ops + "/" + t.ops + "</td></tr>";
-    });
-    parts.push(cluster("Profit tokens", "Grouped by profit_token.",
-      table([{ t: "token" }, { t: "ops", num: 1 }, { t: "gross", num: 1 }, { t: "net", num: 1 }, { t: "priced", num: 1 }],
-        tokenRows || '<tr class="empty"><td colspan="5">none</td></tr>')));
-
-    parts.push(cluster("Facets",
-      "Tags and reasons actually observed; out-of-catalogue values are called out, never dropped.",
-      "<h4>tags</h4>" + facetTable(P.tag_facets) + "<h4>reasons</h4>" + facetTable(P.reason_facets)));
-
-    var rejectRows = "";
-    (r.ladder || []).forEach(function (x) {
-      rejectRows += "<tr><td>" + esc(x.reason) + '</td><td class="num">' + x.count + "</td></tr>";
-    });
-    parts.push(cluster("Reject funnel",
-      "Total <b>" + r.total + "</b>" +
-      (r.recording_empty ? " — an empty recording means capture is off, not that nothing was rejected." : ".") +
-      " " + esc(r.note || ""),
-      table([{ t: "reason" }, { t: "count", num: 1 }],
-        rejectRows || '<tr class="empty"><td colspan="2">none</td></tr>')));
-
-    var jitOps = (P.events || []).filter(function (e) { return e.kind === "jit" || e.kind === "jit_arb"; });
-    var jitRows = "";
-    (S.jit_open || []).forEach(function (j) {
-      jitRows += '<tr><td><span class="hex">' + esc(short(j.pool)) + '</span></td><td><span class="hex">' +
-        esc(short(j.owner)) + '</span></td><td class="num">' + j.tick_lower + '</td><td class="num">' + j.tick_upper +
-        '</td><td class="num">' + j.opened_block + '</td><td class="num">' + esc(short(j.liquidity)) + "</td></tr>";
-    });
-    parts.push(cluster("JIT lifecycle",
-      "Detector state is not chain truth. Realized jit/jit_arb in sample: <b>" + jitOps.length +
-      "</b> · positions the detector still holds open: <b>" + (S.jit_open || []).length + "</b>.",
-      table([{ t: "pool" }, { t: "owner" }, { t: "tick lo", num: 1 }, { t: "tick hi", num: 1 },
-             { t: "opened", num: 1 }, { t: "liquidity", num: 1 }],
-        jitRows || '<tr class="empty"><td colspan="6">none</td></tr>')));
-
-    var feedRows = "";
-    (S.oracle_feeds || []).forEach(function (f) {
-      feedRows += '<tr><td><span class="hex">' + esc(short(f.feed)) + '</span></td><td class="num">' + f.answers +
-        '</td><td class="num">' + plain(f.last_block) + "</td></tr>";
-    });
-    var priceRows = "";
-    (S.prices || []).forEach(function (p) {
-      priceRows += '<tr><td><span class="hex">' + esc(short(p.token)) + '</span></td><td class="num">' + p.hour +
-        '</td><td class="num">' + usd(p.price_usd) + "</td><td>" + esc(p.source) + "</td></tr>";
-    });
-    parts.push(cluster("Oracles / prices",
-      "prices.hour is an hourly bucket (ts/3600), not a timestamp.",
-      "<h4>oracle_answers</h4>" +
-      table([{ t: "feed" }, { t: "answers", num: 1 }, { t: "last block", num: 1 }],
-        feedRows || '<tr class="empty"><td colspan="3">none</td></tr>') +
-      "<h4>prices</h4>" +
-      table([{ t: "token" }, { t: "hour", num: 1 }, { t: "usd", num: 1 }, { t: "source" }],
-        priceRows || '<tr class="empty"><td colspan="4">none</td></tr>')));
-
-    var storeRows = "";
-    (S.storage || []).forEach(function (t) {
-      storeRows += "<tr><td>" + esc(t.table) + '</td><td class="num">' + t.rows + "</td></tr>";
-    });
-    var capChips = Object.keys(S.caps).filter(function (k) {
-      return typeof S.caps[k] === "boolean";
-    }).map(function (k) {
-      return '<span class="chip' + (S.caps[k] ? "" : " off") + '">' + esc(k) + (S.caps[k] ? " ✓" : " ✗") + "</span>";
+    $("overview-kpis").innerHTML = [
+      { l: "Net MEV profit", v: usd(K.net_usd, true), s: cov(K.net_priced, ops), spark: "kpi-net", color: "#34d399", data: netSpark },
+      { l: "Gross profit", v: usd(K.gross_usd, false), s: cov(K.gross_priced, ops), spark: "kpi-gross", color: "#a78bfa", data: netSpark },
+      { l: "MEV operations", v: String(ops), s: "", spark: "kpi-ops", color: "#38bdf8", data: opsSpark },
+      { l: "Searchers", v: String(K.searchers || 0), s: "competitors " + (K.competitors || 0), spark: "kpi-searchers", color: "#2dd4bf", data: opsSpark },
+      { l: "Gas", v: usd(K.gas_usd, false), s: cov(K.gas_priced, ops), spark: "kpi-gas", color: "#fb7185", data: gasSpark },
+      { l: "Pricing coverage", v: (Q.pricing_coverage_pct != null ? Q.pricing_coverage_pct.toFixed(1) + "%" : "—"), s: priced + " / " + ops + " priced", spark: "kpi-cov", color: "#fbbf24", data: covSpark }
+    ].map(function (x) {
+      return '<div class="card kpi"><div class="kpi-label">' + esc(x.l) + '</div><div class="kpi-value">'
+        + x.v + '</div><div class="kpi-sub">' + esc(x.s) + '</div>'
+        + '<div class="kpi-spark" id="' + x.spark + '"></div></div>';
     }).join("");
-    parts.push(cluster("Storage health",
-      "Dead or unpopulated on the logs-only path: blocks.producer, swaps.dex, swaps.sender, transfers.is_native.",
-      table([{ t: "table" }, { t: "rows", num: 1 }], storeRows || '<tr class="empty"><td colspan="2">none</td></tr>') +
-        "<h4>store capabilities probed on this file</h4>" + capChips));
+    [
+      ["kpi-net", netSpark, "#34d399"],
+      ["kpi-gross", netSpark, "#a78bfa"],
+      ["kpi-ops", opsSpark, "#38bdf8"],
+      ["kpi-searchers", opsSpark, "#2dd4bf"],
+      ["kpi-gas", gasSpark, "#fb7185"],
+      ["kpi-cov", covSpark, "#fbbf24"]
+    ].forEach(function (row) {
+      var c = chart(row[0]);
+      if (c && row[1].length) c.setOption(sparkOption(row[1], row[2]));
+    });
 
-    $("drawer-inner").innerHTML = parts.join("");
-  }
-
-  function renderDetailsBar() {
-    $("details-toggle").setAttribute("aria-expanded", state.details ? "true" : "false");
-    $("details-toggle").textContent = state.details ? "Hide" : "Show";
-    $("details").className = state.details ? "drawer open" : "drawer";
-  }
-
-  /* Close returns to the filter hash. #/op/<tx> stays the drill URL; filters live in state. */
-  function closeOp() {
-    if (!state.op) return;
-    state.op = null;
-    var want = hashFor(state);
-    if (location.hash !== want) location.hash = want;
-    else {
-      renderLive();
-      renderDrill();
+    var mix = rollMix();
+    var ss = P.strategy_series || [];
+    var buckets = [];
+    var slices = [];
+    var seenB = {}, seenS = {};
+    ss.forEach(function (p) {
+      if (!seenB[p.bucket_start]) { seenB[p.bucket_start] = 1; buckets.push(p.bucket_start); }
+      if (!seenS[p.slice_key]) { seenS[p.slice_key] = 1; slices.push(p.slice_key); }
+    });
+    buckets.sort(function (a, b) { return a - b; });
+    // Prefer high-volume slices first for legend order
+    slices.sort(function (a, b) {
+      var oa = 0, ob = 0;
+      ss.forEach(function (p) {
+        if (p.slice_key === a) oa += p.ops;
+        if (p.slice_key === b) ob += p.ops;
+      });
+      return ob - oa;
+    });
+    var lookup = {};
+    ss.forEach(function (p) { lookup[p.bucket_start + "|" + p.slice_key] = p.ops; });
+    var cum = 0;
+    var netByBucket = {};
+    series.forEach(function (p) {
+      cum += p.net_usd || 0;
+      netByBucket[p.bucket_start] = +cum.toFixed(6);
+    });
+    var cPulse = chart("chart-overview-pulse");
+    if (cPulse) {
+      var barSeries = slices.map(function (sk) {
+        return {
+          name: sliceLabel(sk),
+          type: "bar",
+          stack: "ops",
+          emphasis: { focus: "series" },
+          itemStyle: { color: colorFor(sk) },
+          data: buckets.map(function (b) { return lookup[b + "|" + sk] || 0; })
+        };
+      });
+      barSeries.push({
+        name: "Cumulative net",
+        type: "line",
+        yAxisIndex: 1,
+        smooth: true,
+        symbol: "circle",
+        symbolSize: 7,
+        lineStyle: { width: 2.4, color: "#2dd4bf", shadowBlur: 12, shadowColor: "rgba(45,212,191,.45)" },
+        itemStyle: { color: "#2dd4bf" },
+        data: buckets.map(function (b) { return netByBucket[b] != null ? netByBucket[b] : null; })
+      });
+      cPulse.setOption({
+        backgroundColor: "transparent",
+        textStyle: darkText(),
+        legend: {
+          type: "scroll", bottom: 0, textStyle: darkText(),
+          pageTextStyle: darkText()
+        },
+        tooltip: { trigger: "axis" },
+        grid: { left: 48, right: 52, top: 18, bottom: 52 },
+        xAxis: {
+          type: "category",
+          data: buckets.map(function (t) { return fmtTime(t); }),
+          axisLabel: darkText(),
+          axisLine: { lineStyle: { color: "#1c2838" } }
+        },
+        yAxis: [
+          { type: "value", axisLabel: darkText(), splitLine: { lineStyle: { color: "#1c2838" } } },
+          { type: "value", axisLabel: darkText(), splitLine: { show: false } }
+        ],
+        series: barSeries
+      });
     }
+    var uj = (P.events || []).filter(function (e) { return e.kind === "jit" && e.profit_usd == null; }).length;
+    $("overview-pulse-cap").textContent = (Q.ops_unpriced || 0) + " unpriced ops in stacked counts · USD line uses priced net only"
+      + (uj ? (" · " + uj + " JIT unpriced") : "")
+      + " · Bundler/Claim&sell are utility subkinds";
+
+    var cMix = chart("chart-overview-mix");
+    if (cMix) {
+      cMix.setOption({
+        backgroundColor: "transparent",
+        tooltip: {
+          trigger: "item",
+          formatter: function (p) {
+            return p.name + "<br>" + p.value + " ops (" + p.percent + "%)"
+              + "<br><span style='opacity:.7'>" + familyLabel(mix[p.dataIndex] ? mix[p.dataIndex].key : "") + "</span>";
+          }
+        },
+        series: [{
+          type: "pie", radius: ["46%", "72%"],
+          label: { color: "#9aadc5", formatter: "{b}\n{c}" },
+          data: mix.map(function (m) {
+            return { name: sliceLabel(m.key), value: m.ops, itemStyle: { color: colorFor(m.key) } };
+          })
+        }]
+      });
+    }
+    var cG = chart("chart-overview-priced");
+    if (cG) {
+      var pct = ops ? (priced / ops) * 100 : 0;
+      cG.setOption({
+        series: [{
+          type: "gauge", startAngle: 180, endAngle: 0, min: 0, max: 100,
+          pointer: { show: false },
+          progress: { show: true, width: 14, itemStyle: { color: "#2dd4bf" } },
+          axisLine: { lineStyle: { width: 14, color: [[1, "#1c2838"]] } },
+          axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+          detail: { formatter: priced + " / " + ops + " priced", color: "#eef3fb", fontSize: 13, offsetCenter: ["50%", "72%"] },
+          data: [{ value: +pct.toFixed(1) }]
+        }]
+      });
+    }
+
+    var actors = (P.actors || []).slice(0, 8);
+    var maxNet = Math.max.apply(null, actors.map(function (a) { return Math.abs(a.net_usd || 0); }).concat([1]));
+    $("overview-searchers").innerHTML = actors.map(function (a, i) {
+      var w = Math.round(100 * Math.abs(a.net_usd || 0) / maxNet);
+      return '<div class="searcher-row"><div class="meta">' + (i + 1) + '</div><div>'
+        + '<div>' + esc(short(a.competitor)) + (a.label ? (' · ' + esc(a.label)) : "") + "</div>"
+        + '<div class="bar"><i style="width:' + w + '%"></i></div></div>'
+        + '<div class="meta">' + (a.ops || 0) + " op · " + usd(a.net_usd, true) + "</div></div>";
+    }).join("") || '<div class="empty">No searchers</div>';
+
+    var badge = $("overview-unpriced-badge");
+    if (uj > 0) { badge.style.display = ""; badge.textContent = uj + " JIT unpriced"; }
+    else if ((Q.ops_unpriced || 0) > 0) { badge.style.display = ""; badge.textContent = Q.ops_unpriced + " unpriced"; }
+    else badge.style.display = "none";
+
+    $("overview-ops").innerHTML = filteredEvents().slice().reverse().slice(0, 40).map(function (e) {
+      var key = sliceKey(e.kind, e.subkind);
+      return '<tr class="clickable" data-hash="' + esc(e.tx_hash) + '"><td>' + esc(relTime(e.ts))
+        + '</td><td><span class="' + pillClass(key) + '" title="' + esc(familyLabel(key)) + '">'
+        + esc(sliceLabel(key)) + "</span></td><td>"
+        + esc(short(e.tx_hash)) + '</td><td>' + usd(e.net_profit_usd, true) + "</td></tr>";
+    }).join("");
   }
 
-  /* ---------- drill-down slide-over ---------- */
-  function renderDrill() {
-    var drill = $("drill");
-    if (!state.op) {
-      drill.className = "drill";
-      drill.setAttribute("aria-hidden", "true");
-      drill.innerHTML = "";
-      $("backdrop").className = "backdrop";
+  function renderSearchers() {
+    var actors = P.actors || [];
+    var maxOps = Math.max.apply(null, actors.map(function (a) { return a.ops || 0; }).concat([1]));
+    $("searchers-board").innerHTML = actors.slice(0, 24).map(function (a, i) {
+      var w = Math.round(100 * (a.ops || 0) / maxOps);
+      return '<div class="searcher-row"><div class="meta">' + (i + 1) + '</div><div>'
+        + esc(short(a.competitor)) + (a.label ? (" · " + esc(a.label)) : "")
+        + '<div class="bar"><i style="width:' + w + '%"></i></div></div>'
+        + '<div class="meta">' + (a.ops || 0) + " · " + usd(a.net_usd, true) + "</div></div>";
+    }).join("") || '<div class="empty">No searchers</div>';
+    var mix = rollMix().slice().sort(function (a, b) { return a.net - b.net; });
+    var cNet = chart("chart-searchers-net");
+    if (cNet) {
+      cNet.setOption({
+        backgroundColor: "transparent",
+        grid: { left: 120, right: 28, top: 8, bottom: 24 },
+        xAxis: { type: "value", axisLabel: darkText(), splitLine: { lineStyle: { color: "#1c2838" } } },
+        yAxis: { type: "category", data: mix.map(function (m) { return sliceLabel(m.key); }), axisLabel: darkText() },
+        series: [{
+          type: "bar",
+          data: mix.map(function (m) {
+            return { value: m.net, itemStyle: { color: colorFor(m.key) } };
+          })
+        }]
+      });
+    }
+    $("searchers-net-cap").textContent = (Q.ops_unpriced || 0)
+      + " unpriced ops excluded from USD · utility subkinds shown separately";
+  }
+
+  function renderPools() {
+    $("pools-tbody").innerHTML = (P.pools || []).slice(0, 40).map(function (p) {
+      var mix = Object.keys(p.amm_mix || {}).map(function (k) { return k + ":" + p.amm_mix[k]; }).join(" ");
+      return "<tr><td>" + esc(short(p.pool)) + "</td><td>" + (p.ops || 0) + "</td><td>"
+        + usd(p.net_usd, true) + "</td><td>" + esc(mix || "—") + "</td></tr>";
+    }).join("") || '<tr><td colspan="4" class="empty">No pools</td></tr>';
+    var ammMap = {};
+    (P.pools || []).forEach(function (p) {
+      var mixA = p.amm_mix || {};
+      Object.keys(mixA).forEach(function (amm) {
+        ammMap[amm] = (ammMap[amm] || 0) + (mixA[amm] || 0);
+      });
+    });
+    var cAmm = chart("chart-pools-amm");
+    if (cAmm) {
+      cAmm.setOption({
+        backgroundColor: "transparent",
+        tooltip: { formatter: function (p) { return p.name + ": " + p.value; } },
+        series: [{
+          type: "treemap", roam: false, nodeClick: false, breadcrumb: { show: false },
+          label: { color: "#eef3fb" },
+          data: Object.keys(ammMap).map(function (k) {
+            return { name: k, value: ammMap[k], itemStyle: { color: colorFor(k) } };
+          })
+        }]
+      });
+    }
+    var pts = (P.scatter_points || []).filter(function (p) {
+      return p.priced && p.volume_usd != null && p.net_profit_usd != null && p.volume_usd > 0;
+    });
+    var cSc = chart("chart-pools-scatter");
+    if (cSc) {
+      cSc.setOption({
+        backgroundColor: "transparent",
+        tooltip: {
+          formatter: function (p) {
+            var d = p.data.value || p.data;
+            return esc(sliceLabel(d[3])) + "<br>Volume " + usd(d[0], false)
+              + "<br>Net " + usd(d[1], true)
+              + (d[4] ? "<br>VOLUME_PARTIAL" : "");
+          }
+        },
+        grid: { left: 60, right: 20, top: 20, bottom: 40 },
+        xAxis: { type: "log", name: "Volume USD", axisLabel: darkText(), splitLine: { lineStyle: { color: "#1c2838" } } },
+        yAxis: { type: "value", name: "Net USD", axisLabel: darkText(), splitLine: { lineStyle: { color: "#1c2838" } } },
+        series: [{
+          type: "scatter", symbolSize: 10,
+          data: pts.map(function (p) {
+            return {
+              value: [p.volume_usd, p.net_profit_usd, p.tx_hash, p.slice_key, p.volume_partial],
+              itemStyle: { color: p.volume_partial ? "#fbbf24" : colorFor(p.slice_key) }
+            };
+          })
+        }]
+      });
+    }
+    var unp = (P.scatter_points || []).filter(function (p) { return !p.priced; }).length;
+    $("pools-scatter-cap").textContent = unp
+      + " unpriced operations excluded from USD axes · volume on log scale";
+  }
+
+  function cov(priced, total) {
+    if (priced == null) return "";
+    return "priced " + priced + "/" + total;
+  }
+
+  function renderAnalytics() {
+    var mix = rollMix();
+    var ss = P.strategy_series || [];
+    var buckets = [];
+    var slices = [];
+    var seenB = {}, seenS = {};
+    ss.forEach(function (p) {
+      if (!seenB[p.bucket_start]) { seenB[p.bucket_start] = 1; buckets.push(p.bucket_start); }
+      if (!seenS[p.slice_key]) { seenS[p.slice_key] = 1; slices.push(p.slice_key); }
+    });
+    buckets.sort(function (a, b) { return a - b; });
+    slices.sort();
+    var heat = [];
+    var lookup = {};
+    ss.forEach(function (p) { lookup[p.bucket_start + "|" + p.slice_key] = p.ops; });
+    slices.forEach(function (s, yi) {
+      buckets.forEach(function (b, xi) {
+        heat.push([xi, yi, lookup[b + "|" + s] || 0]);
+      });
+    });
+    var cH = chart("chart-analytics-heat");
+    if (cH) {
+      cH.setOption({
+        backgroundColor: "transparent",
+        tooltip: {
+          formatter: function (p) {
+            return sliceLabel(slices[p.value[1]]) + "<br>" + fmtTime(buckets[p.value[0]]) + "<br>ops " + p.value[2];
+          }
+        },
+        grid: { left: 110, right: 20, top: 10, bottom: 40 },
+        xAxis: { type: "category", data: buckets.map(fmtTime), axisLabel: darkText() },
+        yAxis: { type: "category", data: slices.map(sliceLabel), axisLabel: darkText() },
+        visualMap: { min: 0, max: Math.max.apply(null, heat.map(function (x) { return x[2]; }).concat([1])),
+          calculable: false, orient: "horizontal", left: "center", bottom: 0,
+          inRange: { color: ["#121a27", "#312e81", "#4fd1c5"] }, textStyle: darkText() },
+        series: [{ type: "heatmap", data: heat }]
+      });
+    }
+
+    var cMix = chart("chart-analytics-mix");
+    if (cMix) {
+      cMix.setOption({
+        backgroundColor: "transparent",
+        tooltip: { trigger: "item" },
+        series: [{
+          type: "pie", radius: ["42%", "68%"],
+          label: { color: "#8b9bb3" },
+          data: mix.map(function (m) {
+            return { name: sliceLabel(m.key), value: m.ops, itemStyle: { color: colorFor(m.key) } };
+          })
+        }]
+      });
+    }
+    var cConf = chart("chart-analytics-conf");
+    if (cConf) {
+      cConf.setOption({
+        backgroundColor: "transparent",
+        grid: { left: 80, right: 20, top: 10, bottom: 30 },
+        xAxis: { type: "value", axisLabel: darkText(), splitLine: { lineStyle: { color: "#243044" } } },
+        yAxis: { type: "category", data: ["Exact", "Inferred"], axisLabel: darkText() },
+        series: [{
+          type: "bar",
+          data: [
+            { value: Q.ops_exact || 0, itemStyle: { color: "#4fd1c5" } },
+            { value: Q.ops_inferred || 0, itemStyle: { color: "#a78bfa" } }
+          ]
+        }]
+      });
+    }
+
+    var actors = (P.actors || []).slice(0, 8);
+    var maxOps = Math.max.apply(null, actors.map(function (a) { return a.ops || 0; }).concat([1]));
+    $("analytics-searchers").innerHTML = actors.map(function (a, i) {
+      var w = Math.round(100 * (a.ops || 0) / maxOps);
+      return '<div class="searcher-row"><div class="meta">' + (i + 1) + '</div><div>'
+        + esc(short(a.competitor)) + '<div class="bar"><i style="width:' + w + '%"></i></div></div>'
+        + '<div class="meta">' + (a.ops || 0) + " · " + usd(a.net_usd, true) + "</div></div>";
+    }).join("");
+
+    var cNet = chart("chart-analytics-net");
+    if (cNet) {
+      var netRows = mix.slice().sort(function (a, b) { return a.net - b.net; });
+      cNet.setOption({
+        backgroundColor: "transparent",
+        grid: { left: 100, right: 24, top: 8, bottom: 24 },
+        xAxis: { type: "value", axisLabel: darkText(), splitLine: { lineStyle: { color: "#243044" } } },
+        yAxis: { type: "category", data: netRows.map(function (m) { return sliceLabel(m.key); }), axisLabel: darkText() },
+        series: [{
+          type: "bar",
+          data: netRows.map(function (m) {
+            return { value: m.net, itemStyle: { color: colorFor(m.key) } };
+          })
+        }]
+      });
+    }
+    $("analytics-net-cap").textContent = (Q.ops_unpriced || 0)
+      + " unpriced ops excluded from USD net totals (still in mix counts).";
+
+    var ammMap = {};
+    (P.pools || []).forEach(function (p) {
+      var mixA = p.amm_mix || {};
+      Object.keys(mixA).forEach(function (amm) {
+        ammMap[amm] = (ammMap[amm] || 0) + (mixA[amm] || 0);
+      });
+    });
+    var cAmm = chart("chart-analytics-amm");
+    if (cAmm) {
+      cAmm.setOption({
+        backgroundColor: "transparent",
+        tooltip: { formatter: function (p) { return p.name + ": " + p.value; } },
+        series: [{
+          type: "treemap",
+          roam: false,
+          nodeClick: false,
+          breadcrumb: { show: false },
+          label: { color: "#e8eef7" },
+          data: Object.keys(ammMap).map(function (k) {
+            return { name: k, value: ammMap[k], itemStyle: { color: colorFor(k) } };
+          })
+        }]
+      });
+    }
+
+    var pts = (P.scatter_points || []).filter(function (p) {
+      return p.priced && p.volume_usd != null && p.net_profit_usd != null
+        && p.volume_usd > 0;
+    });
+    var cSc = chart("chart-analytics-scatter");
+    if (cSc) {
+      cSc.setOption({
+        backgroundColor: "transparent",
+        tooltip: {
+          formatter: function (p) {
+            var d = p.data;
+            return esc(sliceLabel(d[3])) + "<br>Volume " + usd(d[0], false)
+              + "<br>Net " + usd(d[1], true)
+              + (d[4] ? "<br>VOLUME_PARTIAL" : "")
+              + "<br>" + short(d[2]);
+          }
+        },
+        grid: { left: 60, right: 20, top: 20, bottom: 40 },
+        xAxis: {
+          type: "log", name: "Volume USD", axisLabel: darkText(),
+          splitLine: { lineStyle: { color: "#243044" } }
+        },
+        yAxis: {
+          type: "value", name: "Net USD", axisLabel: darkText(),
+          splitLine: { lineStyle: { color: "#243044" } }
+        },
+        series: [{
+          type: "scatter",
+          symbolSize: 10,
+          data: pts.map(function (p) {
+            return {
+              value: [p.volume_usd, p.net_profit_usd, p.tx_hash, p.slice_key, p.volume_partial],
+              itemStyle: { color: p.volume_partial ? "#fbbf24" : colorFor(p.slice_key) }
+            };
+          })
+        }]
+      });
+    }
+    var unp = (P.scatter_points || []).filter(function (p) { return !p.priced; }).length;
+    $("analytics-scatter-cap").textContent = unp
+      + " unpriced operations excluded from USD axes · volume outliers keep raw magnitude (log scale)";
+  }
+
+  function renderOperationsList() {
+    var rows = filteredEvents().slice().reverse();
+    $("ops-tbody").innerHTML = rows.map(function (e) {
+      var key = sliceKey(e.kind, e.subkind);
+      var active = state.opHash === e.tx_hash ? " active" : "";
+      return '<tr class="clickable' + active + '" data-hash="' + esc(e.tx_hash) + '"><td>'
+        + esc(fmtTime(e.ts)) + '</td><td><span class="' + pillClass(key) + '">'
+        + esc(sliceLabel(key)) + "</span></td><td>" + usd(e.net_profit_usd, true) + "</td></tr>";
+    }).join("") || '<tr><td colspan="3" class="empty">No operations</td></tr>';
+  }
+
+  function openOp(hash) {
+    state.opHash = hash;
+    setView("operations");
+    renderOpDetail();
+  }
+
+  function renderOpDetail() {
+    renderOperationsList();
+    var evMap = evidenceByHash();
+    var ev = state.opHash ? evMap[state.opHash] : null;
+    var row = (P.events || []).filter(function (e) { return e.tx_hash === state.opHash; })[0];
+    if (!ev && !row) {
+      $("op-empty").style.display = "";
+      $("op-body").style.display = "none";
       return;
     }
-    $("backdrop").className = "backdrop show";
-    drill.className = "drill show";
-    drill.setAttribute("aria-hidden", "false");
-    var ev = null;
-    (P.evidence || []).forEach(function (e) {
-      if (!ev && String(e.tx_hash).toLowerCase() === state.op) ev = e;
+    $("op-empty").style.display = "none";
+    $("op-body").style.display = "";
+    var kind = (ev && ev.kind) || (row && row.kind) || "";
+    var sub = (ev && ev.subkind) || (row && row.subkind);
+    var key = sliceKey(kind, sub);
+    var conf = (ev && ev.confidence) || (row && row.confidence) || "";
+    var priced = ((ev && ev.profit_usd) != null) || ((row && row.profit_usd) != null);
+    $("op-crumb").textContent = "Operations / " + short(state.opHash);
+    $("op-title").textContent = sliceLabel(key);
+    $("op-badges").innerHTML = confidenceBadge(conf)
+      + (priced ? ' <span class="pill ok">Priced</span>' : ' <span class="pill warn">Unpriced</span>');
+
+    var net = ev ? ev.net_profit_usd : row.net_profit_usd;
+    var gross = ev ? ev.profit_usd : row.profit_usd;
+    var gas = ev ? ev.gas_cost_usd : row.gas_cost_usd;
+    var vol = ev ? ev.volume_usd : row.volume_usd;
+    var flash = ev ? ev.flashloan_fee_usd : null;
+    $("op-kpis").innerHTML = [
+      { l: "Net profit", v: usd(net, true) },
+      { l: "Gross profit", v: usd(gross, false) },
+      { l: "Gas", v: usd(gas, false) },
+      { l: "Volume", v: usd(vol, false) }
+    ].map(function (x) {
+      return '<div class="card" style="background:var(--panel2)"><div class="kpi-label">'
+        + esc(x.l) + '</div><div class="kpi-value">' + x.v + "</div></div>";
+    }).join("");
+
+    var wf = chart("chart-op-waterfall");
+    if (wf) {
+      var steps = [];
+      if (gross != null) steps.push({ name: "Gross", value: gross });
+      if (gas != null) steps.push({ name: "Gas", value: -Math.abs(gas) });
+      if (flash != null) steps.push({ name: "Flash fee", value: -Math.abs(flash) });
+      if (net != null) steps.push({ name: "Net", value: net, isNet: true });
+      // ECharts waterfall via helper totals
+      var help = [];
+      var run = 0;
+      var vals = [];
+      steps.forEach(function (s, i) {
+        if (s.isNet) {
+          help.push(0);
+          vals.push(s.value);
+        } else if (i === 0) {
+          help.push(0);
+          vals.push(s.value);
+          run = s.value;
+        } else {
+          help.push(run + Math.min(s.value, 0));
+          vals.push(Math.abs(s.value));
+          run += s.value;
+        }
+      });
+      wf.setOption({
+        backgroundColor: "transparent",
+        tooltip: {
+          formatter: function (p) {
+            if (p.seriesName === "assist") return "";
+            var s = steps[p.dataIndex];
+            return s.name + ": " + usd(s.isNet ? s.value : (s.name === "Gross" ? s.value : s.value), true);
+          }
+        },
+        grid: { left: 50, right: 20, top: 20, bottom: 40 },
+        xAxis: { type: "category", data: steps.map(function (s) { return s.name; }), axisLabel: darkText() },
+        yAxis: { type: "value", axisLabel: darkText(), splitLine: { lineStyle: { color: "#243044" } } },
+        series: [
+          { name: "assist", type: "bar", stack: "wf", data: help, itemStyle: { borderColor: "transparent", color: "transparent" }, tooltip: { show: false } },
+          {
+            name: "pnl", type: "bar", stack: "wf",
+            data: steps.map(function (s, i) {
+              var positive = s.isNet || s.name === "Gross";
+              return { value: vals[i], itemStyle: { color: positive ? "#34d399" : "#f87171" } };
+            })
+          }
+        ]
+      });
+    }
+
+    var route = (ev && ev.route) || [];
+    var amms = {};
+    route.forEach(function (leg) { if (leg.amm) amms[leg.amm] = 1; });
+    var pools = {};
+    route.forEach(function (leg) { if (leg.pool) pools[leg.pool] = 1; });
+    $("op-facts").innerHTML = [
+      ["Block", (ev && ev.block_number) || (row && row.block_number) || "—"],
+      ["Detector", (ev && ev.detector) || (row && row.detector) || "—"],
+      ["Confidence", conf || "—"],
+      ["PnL basis", (ev && ev.pnl_basis) || (row && row.pnl_basis) || "—"],
+      ["Pricing", (ev && ev.usd_approximate) ? "Approximate USD" : (priced ? "Priced" : "Unpriced")],
+      ["Route", route.length + " hops · " + Object.keys(pools).length + " pools · " + Object.keys(amms).length + " AMM"]
+    ].map(function (r) {
+      return "<tr><td>" + esc(r[0]) + "</td><td>" + esc(String(r[1])) + "</td></tr>";
+    }).join("");
+
+    if (!route.length) {
+      $("op-route").innerHTML = '<div class="empty">No route legs</div>';
+      $("op-route-cap").textContent = "";
+    } else {
+      var html = "";
+      var nonReg = false;
+      route.forEach(function (leg, i) {
+        if (i) {
+          html += '<div class="route-edge">' + esc(short(leg.token_in || "")) + " → "
+            + esc(short(leg.token_out || "")) + "</div>";
+        }
+        var amm = leg.amm || "?";
+        if (leg.token_source && leg.token_source !== "registry") nonReg = true;
+        html += '<div class="route-node ' + esc(amm) + '"><div><b>' + esc(amm) + "</b></div><div>"
+          + esc(short(leg.pool || "")) + "</div></div>";
+      });
+      $("op-route").innerHTML = html;
+      $("op-route-cap").textContent = nonReg
+        ? "Observed AMM labels · proximity/non-registry token source on at least one leg"
+        : "Observed AMM labels from route_json";
+    }
+
+    var tags = (ev && ev.tags) || [];
+    var reasons = (ev && ev.reasons) || [];
+    var all = tags.concat(reasons);
+    $("op-tags").innerHTML = all.length ? all.map(function (t) {
+      var cls = t === "VOLUME_PARTIAL" ? "pill warn" : "pill ok";
+      return '<span class="' + cls + '">' + esc(t) + "</span>";
+    }).join(" ") : '<span class="null">No tags</span>';
+    var victims = (ev && ev.victim_hashes) || [];
+    $("op-victims").textContent = victims.length
+      ? ("Victims: " + victims.map(short).join(", "))
+      : "No victim hashes";
+    $("op-raw").textContent = JSON.stringify((ev && ev.details) || {}, null, 2);
+
+    var chainId = S.db && S.db.chain_id;
+    var ex = $("op-explorer");
+    if (chainId === 43114) {
+      ex.href = "https://snowtrace.io/tx/" + state.opHash;
+      ex.style.display = "";
+      ex.textContent = "View on Snowtrace";
+    } else {
+      ex.removeAttribute("href");
+      ex.style.display = "none";
+    }
+  }
+
+  function renderHealth() {
+    function row(k, v) {
+      return "<tr><td>" + esc(k) + "</td><td>" + esc(v == null ? "—" : String(v)) + "</td></tr>";
+    }
+    var caps = S.caps || {};
+    var gaps = S.gaps || {};
+    var rejects = S.rejects || {};
+    var storage = S.storage || [];
+    var lag = (C.head != null && C.indexed_to != null) ? (C.head - C.indexed_to) : null;
+    var html = "";
+    html += '<div class="card"><h2>Coverage</h2><table class="facts">'
+      + row("Head", C.head) + row("Indexed to", C.indexed_to) + row("Lag", lag)
+      + row("Blocks in window", C.blocks_in_window) + row("Ops in window", C.ops_in_window)
+      + row("Pricing coverage", (Q.pricing_coverage_pct != null ? Q.pricing_coverage_pct.toFixed(1) + "%" : "—"))
+      + "</table>"
+      + '<div class="bar" style="margin-top:12px"><i style="width:'
+      + Math.max(0, Math.min(100, Q.pricing_coverage_pct || 0)) + '%;background:#4fd1c5"></i></div>'
+      + '<div class="caption">Pricing coverage bar</div></div>';
+
+    html += '<div class="card"><h2>Pricing quality</h2><table class="facts">'
+      + row("Exact ops", Q.ops_exact) + row("Inferred ops", Q.ops_inferred)
+      + row("Unpriced", Q.ops_unpriced) + row("Approx USD", Q.ops_approx)
+      + row("Native unpriced", Q.ops_native_unpriced) + row("Multi-asset", Q.ops_multi_asset)
+      + row("Clamped", Q.ops_pricing_clamped) + row("Flash fee unpriced", Q.ops_flash_fee_unpriced)
+      + row("Excluded from net", Q.ops_excluded_from_net)
+      + "</table></div>";
+
+    html += '<div class="card"><h2>Index gaps</h2>';
+    if (!gaps.enabled) {
+      html += '<div class="caption">' + esc(gaps.note || "Gaps not scanned") + "</div>";
+    } else {
+      html += '<table class="facts">' + row("Gap count", gaps.gap_count)
+        + row("First", gaps.first_gap) + row("Last", gaps.last_gap) + "</table>";
+      html += '<div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>From</th><th>To</th><th>Len</th></tr></thead><tbody>';
+      (gaps.ranges || []).forEach(function (r) {
+        html += "<tr><td>" + r.from + "</td><td>" + r.to + "</td><td>" + r.len + "</td></tr>";
+      });
+      html += "</tbody></table></div><div class='caption'>" + esc(gaps.note || "") + "</div>";
+    }
+    html += "</div>";
+
+    html += '<div class="card"><h2>Schema capabilities</h2><div class="cap-list">';
+    Object.keys(caps).forEach(function (k) {
+      if (k === "tables") return;
+      var v = caps[k];
+      html += '<span class="pill ' + (v === false ? "bad" : "ok") + '">' + esc(k) + ": " + esc(String(v)) + "</span>";
     });
-    if (!ev) {
-      drill.innerHTML = '<header><span class="title">Op</span>' +
-        '<button class="close" type="button" id="drill-close">Close</button></header>' +
-        '<div class="body"><p class="note">No evidence blob for ' + esc(state.op) +
-        " — it fell outside the evidence budget (see truncation above).</p></div>";
-    } else {
-      var legs = (ev.route || []).map(function (leg) {
-        return '<div class="leg leg-' + esc(leg.token_source || "unknown") + '">' +
-          esc(leg.pool || "?") + " · " + esc(leg.amm || "?") + "<br>" +
-          esc(leg.token_in || "?") + " &rarr; " + esc(leg.token_out || "?") +
-          '<br><span class="null">source: ' + esc(leg.token_source || "?") + "</span></div>";
-      }).join("") || '<p class="note">no route legs recorded</p>';
-      var chips = function (list) {
-        var out = (list || []).map(function (t) {
-          return '<span class="chip">' + esc(t) + "</span>";
-        }).join("");
-        return out || '<span class="null">&mdash;</span>';
-      };
-      drill.innerHTML = '<header><span class="title">' + esc(ev.kind) +
-        (ev.subkind ? "/" + esc(ev.subkind) : "") + "</span>" +
-        '<button class="close" type="button" id="drill-close">Close</button></header><div class="body"><dl>' +
-        "<dt>tx</dt><dd>" + esc(ev.tx_hash) + "</dd>" +
-        "<dt>block</dt><dd>" + ev.block_number + "</dd>" +
-        "<dt>confidence</dt><dd>" + esc(ev.confidence) + "</dd>" +
-        "<dt>detector</dt><dd>" + esc(ev.detector) + "</dd>" +
-        "<dt>searcher</dt><dd>" + esc(labels[String(ev.contract || ev.eoa || "").toLowerCase()] || "unlabelled") +
-        "<br>" + esc(short(ev.eoa)) + " / " + esc(short(ev.contract || "")) + "</dd>" +
-        "<dt>gross</dt><dd>" + usd(ev.profit_usd, true) + "</dd>" +
-        "<dt>net</dt><dd>" + usd(ev.net_profit_usd, true) + "</dd>" +
-        "<dt>gas</dt><dd>" + usd(ev.gas_cost_usd) + "</dd>" +
-        "<dt>volume</dt><dd>" + usd(ev.volume_usd) + "</dd>" +
-        "<dt>flash fee</dt><dd>" + usd(ev.flashloan_fee_usd) + "</dd>" +
-        "<dt>excluded</dt><dd>" + (ev.excluded_from_net ? "yes — kept out of net" : "no") + "</dd>" +
-        "<dt>pnl basis</dt><dd>" + plain(ev.pnl_basis) + "</dd>" +
-        "<dt>amount</dt><dd>" + plain(ev.profit_amount) +
-        (ev.profit_amount_human
-          ? "<br>≈ " + esc(ev.profit_amount_human) + " " + esc(short(ev.profit_token || ""))
-          : '<br><span class="null">raw only (decimals unknown)</span>') + "</dd></dl>" +
-        "<h4>Route</h4>" + legs +
-        "<h4>Tags</h4><p class=\"flow\">" + chips(ev.tags) + "</p>" +
-        "<h4>Reasons</h4><p class=\"flow\">" + chips(ev.reasons) + "</p>" +
-        "<h4>Victims</h4><p class=\"flow\">" +
-        ((ev.victim_hashes || []).length ? esc(ev.victim_hashes.join(", ")) : '<span class="null">&mdash;</span>') + "</p>" +
-        "<h4>Raw details</h4><pre class=\"raw\">" + esc(JSON.stringify(ev.details, null, 2)) + "</pre></div>";
+    html += "</div><div class='caption' style='margin-top:8px'>db "
+      + esc((S.db && S.db.path) || "") + " · status " + esc((S.db && S.db.status) || "") + "</div></div>";
+
+    html += '<div class="card"><h2>Reject ladder</h2>';
+    html += '<div class="caption">' + esc(rejects.note || "") + " · total " + (rejects.total || 0) + "</div>";
+    html += '<div class="table-wrap"><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>';
+    (rejects.ladder || []).filter(function (r) { return r.count > 0; }).forEach(function (r) {
+      html += "<tr><td>" + esc(r.reason) + "</td><td>" + r.count + "</td></tr>";
+    });
+    html += "</tbody></table></div></div>";
+
+    html += '<div class="card"><h2>Storage counts</h2><div class="chart chart-sm" id="chart-health-storage"></div></div>';
+
+    html += '<div class="card"><h2>JIT open / oracles / prices</h2><div class="caption">Open JIT rows: '
+      + ((S.jit_open || []).length) + " · oracle feeds: " + ((S.oracle_feeds || []).length)
+      + " · price samples: " + ((S.prices || []).length) + "</div>";
+    html += '<div class="table-wrap"><table><thead><tr><th>Feed</th><th>Answers</th><th>Last block</th></tr></thead><tbody>';
+    (S.oracle_feeds || []).slice(0, 12).forEach(function (f) {
+      html += "<tr><td>" + esc(short(f.feed)) + "</td><td>" + f.answers + "</td><td>"
+        + (f.last_block == null ? "—" : f.last_block) + "</td></tr>";
+    });
+    html += "</tbody></table></div></div>";
+
+    $("health-grid").innerHTML = html;
+
+    var cSt = chart("chart-health-storage");
+    if (cSt) {
+      var top = storage.slice(0, 12);
+      cSt.setOption({
+        backgroundColor: "transparent",
+        grid: { left: 100, right: 20, top: 10, bottom: 30 },
+        xAxis: { type: "value", axisLabel: darkText(), splitLine: { lineStyle: { color: "#243044" } } },
+        yAxis: { type: "category", data: top.map(function (t) { return t.table; }).reverse(), axisLabel: darkText() },
+        series: [{
+          type: "bar",
+          data: top.map(function (t) { return t.rows; }).reverse(),
+          itemStyle: { color: "#60a5fa" }
+        }]
+      });
     }
-    var close = $("drill-close");
-    if (close) close.onclick = closeOp;
   }
 
-  $("details-toggle").onclick = function () {
-    state.details = !state.details;
-    renderDetailsBar();
-  };
-  $("backdrop").onclick = closeOp;
-  document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && state.op) closeOp();
-  });
-
-  renderMasthead();
-  renderRibbon();
-  renderHero();
-  renderFilters();
-  renderActivity();
-  renderPools();
-  renderSearchers();
-  renderDetails();
-  renderDetailsBar();
-
-  var h0 = parseHash();
-  if (h0.op) {
-    state.op = h0.op;
-  } else {
-    if (h0.kind) state.kind = h0.kind;
-    if (h0.confidence) state.confidence = h0.confidence;
-    if (h0.q) state.q = h0.q;
-    if (h0.priced === "1") state.pricedOnly = true;
-    syncFilters();
+  function renderView() {
+    if (state.view === "overview") renderOverview();
+    else if (state.view === "analytics") renderAnalytics();
+    else if (state.view === "operations") renderOpDetail();
+    else if (state.view === "searchers") renderSearchers();
+    else if (state.view === "pools") renderPools();
+    else if (state.view === "health") renderHealth();
+    setTimeout(function () {
+      Object.keys(charts).forEach(function (id) {
+        if (charts[id]) try { charts[id].resize(); } catch (e) {}
+      });
+    }, 30);
   }
-  renderLive();
-  renderDrill();
 
-  window.addEventListener("hashchange", function () {
-    var h = parseHash();
-    if (h.op) {
-      if (state.op === h.op) return;
-      state.op = h.op;
-    } else {
-      state.op = null;
-      state.kind = h.kind || "";
-      state.confidence = h.confidence || "";
-      state.q = h.q || "";
-      state.pricedOnly = h.priced === "1";
-      syncFilters();
+  function parseHash() {
+    var h = (location.hash || "").replace(/^#\/?/, "");
+    if (h.indexOf("op/") === 0) {
+      state.opHash = h.slice(3);
+      setView("operations");
+      return;
     }
-    renderLive();
-    renderDrill();
+    if (["analytics", "operations", "searchers", "pools", "health", "overview"].indexOf(h) >= 0) {
+      return setView(h);
+    }
+    setView("overview");
+  }
+
+  document.querySelectorAll(".navbtn").forEach(function (b) {
+    b.addEventListener("click", function () { setView(b.getAttribute("data-view")); });
   });
+  $("global-search").addEventListener("input", function (e) {
+    state.q = e.target.value || "";
+    renderView();
+  });
+  document.body.addEventListener("click", function (e) {
+    var tr = e.target.closest("tr[data-hash]");
+    if (tr) openOp(tr.getAttribute("data-hash"));
+  });
+  $("op-copy").addEventListener("click", function () {
+    var url = location.href.split("#")[0] + "#/op/" + (state.opHash || "");
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url);
+  });
+  window.addEventListener("hashchange", parseHash);
+  window.addEventListener("resize", function () {
+    Object.keys(charts).forEach(function (id) {
+      if (charts[id]) try { charts[id].resize(); } catch (e) {}
+    });
+  });
+
+  renderChrome();
+  parseHash();
 })();
 </script>
 </body>
