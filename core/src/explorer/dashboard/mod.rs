@@ -901,16 +901,37 @@ fn enforce_budget(panels: &mut ReducedPanels, budget: usize) {
     if measure(panels) <= budget {
         return;
     }
+    // 1) clear evidence
     panels.evidence.clear();
     panels.truncation.evidence_emitted = 0;
     panels.truncation.hit_budget = true;
     if measure(panels) <= budget {
         return;
     }
+    // 2) halve events to floor 50
     while panels.events.len() > 50 && measure(panels) > budget {
-        let keep = panels.events.len() / 2;
+        let keep = (panels.events.len() / 2).max(50);
         panels.events.truncate(keep);
         panels.truncation.ops_emitted = panels.events.len();
+        panels.truncation.hit_budget = true;
+    }
+    if measure(panels) <= budget {
+        return;
+    }
+    // 3) halve scatter_points to floor 200
+    while panels.scatter_points.len() > 200 && measure(panels) > budget {
+        let keep = (panels.scatter_points.len() / 2).max(200);
+        panels.scatter_points.truncate(keep);
+        panels.truncation.hit_budget = true;
+    }
+    if measure(panels) <= budget {
+        return;
+    }
+    // 4) clear op_index
+    if !panels.op_index.rows.is_empty() {
+        panels.op_index = reduce::OpIndex::default();
+        panels.truncation.index_emitted = 0;
+        panels.truncation.index_complete = false;
         panels.truncation.hit_budget = true;
     }
 }

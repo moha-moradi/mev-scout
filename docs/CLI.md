@@ -474,6 +474,18 @@ Artifact embeds coverage fractions next to every USD sum; `NULL` USD is `—`,
 never zero. Schema capability banners appear when columns (e.g. `excluded_from_net`)
 are missing on legacy files.
 
+HTML notes (offline single-file):
+
+- No global Strategy/Confidence/Pricing/Scope/Tags filter bar — panels always show
+  full-window Rust aggregates (`kpi`, `series`, `strategy_series`, `scatter_points`, …).
+- Additive `panels.op_index` is a compact interned full-window index used only for
+  topbar search / ops list when `truncation.index_complete` is true. Soft `--budget-mb`
+  trim order: clear `evidence` → halve `events` (floor 50) → halve `scatter_points`
+  (floor 200) → clear `op_index` (`index_emitted=0`, `index_complete=false`). A banner
+  surfaces truncation; KPIs are never silently subset-filtered.
+- Route evidence may include `amount_*_human` and `token_*_symbol` when the address is
+  in `known_tokens.json` (names are optional / currently absent).
+
 #### Classifier-change replay recipe (wipe + reindex)
 
 Any change to `decode` / `classify` / P&L invalidates existing `mev_ops` rows for

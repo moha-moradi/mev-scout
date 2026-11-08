@@ -55,6 +55,11 @@ pub struct SeriesPoint {
     pub ops: i64,
     pub net_usd: f64,
     pub blocks_indexed: i64,
+    pub gross_usd: f64,
+    pub gas_usd: f64,
+    pub priced_ops: i64,
+    /// Unique competitors (contract||eoa) in the bucket.
+    pub searchers: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,11 +144,12 @@ pub struct EventRow {
     pub tags: Vec<String>,
 }
 
-/// Per-bucket ops/net by kind/subkind slice (full-window; not truncated events).
+/// Per-bucket ops/net by kind/subkind/confidence slice (full-window; not truncated events).
 #[derive(Debug, Clone, Serialize)]
 pub struct StrategySeriesPoint {
     pub bucket_start: i64,
     pub slice_key: String,
+    pub confidence: String,
     pub ops: i64,
     pub net_usd: f64,
     pub priced_ops: i64,
@@ -162,6 +168,27 @@ pub struct ScatterPoint {
     pub volume_usd: Option<f64>,
     pub volume_partial: bool,
     pub priced: bool,
+    pub eoa: String,
+    pub contract: Option<String>,
+    pub block_number: u64,
+}
+
+/// Compact interned full-window index for search / ops list (not panel re-aggregation).
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct OpIndex {
+    pub slices: Vec<String>,
+    pub actors: Vec<String>,
+    pub eoas: Vec<String>,
+    pub contracts: Vec<String>,
+    pub tags: Vec<String>,
+    pub pools: Vec<String>,
+    pub amms: Vec<String>,
+    pub tx: Vec<String>,
+    /// `[ts, slice_id, conf, flags, actor_id, eoa_id, contract_id|null, block, tx_id,
+    ///   net|null, gross|null, gas|null, vol|null, flash|null, tag_ids, legs]`
+    /// `conf`: 0=exact, 1=inferred, 2=other.
+    /// `legs`: `[[pool_id, amm_id], …]` deduped.
+    pub rows: Vec<serde_json::Value>,
 }
 
 /// Full reducer output for the snapshot panels.
@@ -181,6 +208,7 @@ pub struct ReducedPanels {
     pub evidence: Vec<OpEvidence>,
     pub strategy_series: Vec<StrategySeriesPoint>,
     pub scatter_points: Vec<ScatterPoint>,
+    pub op_index: OpIndex,
     pub truncation: TruncationInfo,
 }
 
@@ -192,7 +220,19 @@ pub struct TruncationInfo {
     pub max_evidence: usize,
     pub evidence_emitted: usize,
     pub hit_budget: bool,
+    pub index_total: usize,
+    pub index_emitted: usize,
+    pub index_complete: bool,
 }
+
+/// Op-index flag bits (must stay stable for the offline HTML).
+pub const FLAG_EXCLUDED_FROM_NET: u32 = 1 << 0;
+pub const FLAG_VOLUME_PARTIAL: u32 = 1 << 1;
+pub const FLAG_USD_APPROXIMATE: u32 = 1 << 2;
+pub const FLAG_NATIVE_UNPRICED: u32 = 1 << 3;
+pub const FLAG_MULTI_ASSET_PRICING: u32 = 1 << 4;
+pub const FLAG_PRICING_CLAMPED: u32 = 1 << 5;
+pub const FLAG_FLASH_FEE_UNPRICED: u32 = 1 << 6;
 
 /// Reduce ops (+ optional block ts for coverage band) into panels.
 #[allow(clippy::too_many_arguments)]
@@ -218,6 +258,7 @@ pub fn reduce(
     let strategy_series = reduce_strategy_series(ops, window, bucket_secs);
     let scatter_cap = max_ops.max(2_000);
     let scatter_points = reduce_scatter_points(ops, scatter_cap);
+    let op_index = build_op_index(ops);
 
     let ops_total = ops.len();
     let emit_ops = ops.len().min(max_ops);
@@ -259,6 +300,7 @@ pub fn reduce(
     let hit_budget = ops_total > max_ops || ops_total > max_evidence;
     let ops_emitted = events.len();
     let evidence_emitted = evidence.len();
+    let index_total = op_index.rows.len();
     ReducedPanels {
         kpi,
         series,
@@ -274,6 +316,7 @@ pub fn reduce(
         evidence,
         strategy_series,
         scatter_points,
+        op_index,
         truncation: TruncationInfo {
             max_ops,
             ops_total,
@@ -281,6 +324,9 @@ pub fn reduce(
             max_evidence,
             evidence_emitted,
             hit_budget,
+            index_total,
+            index_emitted: index_total,
+            index_complete: true,
         },
     }
 }
@@ -298,13 +344,18 @@ fn reduce_strategy_series(
     window: &WindowSpec,
     bucket_secs: i64,
 ) -> Vec<StrategySeriesPoint> {
-    let mut map: BTreeMap<(i64, String), (i64, f64, i64)> = BTreeMap::new();
+    let since = (window.since_ts / bucket_secs) * bucket_secs;
+    let mut map: BTreeMap<(i64, String, String), (i64, f64, i64)> = BTreeMap::new();
     for o in ops {
         let b = (o.ts as i64 / bucket_secs) * bucket_secs;
-        if b < window.since_ts || b > window.until_ts {
+        if b < since || b > window.until_ts {
             continue;
         }
-        let key = (b, slice_key(&o.kind, o.subkind.as_deref()));
+        let key = (
+            b,
+            slice_key(&o.kind, o.subkind.as_deref()),
+            o.confidence.clone(),
+        );
         let e = map.entry(key).or_insert((0, 0.0, 0));
         e.0 += 1;
         if o.profit_usd.is_some() {
@@ -318,13 +369,18 @@ fn reduce_strategy_series(
         }
     }
     map.into_iter()
-        .map(|((bucket_start, slice_key), (ops, net_usd, priced_ops))| StrategySeriesPoint {
-            bucket_start,
-            slice_key,
-            ops,
-            net_usd,
-            priced_ops,
-        })
+        .map(
+            |((bucket_start, slice_key, confidence), (ops, net_usd, priced_ops))| {
+                StrategySeriesPoint {
+                    bucket_start,
+                    slice_key,
+                    confidence,
+                    ops,
+                    net_usd,
+                    priced_ops,
+                }
+            },
+        )
         .collect()
 }
 
@@ -348,9 +404,156 @@ fn reduce_scatter_points(ops: &[OpRecord], max_points: usize) -> Vec<ScatterPoin
                 volume_usd: o.volume_usd,
                 volume_partial,
                 priced: o.profit_usd.is_some(),
+                eoa: o.eoa.clone(),
+                contract: o.contract.clone(),
+                block_number: o.block_number,
             }
         })
         .collect()
+}
+
+fn conf_code(confidence: &str) -> u64 {
+    match confidence {
+        "exact" => 0,
+        "inferred" => 1,
+        _ => 2,
+    }
+}
+
+fn op_flags(o: &OpRecord) -> u32 {
+    let mut f = 0u32;
+    if o.excluded_from_net.unwrap_or(false) {
+        f |= FLAG_EXCLUDED_FROM_NET;
+    }
+    if details_has_token(o.details_json.as_deref(), "VOLUME_PARTIAL") {
+        f |= FLAG_VOLUME_PARTIAL;
+    }
+    if o.usd_approximate.unwrap_or(false) {
+        f |= FLAG_USD_APPROXIMATE;
+    }
+    if o.native_unpriced.unwrap_or(false) {
+        f |= FLAG_NATIVE_UNPRICED;
+    }
+    if o.multi_asset_pricing.unwrap_or(false) {
+        f |= FLAG_MULTI_ASSET_PRICING;
+    }
+    if o.pricing_clamped.unwrap_or(false) {
+        f |= FLAG_PRICING_CLAMPED;
+    }
+    if o.flash_fee_unpriced.unwrap_or(false) {
+        f |= FLAG_FLASH_FEE_UNPRICED;
+    }
+    f
+}
+
+struct Intern {
+    map: HashMap<String, usize>,
+    vec: Vec<String>,
+}
+
+impl Intern {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            vec: Vec::new(),
+        }
+    }
+
+    fn get(&mut self, s: &str) -> usize {
+        if let Some(&i) = self.map.get(s) {
+            return i;
+        }
+        let i = self.vec.len();
+        self.map.insert(s.to_string(), i);
+        self.vec.push(s.to_string());
+        i
+    }
+}
+
+fn build_op_index(ops: &[OpRecord]) -> OpIndex {
+    let mut slices = Intern::new();
+    let mut actors = Intern::new();
+    let mut eoas = Intern::new();
+    let mut contracts = Intern::new();
+    let mut tags = Intern::new();
+    let mut pools = Intern::new();
+    let mut amms = Intern::new();
+    let mut tx = Intern::new();
+    let mut rows = Vec::with_capacity(ops.len());
+
+    for o in ops {
+        let slice_id = slices.get(&slice_key(&o.kind, o.subkind.as_deref()));
+        let actor_id = actors.get(&o.competitor());
+        let eoa_id = eoas.get(&o.eoa);
+        let contract_id = o
+            .contract
+            .as_deref()
+            .filter(|c| !c.is_empty())
+            .map(|c| contracts.get(c));
+        let tx_id = tx.get(&o.tx_hash);
+        let tag_ids: Vec<serde_json::Value> = details_tags(o.details_json.as_deref())
+            .iter()
+            .map(|t| serde_json::json!(tags.get(t)))
+            .collect();
+
+        let mut seen_legs = HashSet::new();
+        let mut leg_vals = Vec::new();
+        for leg in parse_route(o.route_json.as_deref()) {
+            let pool = leg.pool.as_deref().unwrap_or("");
+            let amm = leg.amm.as_deref().unwrap_or("");
+            if pool.is_empty() && amm.is_empty() {
+                continue;
+            }
+            let pid = pools.get(pool);
+            let aid = amms.get(amm);
+            if seen_legs.insert((pid, aid)) {
+                leg_vals.push(serde_json::json!([pid, aid]));
+            }
+        }
+
+        let net = if o.excluded_from_net.unwrap_or(false) {
+            serde_json::Value::Null
+        } else {
+            opt_f64_json(o.net_profit_usd)
+        };
+        rows.push(serde_json::json!([
+            o.ts,
+            slice_id,
+            conf_code(&o.confidence),
+            op_flags(o),
+            actor_id,
+            eoa_id,
+            contract_id.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null),
+            o.block_number,
+            tx_id,
+            net,
+            opt_f64_json(o.profit_usd),
+            opt_f64_json(o.gas_cost_usd),
+            opt_f64_json(o.volume_usd),
+            opt_f64_json(o.flashloan_fee_usd),
+            tag_ids,
+            leg_vals,
+        ]));
+    }
+
+    OpIndex {
+        slices: slices.vec,
+        actors: actors.vec,
+        eoas: eoas.vec,
+        contracts: contracts.vec,
+        tags: tags.vec,
+        pools: pools.vec,
+        amms: amms.vec,
+        tx: tx.vec,
+        rows,
+    }
+}
+
+fn opt_f64_json(v: Option<f64>) -> serde_json::Value {
+    match v {
+        Some(x) => serde_json::json!(x),
+        None => serde_json::Value::Null,
+    }
 }
 
 fn details_tags(details_json: Option<&str>) -> Vec<String> {
@@ -497,6 +700,7 @@ fn reduce_series(
     _caps: &StoreCaps,
 ) -> Vec<SeriesPoint> {
     let mut map: BTreeMap<i64, SeriesPoint> = BTreeMap::new();
+    let mut searcher_sets: BTreeMap<i64, HashSet<String>> = BTreeMap::new();
     let start = (window.since_ts / bucket_secs) * bucket_secs;
     let end = window.until_ts;
     let mut t = start;
@@ -510,8 +714,13 @@ fn reduce_series(
                 ops: 0,
                 net_usd: 0.0,
                 blocks_indexed: 0,
+                gross_usd: 0.0,
+                gas_usd: 0.0,
+                priced_ops: 0,
+                searchers: 0,
             },
         );
+        searcher_sets.insert(t, HashSet::new());
         t = t.saturating_add(bucket_secs);
         n += 1;
     }
@@ -525,12 +734,27 @@ fn reduce_series(
                     p.net_usd += v;
                 }
             }
+            if let Some(v) = o.profit_usd {
+                p.gross_usd += v;
+                p.priced_ops += 1;
+            }
+            if let Some(v) = o.gas_cost_usd {
+                p.gas_usd += v;
+            }
+            if let Some(set) = searcher_sets.get_mut(&b) {
+                set.insert(o.competitor());
+            }
         }
     }
     for &ts in block_timestamps {
         let b = (ts / bucket_secs) * bucket_secs;
         if let Some(p) = map.get_mut(&b) {
             p.blocks_indexed += 1;
+        }
+    }
+    for (b, set) in searcher_sets {
+        if let Some(p) = map.get_mut(&b) {
+            p.searchers = set.len() as i64;
         }
     }
     map.into_values().collect()
@@ -941,4 +1165,245 @@ pub fn reject_ladder(counts: &HashMap<String, i64>) -> Vec<RejectRow> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::explorer::dashboard::caps::StoreCaps;
+    use crate::explorer::dashboard::{OpRecord, WindowSpec};
+
+    fn op(
+        id: i64,
+        ts: u64,
+        kind: &str,
+        subkind: Option<&str>,
+        confidence: &str,
+        net: Option<f64>,
+        gross: Option<f64>,
+        gas: Option<f64>,
+        eoa: &str,
+        contract: Option<&str>,
+        details: Option<&str>,
+        route: Option<&str>,
+    ) -> OpRecord {
+        OpRecord {
+            id,
+            block_number: 100 + id as u64,
+            tx_index: Some(0),
+            tx_hash: format!("0x{id:064x}"),
+            ts,
+            kind: kind.to_string(),
+            kind_raw: kind.to_string(),
+            eoa: eoa.to_string(),
+            contract: contract.map(str::to_string),
+            confidence: confidence.to_string(),
+            canonical_id: None,
+            profit_token: None,
+            profit_amount: None,
+            profit_usd: gross,
+            gas_cost_usd: gas,
+            flashloan_fee_usd: None,
+            volume_usd: gross,
+            net_profit_usd: net,
+            route_json: route.map(str::to_string),
+            victim_hashes: None,
+            details_json: details.map(str::to_string),
+            detector: "test".into(),
+            created_at: ts,
+            subkind: subkind.map(str::to_string),
+            excluded_from_net: Some(false),
+            usd_approximate: Some(false),
+            native_unpriced: Some(false),
+            multi_asset_pricing: Some(false),
+            pricing_clamped: Some(false),
+            flash_fee_unpriced: Some(false),
+        }
+    }
+
+    #[test]
+    fn strategy_series_includes_first_partial_bucket() {
+        let bucket = 3600i64;
+        // Window starts mid-bucket; flooring should still count the bucket.
+        let window = WindowSpec {
+            label: "test".into(),
+            since_ts: 1_700_000_123,
+            until_ts: 1_700_003_600,
+        };
+        let ops = vec![op(
+            1,
+            1_700_000_200,
+            "arb_atomic",
+            None,
+            "exact",
+            Some(1.0),
+            Some(1.5),
+            Some(0.1),
+            "0xeoa1",
+            None,
+            None,
+            None,
+        )];
+        let ss = reduce_strategy_series(&ops, &window, bucket);
+        assert_eq!(ss.len(), 1);
+        assert_eq!(ss[0].ops, 1);
+        assert_eq!(ss[0].confidence, "exact");
+        let floored = (1_700_000_200i64 / bucket) * bucket;
+        assert_eq!(ss[0].bucket_start, floored);
+    }
+
+    #[test]
+    fn strategy_series_splits_confidence() {
+        let window = WindowSpec {
+            label: "t".into(),
+            since_ts: 0,
+            until_ts: 10_000,
+        };
+        let ops = vec![
+            op(
+                1, 100, "jit", None, "exact", Some(1.0), Some(1.0), None, "0xa", None, None, None,
+            ),
+            op(
+                2,
+                100,
+                "jit",
+                None,
+                "inferred",
+                Some(2.0),
+                Some(2.0),
+                None,
+                "0xb",
+                None,
+                None,
+                None,
+            ),
+        ];
+        let ss = reduce_strategy_series(&ops, &window, 3600);
+        assert_eq!(ss.len(), 2);
+        let mut confs: Vec<_> = ss.iter().map(|p| p.confidence.as_str()).collect();
+        confs.sort();
+        assert_eq!(confs, vec!["exact", "inferred"]);
+    }
+
+    #[test]
+    fn series_extended_fields_and_searchers() {
+        let window = WindowSpec {
+            label: "t".into(),
+            since_ts: 0,
+            until_ts: 3_600,
+        };
+        let caps = StoreCaps {
+            user_version: 0,
+            schema_head: 0,
+            has_subkind: true,
+            has_excluded_from_net: true,
+            has_volume_usd: true,
+            has_flashloan_fee_usd: true,
+            has_pricing_flags: true,
+            has_ops_ts_index: false,
+            has_ops_natural_key: false,
+            tables: vec![],
+        };
+        let ops = vec![
+            op(
+                1,
+                10,
+                "arb_atomic",
+                None,
+                "exact",
+                Some(5.0),
+                Some(6.0),
+                Some(0.5),
+                "0xeoa1",
+                Some("0xc1"),
+                None,
+                None,
+            ),
+            op(
+                2,
+                20,
+                "arb_atomic",
+                None,
+                "exact",
+                Some(1.0),
+                Some(2.0),
+                Some(0.2),
+                "0xeoa2",
+                Some("0xc1"),
+                None,
+                None,
+            ),
+        ];
+        let series = reduce_series(&ops, &[], &window, 3600, &caps);
+        let p = series.iter().find(|p| p.ops > 0).expect("bucket");
+        assert_eq!(p.ops, 2);
+        assert!((p.gross_usd - 8.0).abs() < 1e-9);
+        assert!((p.gas_usd - 0.7).abs() < 1e-9);
+        assert_eq!(p.priced_ops, 2);
+        assert_eq!(p.searchers, 1); // same contract competitor
+    }
+
+    #[test]
+    fn scatter_includes_eoa_contract_block() {
+        let ops = vec![op(
+            7,
+            50,
+            "sandwich",
+            None,
+            "exact",
+            Some(1.0),
+            Some(1.0),
+            None,
+            "0xeoa7",
+            Some("0xcontract"),
+            Some(r#"{"tags":["VOLUME_PARTIAL"]}"#),
+            None,
+        )];
+        let pts = reduce_scatter_points(&ops, 100);
+        assert_eq!(pts.len(), 1);
+        assert_eq!(pts[0].eoa, "0xeoa7");
+        assert_eq!(pts[0].contract.as_deref(), Some("0xcontract"));
+        assert_eq!(pts[0].block_number, 107);
+        assert!(pts[0].volume_partial);
+    }
+
+    #[test]
+    fn op_index_row_count_matches_ops() {
+        let ops = vec![
+            op(
+                1,
+                1,
+                "jit",
+                None,
+                "exact",
+                Some(1.0),
+                Some(1.0),
+                None,
+                "0xa",
+                None,
+                Some(r#"{"tags":["flash_arb"]}"#),
+                Some(r#"[{"pool":"0xpool","amm":"v3"}]"#),
+            ),
+            op(
+                2,
+                2,
+                "utility",
+                Some("bundler"),
+                "inferred",
+                None,
+                None,
+                None,
+                "0xb",
+                Some("0xc"),
+                None,
+                None,
+            ),
+        ];
+        let idx = build_op_index(&ops);
+        assert_eq!(idx.rows.len(), 2);
+        assert!(idx.slices.iter().any(|s| s == "jit"));
+        assert!(idx.slices.iter().any(|s| s == "utility/bundler"));
+        assert!(idx.amms.iter().any(|a| a == "v3"));
+        assert!(idx.tags.iter().any(|t| t == "flash_arb"));
+    }
 }

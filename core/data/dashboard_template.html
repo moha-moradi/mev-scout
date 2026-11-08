@@ -58,47 +58,21 @@ a:hover { text-decoration: underline; }
 }
 .nav-ico { width: 18px; text-align: center; opacity: .9; font-size: 12px; }
 .side-foot { margin-top: auto; padding: 12px 10px; color: var(--muted); font: 11px/1.45 var(--mono); opacity: .85; }
-.main { padding: 18px 22px 48px; min-width: 0; }
+.main { padding: 14px 18px 40px; min-width: 0; }
 .topbar {
-  display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; justify-content: space-between;
-  margin-bottom: 18px;
+  display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
 }
 .topbar h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
 .meta { color: var(--muted); font: 12px/1.4 var(--mono); }
+.meta.chain-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chain-ico { width: 16px; height: 16px; flex: 0 0 auto; display: inline-block; vertical-align: middle; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.search, .chip-select {
+.search {
   background: rgba(14,21,32,.9); border: 1px solid var(--line); border-radius: 999px;
-  padding: 9px 14px; min-width: 160px; outline: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.02);
+  padding: 9px 14px; min-width: 240px; outline: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.02);
 }
-.search { min-width: 240px; }
-.search:focus, .chip-select:focus { border-color: rgba(45,212,191,.55); box-shadow: 0 0 0 3px rgba(45,212,191,.12); }
-.filter-bar {
-  display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-start;
-  margin-bottom: 14px; padding: 12px 14px; border-radius: 14px;
-  background: rgba(14,21,32,.72); border: 1px solid var(--line);
-}
-.filter-group { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.filter-group label {
-  font: 10px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
-}
-.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; max-width: 100%; }
-.tag-chip {
-  appearance: none; border: 1px solid var(--line); background: rgba(19,28,42,.95);
-  color: var(--muted); border-radius: 999px; padding: 5px 10px; cursor: pointer;
-  font: 11px/1.2 var(--mono); transition: border-color .12s, color .12s, background .12s;
-}
-.tag-chip:hover { color: var(--ink); border-color: rgba(45,212,191,.45); }
-.tag-chip.active {
-  color: var(--teal); border-color: rgba(45,212,191,.55);
-  background: rgba(45,212,191,.12);
-}
-.tag-chip .n { opacity: .7; margin-left: 4px; }
-.filter-meta { margin-left: auto; align-self: center; color: var(--muted); font: 11px/1.3 var(--mono); }
-.filter-reset {
-  appearance: none; border: 1px solid var(--line); background: transparent; color: var(--muted);
-  border-radius: 999px; padding: 8px 12px; cursor: pointer; font: 11px/1 var(--mono);
-}
-.filter-reset:hover { color: var(--ink); border-color: rgba(251,191,36,.45); }
+.search:focus { border-color: rgba(45,212,191,.55); box-shadow: 0 0 0 3px rgba(45,212,191,.12); }
 .status {
   display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 999px;
   background: rgba(52,211,153,.1); color: var(--mint); font: 11px/1 var(--mono);
@@ -113,32 +87,38 @@ a:hover { text-decoration: underline; }
 .banner.show { display: block; }
 .view { display: none; }
 .view.active { display: block; }
-.grid { display: grid; gap: 14px; }
+.grid { display: grid; gap: 12px; }
 .kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .card {
   background: linear-gradient(180deg, rgba(18,26,38,.95), rgba(14,21,32,.98));
-  border: 1px solid var(--line); border-radius: 14px; padding: 14px 14px 12px;
+  border: 1px solid var(--line); border-radius: 14px; padding: 12px 12px 10px;
   min-width: 0; box-shadow: 0 8px 28px rgba(0,0,0,.22);
 }
 .card h2, .card h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
-.kpi {
-  position: relative; overflow: hidden;
-}
+.live-ops-title { margin: 0; flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: visible; text-overflow: clip; }
+.kpi { position: relative; }
 .kpi-label { color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
 .kpi-value { margin-top: 10px; font: 700 23px/1.05 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
 .kpi-sub { margin-top: 6px; color: var(--muted); font: 11px/1.3 var(--mono); }
-.kpi-spark { position: absolute; right: 8px; bottom: 8px; width: 88px; height: 36px; opacity: .9; }
 .gain { color: var(--mint); }
 .loss { color: var(--coral); }
 .null { color: var(--muted); }
 .row2 { grid-template-columns: 1.6fr 1fr; }
 .row2b { grid-template-columns: 1fr 1fr; }
 .row3 { grid-template-columns: 1.2fr 1fr 1fr; }
-.chart { width: 100%; height: 280px; }
-.chart-sm { height: 220px; }
-.chart-tall { height: 320px; }
-.chart-gauge { height: 140px; }
+.chart { width: 100%; height: 260px; }
+.chart-sm { height: 180px; }
+.chart-tall { height: 300px; }
+.chart-gauge { height: 120px; }
 .table-wrap { overflow: auto; max-height: 340px; }
+.table-wrap, .ops-list, pre.raw {
+  scrollbar-width: thin;
+  scrollbar-color: #2a3a50 transparent;
+}
+.table-wrap::-webkit-scrollbar, .ops-list::-webkit-scrollbar, pre.raw::-webkit-scrollbar { width: 8px; height: 8px; }
+.table-wrap::-webkit-scrollbar-thumb, .ops-list::-webkit-scrollbar-thumb, pre.raw::-webkit-scrollbar-thumb {
+  background: #2a3a50; border-radius: 8px;
+}
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 th { color: var(--muted); font: 10px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; position: sticky; top: 0; background: var(--panel); }
@@ -175,18 +155,26 @@ tr.clickable:hover td, tr.active td { background: rgba(79,209,197,.08); }
 .facts { width: 100%; }
 .facts td:first-child { color: var(--muted); width: 38%; }
 .route {
-  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center;
-  min-height: 120px; padding: 12px 0;
+  display: flex; flex-wrap: nowrap; gap: 10px; align-items: stretch; justify-content: flex-start;
+  min-height: 120px; padding: 12px 0; overflow-x: auto;
 }
 .route-node {
-  min-width: 110px; padding: 12px; border-radius: 999px; text-align: center;
+  min-width: 128px; max-width: 180px; padding: 10px 12px; border-radius: 14px; text-align: center;
   background: var(--panel2); border: 1px solid var(--line); font: 11px/1.35 var(--mono);
+  flex: 0 0 auto;
 }
-.route-node.v3 { border-color: rgba(79,209,197,.45); }
-.route-node.v2 { border-color: rgba(167,139,250,.45); }
-.route-node.v4 { border-color: rgba(96,165,250,.45); }
-.route-node.lb { border-color: rgba(251,191,36,.45); }
-.route-edge { color: var(--muted); font: 11px/1.3 var(--mono); max-width: 140px; text-align: center; }
+.route-node .amm-ico { width: 14px; height: 14px; display: inline-block; vertical-align: -2px; margin-right: 4px; }
+.route-node.v2 { border-color: #a78bfa; box-shadow: inset 0 0 0 1px rgba(167,139,250,.2); }
+.route-node.v3 { border-color: #2dd4bf; box-shadow: inset 0 0 0 1px rgba(45,212,191,.2); }
+.route-node.v4 { border-color: #38bdf8; box-shadow: inset 0 0 0 1px rgba(56,189,248,.2); }
+.route-node.lb { border-color: #fbbf24; box-shadow: inset 0 0 0 1px rgba(251,191,36,.2); }
+.route-edge {
+  color: var(--muted); font: 11px/1.35 var(--mono); min-width: 110px; max-width: 160px;
+  text-align: center; flex: 0 0 auto; align-self: center;
+}
+.route-edge .amt { display: block; color: var(--ink); margin-top: 2px; }
+.token-line { display: block; font-size: 10px; color: var(--muted); word-break: break-all; }
+.token-sym { color: var(--ink); font-weight: 650; }
 .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .cap-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
@@ -220,8 +208,8 @@ pre.raw {
   <main class="main">
     <div class="topbar">
       <div>
-        <h1 id="page-title">Network overview</h1>
-        <div class="meta" id="page-sub"></div>
+        <h1 id="page-title">Overview</h1>
+        <div class="meta chain-line" id="page-sub"></div>
       </div>
       <div class="controls">
         <input class="search" id="global-search" type="search" placeholder="Search tx, address, block…"/>
@@ -229,42 +217,6 @@ pre.raw {
       </div>
     </div>
     <div class="banner" id="trunc-banner"></div>
-    <div class="filter-bar" id="filter-bar" aria-label="Strategy filters">
-      <div class="filter-group">
-        <label for="f-slice">Strategy</label>
-        <select class="chip-select" id="f-slice"></select>
-      </div>
-      <div class="filter-group">
-        <label for="f-conf">Confidence</label>
-        <select class="chip-select" id="f-conf">
-          <option value="all">Exact + inferred</option>
-          <option value="exact">Exact only</option>
-          <option value="inferred">Inferred only</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <label for="f-priced">Pricing</label>
-        <select class="chip-select" id="f-priced">
-          <option value="all">Priced + unpriced</option>
-          <option value="priced">Priced only</option>
-          <option value="unpriced">Unpriced only</option>
-        </select>
-      </div>
-      <div class="filter-group">
-        <label for="f-utility">Scope</label>
-        <select class="chip-select" id="f-utility">
-          <option value="include">MEV + utility</option>
-          <option value="mev">MEV only</option>
-          <option value="utility">Utility only</option>
-        </select>
-      </div>
-      <div class="filter-group" style="flex:1 1 220px">
-        <label>Tags</label>
-        <div class="filter-chips" id="f-tags"></div>
-      </div>
-      <button type="button" class="filter-reset" id="f-reset">Reset filters</button>
-      <div class="filter-meta" id="filter-meta"></div>
-    </div>
 
     <section class="view active" id="view-overview">
       <div class="grid kpis" id="overview-kpis"></div>
@@ -280,9 +232,9 @@ pre.raw {
       <div class="grid row2b" style="margin-top:14px">
         <div class="card"><h2>Top searchers</h2><div id="overview-searchers"></div></div>
         <div class="card">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-            <h2 style="margin:0">Live operations</h2>
-            <span class="pill warn" id="overview-unpriced-badge" style="display:none"></span>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;min-width:0">
+            <h2 class="live-ops-title">Live operations</h2>
+            <span class="pill warn" id="overview-unpriced-badge" style="display:none;flex:0 0 auto"></span>
           </div>
           <div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>Time</th><th>Kind</th><th>Tx</th><th class="num">Net</th></tr></thead><tbody id="overview-ops"></tbody></table></div>
         </div>
@@ -394,13 +346,13 @@ pre.raw {
   var state = {
     view: "overview",
     opHash: null,
-    q: "",
-    slice: "all",
-    confidence: "all",
-    priced: "all",
-    utility: "include",
-    tag: null
+    q: ""
   };
+
+  /* op_index row: [ts, slice_id, conf, flags, actor_id, eoa_id, contract_id|null, block, tx_id,
+     net, gross, gas, vol, flash, tag_ids, legs]
+     conf: 0 exact, 1 inferred, 2 other
+     flags: excluded=1, volume_partial=2, usd_approx=4, native_unpriced=8, multi_asset=16, clamped=32, flash_fee_unpriced=64 */
 
   var SLICE_COLORS = {
     "utility/bundler": "#4fd1c5",
@@ -414,6 +366,7 @@ pre.raw {
     jit_arb: "#2dd4bf",
     skim: "#fbbf24"
   };
+  var AMM_COLORS = { v2: "#a78bfa", v3: "#2dd4bf", v4: "#38bdf8", lb: "#fbbf24" };
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
@@ -511,37 +464,35 @@ pre.raw {
     return { color: "#8b9bb3", fontFamily: "Cascadia Mono, monospace", fontSize: 11 };
   }
 
-  function isUtilitySlice(key) {
-    return String(key || "").indexOf("utility/") === 0 || String(key || "") === "utility";
+  function ammColor(amm) {
+    var k = String(amm || "").toLowerCase();
+    return AMM_COLORS[k] || colorFor(k || "amm");
   }
-  function passesSlice(key) {
-    return state.slice === "all" || key === state.slice;
+  function ammIcon(amm) {
+    var k = String(amm || "").toLowerCase();
+    var c = ammColor(k);
+    if (k === "v3" || k === "v4") {
+      return '<svg class="amm-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="' + c + '" stroke-width="1.6"/><path d="M5 8h6M8 5v6" stroke="' + c + '" stroke-width="1.4"/></svg>';
+    }
+    if (k === "v2") {
+      return '<svg class="amm-ico" viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="2" fill="none" stroke="' + c + '" stroke-width="1.6"/></svg>';
+    }
+    if (k === "lb") {
+      return '<svg class="amm-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 11 L8 3 L13 11 Z" fill="none" stroke="' + c + '" stroke-width="1.6"/></svg>';
+    }
+    return '<svg class="amm-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="none" stroke="' + c + '" stroke-width="1.5"/></svg>';
   }
-  function passesUtility(key) {
-    if (state.utility === "mev") return !isUtilitySlice(key);
-    if (state.utility === "utility") return isUtilitySlice(key);
-    return true;
-  }
-  function passesConfidence(conf) {
-    return state.confidence === "all" || String(conf || "") === state.confidence;
-  }
-  function passesPriced(priced) {
-    if (state.priced === "all") return true;
-    if (state.priced === "priced") return !!priced;
-    return !priced;
-  }
-  function passesTag(tags) {
-    if (!state.tag) return true;
-    var arr = tags || [];
-    for (var i = 0; i < arr.length; i++) if (arr[i] === state.tag) return true;
-    return false;
+  function chainIcon(chainId) {
+    if (chainId === 43114) {
+      return '<svg class="chain-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="#E84142"/><path fill="#fff" d="M12 4.2l1.7 3 1.8 3.1h-3.5L12 4.2zm0 15.6l-1.7-3-1.8-3.1h3.5L12 19.8zM6.2 8.8l3.4-.1L12 12l-2.4 3.3-3.4-.1L6.2 8.8zm11.6 0l-3.4-.1L12 12l2.4 3.3 3.4-.1-1.4-6.4z"/></svg>';
+    }
+    return '<svg class="chain-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" fill="none" stroke="#7f91ab" stroke-width="1.6"/><path d="M8 12h8M12 8v8" stroke="#7f91ab" stroke-width="1.4"/></svg>';
   }
 
   function rollMix() {
     var map = {};
     (P.kind_matrix || []).forEach(function (c) {
       var key = sliceKey(c.kind, c.subkind);
-      if (!passesSlice(key) || !passesUtility(key) || !passesConfidence(c.confidence)) return;
       if (!map[key]) map[key] = { ops: 0, net: 0, gross: 0 };
       map[key].ops += c.ops || 0;
       map[key].net += c.net_usd || 0;
@@ -553,21 +504,8 @@ pre.raw {
       .sort(function (a, b) { return b.ops - a.ops; });
   }
 
-  function filteredStrategySeries() {
-    return (P.strategy_series || []).filter(function (p) {
-      return passesSlice(p.slice_key) && passesUtility(p.slice_key);
-    });
-  }
-
-  function filteredScatter() {
-    return (P.scatter_points || []).filter(function (p) {
-      return passesSlice(p.slice_key)
-        && passesUtility(p.slice_key)
-        && passesConfidence(p.confidence)
-        && passesPriced(p.priced)
-        && passesTag(p.tags);
-    });
-  }
+  function strategySeries() { return P.strategy_series || []; }
+  function scatterPoints() { return P.scatter_points || []; }
 
   function evidenceByHash() {
     var m = {};
@@ -575,15 +513,37 @@ pre.raw {
     return m;
   }
 
-  function filteredEvents() {
+  function indexComplete() {
+    return !!(T.index_complete && P.op_index && (P.op_index.rows || []).length);
+  }
+
+  function searchEvents() {
     var q = (state.q || "").trim().toLowerCase();
-    return (P.events || []).filter(function (e) {
+    var events = P.events || [];
+    if (!q) return events;
+    if (indexComplete()) {
+      var idx = P.op_index;
+      var hit = {};
+      (idx.rows || []).forEach(function (r) {
+        var tx = idx.tx[r[8]] || "";
+        var eoa = idx.eoas[r[5]] || "";
+        var contract = r[6] == null ? "" : (idx.contracts[r[6]] || "");
+        var block = String(r[7] == null ? "" : r[7]);
+        var slice = idx.slices[r[1]] || "";
+        if (tx.toLowerCase().indexOf(q) >= 0
+          || eoa.toLowerCase().indexOf(q) >= 0
+          || contract.toLowerCase().indexOf(q) >= 0
+          || block.indexOf(q) >= 0
+          || slice.toLowerCase().indexOf(q) >= 0) {
+          hit[tx.toLowerCase()] = 1;
+        }
+      });
+      return events.filter(function (e) {
+        return hit[String(e.tx_hash || "").toLowerCase()];
+      });
+    }
+    return events.filter(function (e) {
       var key = sliceKey(e.kind, e.subkind);
-      if (!passesSlice(key) || !passesUtility(key)) return false;
-      if (!passesConfidence(e.confidence)) return false;
-      if (!passesPriced(e.profit_usd != null)) return false;
-      if (!passesTag(e.tags)) return false;
-      if (!q) return true;
       var tagHay = (e.tags || []).join(" ").toLowerCase();
       return String(e.tx_hash).toLowerCase().indexOf(q) >= 0
         || String(e.eoa).toLowerCase().indexOf(q) >= 0
@@ -592,66 +552,6 @@ pre.raw {
         || key.toLowerCase().indexOf(q) >= 0
         || tagHay.indexOf(q) >= 0;
     });
-  }
-
-  function availableSlices() {
-    var seen = {};
-    var out = [];
-    function add(key) {
-      if (!key || seen[key]) return;
-      seen[key] = 1;
-      out.push(key);
-    }
-    (P.kind_matrix || []).forEach(function (c) {
-      if ((c.ops || 0) > 0) add(sliceKey(c.kind, c.subkind));
-    });
-    (P.events || []).forEach(function (e) { add(sliceKey(e.kind, e.subkind)); });
-    out.sort(function (a, b) { return sliceLabel(a).localeCompare(sliceLabel(b)); });
-    return out;
-  }
-
-  function renderFilterBar() {
-    var sel = $("f-slice");
-    if (sel && sel.options.length <= 1) {
-      var opts = '<option value="all">All strategies</option>';
-      availableSlices().forEach(function (k) {
-        opts += '<option value="' + esc(k) + '">' + esc(sliceLabel(k)) + "</option>";
-      });
-      sel.innerHTML = opts;
-    }
-    if (sel) sel.value = state.slice;
-    if ($("f-conf")) $("f-conf").value = state.confidence;
-    if ($("f-priced")) $("f-priced").value = state.priced;
-    if ($("f-utility")) $("f-utility").value = state.utility;
-
-    var facets = P.tag_facets || [];
-    var host = $("f-tags");
-    if (host) {
-      if (!facets.length) {
-        host.innerHTML = '<span class="null">No tags in window</span>';
-      } else {
-        host.innerHTML = facets.slice(0, 24).map(function (f) {
-          var active = state.tag === f.value ? " active" : "";
-          var warn = f.out_of_catalogue ? ' title="out of catalogue"' : "";
-          return '<button type="button" class="tag-chip' + active + '" data-tag="'
-            + esc(f.value) + '"' + warn + ">" + esc(f.value)
-            + '<span class="n">' + (f.ops || 0) + "</span></button>";
-        }).join("");
-      }
-    }
-    var n = filteredEvents().length;
-    var total = (P.events || []).length;
-    var bits = [];
-    if (state.slice !== "all") bits.push(sliceLabel(state.slice));
-    if (state.confidence !== "all") bits.push(state.confidence);
-    if (state.priced !== "all") bits.push(state.priced);
-    if (state.utility !== "include") bits.push(state.utility === "mev" ? "MEV only" : "utility only");
-    if (state.tag) bits.push("#" + state.tag);
-    $("filter-meta").textContent = (bits.length ? bits.join(" · ") + " · " : "")
-      + n + "/" + total + " ops shown"
-      + (state.tag || state.priced !== "all"
-        ? " · tag/priced → ops+scatter"
-        : "");
   }
 
   function unpricedJitCount() {
@@ -672,7 +572,7 @@ pre.raw {
       if (el) el.classList.toggle("active", v === name);
     });
     var titles = {
-      overview: "Network overview",
+      overview: "Overview",
       analytics: "MEV analytics",
       operations: "Operations",
       searchers: "Searchers",
@@ -690,84 +590,52 @@ pre.raw {
 
   function renderChrome() {
     var chain = (S.db && S.db.chain_label) || "chain";
+    var chainId = S.db && S.db.chain_id;
     var win = (S.window && S.window.label) || "window";
-    $("page-sub").textContent = chain + " · window " + win
-      + (C.indexed_to != null ? " · indexed_to " + C.indexed_to : "");
+    $("page-sub").innerHTML = chainIcon(chainId)
+      + "<span>" + esc(chain) + " · window " + esc(win)
+      + (C.indexed_to != null ? " · indexed_to " + C.indexed_to : "")
+      + "</span>";
     $("side-meta").innerHTML = "v" + esc((S.generator && S.generator.version) || "?")
       + "<br>" + esc((S.db && S.db.status) || "")
       + "<br>schema " + esc((S.db && S.db.user_version) + "/" + (S.db && S.db.schema_head));
     var lag = (C.head != null && C.indexed_to != null) ? (C.head - C.indexed_to) : null;
     $("sync-status").innerHTML = "<i></i><span>" +
       (lag == null ? "Indexed" : (lag <= 5 ? "Synced" : ("Lag " + lag))) + "</span>";
+    var bits = [];
     if (T.hit_budget || (T.ops_emitted != null && T.ops_total != null && T.ops_emitted < T.ops_total)) {
+      bits.push("Event/evidence truncated: " + (T.ops_emitted || 0) + "/" + (T.ops_total || 0) + " ops emitted");
+    }
+    if (T.index_complete === false) {
+      bits.push("op_index cleared by budget — search uses emitted events only");
+    }
+    if (bits.length) {
       $("trunc-banner").className = "banner show";
-      $("trunc-banner").textContent = "Event/evidence rows truncated: "
-        + (T.ops_emitted || 0) + "/" + (T.ops_total || 0)
-        + " ops emitted. Aggregates (KPI, strategy_series, scatter) use full window.";
+      $("trunc-banner").textContent = bits.join(" · ") + ". Aggregates (KPI, strategy_series, scatter) use full window.";
     }
     var sem = S.semantics || {};
     $("semantics-foot").textContent =
       (sem.usd_columns_are || "USD approximate") + " · " + (sem.null_usd_means || "null is unpriced, never zero");
   }
 
-  function sparkOption(data, color) {
-    return {
-      backgroundColor: "transparent",
-      animation: false,
-      grid: { left: 0, right: 0, top: 2, bottom: 0 },
-      xAxis: { type: "category", show: false, data: data.map(function (_, i) { return i; }) },
-      yAxis: { type: "value", show: false, scale: true },
-      series: [{
-        type: "line", data: data, smooth: true, symbol: "none",
-        lineStyle: { width: 1.6, color: color || "#2dd4bf" },
-        areaStyle: { color: color || "#2dd4bf", opacity: 0.12 }
-      }]
-    };
-  }
-
   function renderOverview() {
     var priced = Q.ops_priced || 0;
     var ops = K.ops || 0;
     var series = P.series || [];
-    var netSpark = [];
-    var opsSpark = [];
-    var gasSpark = [];
-    var run = 0;
-    series.forEach(function (p) {
-      run += p.net_usd || 0;
-      netSpark.push(+run.toFixed(6));
-      opsSpark.push(p.ops || 0);
-      gasSpark.push(p.ops || 0);
-    });
-    var covSpark = series.map(function (p, i) {
-      return i + 1;
-    });
     $("overview-kpis").innerHTML = [
-      { l: "Net MEV profit", v: usd(K.net_usd, true), s: cov(K.net_priced, ops), spark: "kpi-net", color: "#34d399", data: netSpark },
-      { l: "Gross profit", v: usd(K.gross_usd, false), s: cov(K.gross_priced, ops), spark: "kpi-gross", color: "#a78bfa", data: netSpark },
-      { l: "MEV operations", v: String(ops), s: "", spark: "kpi-ops", color: "#38bdf8", data: opsSpark },
-      { l: "Searchers", v: String(K.searchers || 0), s: "competitors " + (K.competitors || 0), spark: "kpi-searchers", color: "#2dd4bf", data: opsSpark },
-      { l: "Gas", v: usd(K.gas_usd, false), s: cov(K.gas_priced, ops), spark: "kpi-gas", color: "#fb7185", data: gasSpark },
-      { l: "Pricing coverage", v: (Q.pricing_coverage_pct != null ? Q.pricing_coverage_pct.toFixed(1) + "%" : "—"), s: priced + " / " + ops + " priced", spark: "kpi-cov", color: "#fbbf24", data: covSpark }
+      { l: "Net MEV profit", v: usd(K.net_usd, true), s: cov(K.net_priced, ops) },
+      { l: "Gross profit", v: usd(K.gross_usd, false), s: cov(K.gross_priced, ops) },
+      { l: "MEV operations", v: String(ops), s: "" },
+      { l: "Searchers", v: String(K.searchers || 0), s: "competitors " + (K.competitors || 0) },
+      { l: "Gas", v: usd(K.gas_usd, false), s: cov(K.gas_priced, ops) },
+      { l: "Pricing coverage", v: (Q.pricing_coverage_pct != null ? Q.pricing_coverage_pct.toFixed(1) + "%" : "—"), s: priced + " / " + ops + " priced" }
     ].map(function (x) {
       return '<div class="card kpi"><div class="kpi-label">' + esc(x.l) + '</div><div class="kpi-value">'
-        + x.v + '</div><div class="kpi-sub">' + esc(x.s) + '</div>'
-        + '<div class="kpi-spark" id="' + x.spark + '"></div></div>';
+        + x.v + '</div><div class="kpi-sub">' + esc(x.s) + "</div></div>";
     }).join("");
-    [
-      ["kpi-net", netSpark, "#34d399"],
-      ["kpi-gross", netSpark, "#a78bfa"],
-      ["kpi-ops", opsSpark, "#38bdf8"],
-      ["kpi-searchers", opsSpark, "#2dd4bf"],
-      ["kpi-gas", gasSpark, "#fb7185"],
-      ["kpi-cov", covSpark, "#fbbf24"]
-    ].forEach(function (row) {
-      var c = chart(row[0]);
-      if (c && row[1].length) c.setOption(sparkOption(row[1], row[2]));
-    });
 
     var mix = rollMix();
-    var ss = filteredStrategySeries();
+    var ss = strategySeries();
     var buckets = [];
     var slices = [];
     var seenB = {}, seenS = {};
@@ -894,7 +762,7 @@ pre.raw {
     else if ((Q.ops_unpriced || 0) > 0) { badge.style.display = ""; badge.textContent = Q.ops_unpriced + " unpriced"; }
     else badge.style.display = "none";
 
-    $("overview-ops").innerHTML = filteredEvents().slice().reverse().slice(0, 40).map(function (e) {
+    $("overview-ops").innerHTML = searchEvents().slice().reverse().slice(0, 40).map(function (e) {
       var key = sliceKey(e.kind, e.subkind);
       return '<tr class="clickable" data-hash="' + esc(e.tx_hash) + '"><td>' + esc(relTime(e.ts))
         + '</td><td><span class="' + pillClass(key) + '" title="' + esc(familyLabel(key)) + '">'
@@ -955,12 +823,12 @@ pre.raw {
           type: "treemap", roam: false, nodeClick: false, breadcrumb: { show: false },
           label: { color: "#eef3fb" },
           data: Object.keys(ammMap).map(function (k) {
-            return { name: k, value: ammMap[k], itemStyle: { color: colorFor(k) } };
+            return { name: k, value: ammMap[k], itemStyle: { color: ammColor(k) } };
           })
         }]
       });
     }
-    var pts = filteredScatter().filter(function (p) {
+    var pts = scatterPoints().filter(function (p) {
       return p.priced && p.volume_usd != null && p.net_profit_usd != null && p.volume_usd > 0;
     });
     var cSc = chart("chart-pools-scatter");
@@ -989,7 +857,7 @@ pre.raw {
         }]
       });
     }
-    var unp = filteredScatter().filter(function (p) { return !p.priced; }).length;
+    var unp = scatterPoints().filter(function (p) { return !p.priced; }).length;
     $("pools-scatter-cap").textContent = unp
       + " unpriced operations excluded from USD axes · volume on log scale";
   }
@@ -1001,7 +869,7 @@ pre.raw {
 
   function renderAnalytics() {
     var mix = rollMix();
-    var ss = filteredStrategySeries();
+    var ss = strategySeries();
     var buckets = [];
     var slices = [];
     var seenB = {}, seenS = {};
@@ -1123,13 +991,13 @@ pre.raw {
           breadcrumb: { show: false },
           label: { color: "#e8eef7" },
           data: Object.keys(ammMap).map(function (k) {
-            return { name: k, value: ammMap[k], itemStyle: { color: colorFor(k) } };
+            return { name: k, value: ammMap[k], itemStyle: { color: ammColor(k) } };
           })
         }]
       });
     }
 
-    var pts = filteredScatter().filter(function (p) {
+    var pts = scatterPoints().filter(function (p) {
       return p.priced && p.volume_usd != null && p.net_profit_usd != null
         && p.volume_usd > 0;
     });
@@ -1139,7 +1007,7 @@ pre.raw {
         backgroundColor: "transparent",
         tooltip: {
           formatter: function (p) {
-            var d = p.data;
+            var d = p.data.value || p.data;
             return esc(sliceLabel(d[3])) + "<br>Volume " + usd(d[0], false)
               + "<br>Net " + usd(d[1], true)
               + (d[4] ? "<br>VOLUME_PARTIAL" : "")
@@ -1167,13 +1035,13 @@ pre.raw {
         }]
       });
     }
-    var unp = filteredScatter().filter(function (p) { return !p.priced; }).length;
+    var unp = scatterPoints().filter(function (p) { return !p.priced; }).length;
     $("analytics-scatter-cap").textContent = unp
       + " unpriced operations excluded from USD axes · volume outliers keep raw magnitude (log scale)";
   }
 
   function renderOperationsList() {
-    var rows = filteredEvents().slice().reverse();
+    var rows = searchEvents().slice().reverse();
     $("ops-tbody").innerHTML = rows.map(function (e) {
       var key = sliceKey(e.kind, e.subkind);
       var active = state.opHash === e.tx_hash ? " active" : "";
@@ -1189,6 +1057,18 @@ pre.raw {
     renderOpDetail();
   }
 
+  function tokenLabel(addr, symbol, name) {
+    var a = addr || "";
+    var sym = symbol || "";
+    var nm = name || "";
+    var top = sym
+      ? ('<span class="token-sym">' + esc(sym) + "</span>" + (nm ? " · " + esc(nm) : ""))
+      : (nm ? esc(nm) : esc(short(a) || "token"));
+    return top + (a
+      ? '<span class="token-line" title="' + esc(a) + '">' + esc(short(a)) + "</span>"
+      : "");
+  }
+
   function renderOpDetail() {
     renderOperationsList();
     var evMap = evidenceByHash();
@@ -1197,6 +1077,11 @@ pre.raw {
     if (!ev && !row) {
       $("op-empty").style.display = "";
       $("op-body").style.display = "none";
+      if (state.opHash && T.evidence_emitted === 0) {
+        $("op-empty").textContent = "Evidence cleared by budget — open a regenerated artifact or raise --budget-mb.";
+      } else {
+        $("op-empty").textContent = "Select an operation";
+      }
       return;
     }
     $("op-empty").style.display = "none";
@@ -1208,8 +1093,16 @@ pre.raw {
     var priced = ((ev && ev.profit_usd) != null) || ((row && row.profit_usd) != null);
     $("op-crumb").textContent = "Operations / " + short(state.opHash);
     $("op-title").textContent = sliceLabel(key);
-    $("op-badges").innerHTML = confidenceBadge(conf)
+    var badges = confidenceBadge(conf)
       + (priced ? ' <span class="pill ok">Priced</span>' : ' <span class="pill warn">Unpriced</span>');
+    if (ev && ev.excluded_from_net) badges += ' <span class="pill bad">excluded_from_net</span>';
+    if (ev && ev.usd_approximate) badges += ' <span class="pill warn">usd_approximate</span>';
+    if (ev && ev.native_unpriced) badges += ' <span class="pill warn">native_unpriced</span>';
+    if (ev && ev.multi_asset_pricing) badges += ' <span class="pill warn">multi_asset_pricing</span>';
+    if (ev && ev.pricing_clamped) badges += ' <span class="pill warn">pricing_clamped</span>';
+    if (ev && ev.flash_fee_unpriced) badges += ' <span class="pill warn">flash_fee_unpriced</span>';
+    if (!ev && row) badges += ' <span class="pill warn">evidence not emitted</span>';
+    $("op-badges").innerHTML = badges;
 
     var net = ev ? ev.net_profit_usd : row.net_profit_usd;
     var gross = ev ? ev.profit_usd : row.profit_usd;
@@ -1232,6 +1125,7 @@ pre.raw {
       if (gross != null) steps.push({ name: "Gross", value: gross });
       if (gas != null) steps.push({ name: "Gas", value: -Math.abs(gas) });
       if (flash != null) steps.push({ name: "Flash fee", value: -Math.abs(flash) });
+      else if (ev && ev.flash_fee_unpriced) steps.push({ name: "Flash fee ?", value: 0, unpriced: true });
       if (net != null) steps.push({ name: "Net", value: net, isNet: true });
       // ECharts waterfall via helper totals
       var help = [];
@@ -1281,37 +1175,55 @@ pre.raw {
     route.forEach(function (leg) { if (leg.amm) amms[leg.amm] = 1; });
     var pools = {};
     route.forEach(function (leg) { if (leg.pool) pools[leg.pool] = 1; });
-    $("op-facts").innerHTML = [
+    var factRows = [
       ["Block", (ev && ev.block_number) || (row && row.block_number) || "—"],
       ["Detector", (ev && ev.detector) || (row && row.detector) || "—"],
       ["Confidence", conf || "—"],
       ["PnL basis", (ev && ev.pnl_basis) || (row && row.pnl_basis) || "—"],
       ["Pricing", (ev && ev.usd_approximate) ? "Approximate USD" : (priced ? "Priced" : "Unpriced")],
       ["Route", route.length + " hops · " + Object.keys(pools).length + " pools · " + Object.keys(amms).length + " AMM"]
-    ].map(function (r) {
+    ];
+    if (ev && ev.flash_fee_unpriced) {
+      factRows.push(["Flash fee", "unpriced — omitted from USD waterfall"]);
+    }
+    if (!ev && row) {
+      factRows.push(["Evidence", "not emitted (budget/cap)"]);
+    }
+    $("op-facts").innerHTML = factRows.map(function (r) {
       return "<tr><td>" + esc(r[0]) + "</td><td>" + esc(String(r[1])) + "</td></tr>";
     }).join("");
 
     if (!route.length) {
-      $("op-route").innerHTML = '<div class="empty">No route legs</div>';
+      $("op-route").innerHTML = !ev && row
+        ? '<div class="empty">Route unavailable — evidence not emitted</div>'
+        : '<div class="empty">No route legs</div>';
       $("op-route-cap").textContent = "";
     } else {
       var html = "";
       var nonReg = false;
       route.forEach(function (leg, i) {
         if (i) {
-          html += '<div class="route-edge">' + esc(short(leg.token_in || "")) + " → "
-            + esc(short(leg.token_out || "")) + "</div>";
+          var ain = leg.amount_in_human || leg.amount_in;
+          var aout = leg.amount_out_human || leg.amount_out;
+          html += '<div class="route-edge">'
+            + tokenLabel(leg.token_in, leg.token_in_symbol, leg.token_in_name)
+            + " → "
+            + tokenLabel(leg.token_out, leg.token_out_symbol, leg.token_out_name)
+            + (ain || aout
+              ? '<span class="amt">' + esc(ain || "?") + " → " + esc(aout || "?") + "</span>"
+              : "")
+            + "</div>";
         }
         var amm = leg.amm || "?";
         if (leg.token_source && leg.token_source !== "registry") nonReg = true;
-        html += '<div class="route-node ' + esc(amm) + '"><div><b>' + esc(amm) + "</b></div><div>"
+        html += '<div class="route-node ' + esc(String(amm).toLowerCase()) + '"><div>'
+          + ammIcon(amm) + "<b>" + esc(amm) + "</b></div><div title=\"" + esc(leg.pool || "") + "\">"
           + esc(short(leg.pool || "")) + "</div></div>";
       });
       $("op-route").innerHTML = html;
       $("op-route-cap").textContent = nonReg
         ? "Observed AMM labels · proximity/non-registry token source on at least one leg"
-        : "Observed AMM labels from route_json";
+        : "Observed AMM · symbol/name/address + humanized amounts when decimals known";
     }
 
     var tags = (ev && ev.tags) || [];
@@ -1429,7 +1341,6 @@ pre.raw {
   }
 
   function renderView() {
-    renderFilterBar();
     if (state.view === "overview") renderOverview();
     else if (state.view === "analytics") renderAnalytics();
     else if (state.view === "operations") renderOpDetail();
@@ -1441,15 +1352,6 @@ pre.raw {
         if (charts[id]) try { charts[id].resize(); } catch (e) {}
       });
     }, 30);
-  }
-
-  function resetFilters() {
-    state.slice = "all";
-    state.confidence = "all";
-    state.priced = "all";
-    state.utility = "include";
-    state.tag = null;
-    renderView();
   }
 
   function parseHash() {
@@ -1472,25 +1374,6 @@ pre.raw {
     state.q = e.target.value || "";
     renderView();
   });
-  ["f-slice", "f-conf", "f-priced", "f-utility"].forEach(function (id) {
-    var el = $(id);
-    if (!el) return;
-    el.addEventListener("change", function () {
-      if (id === "f-slice") state.slice = el.value || "all";
-      if (id === "f-conf") state.confidence = el.value || "all";
-      if (id === "f-priced") state.priced = el.value || "all";
-      if (id === "f-utility") state.utility = el.value || "include";
-      renderView();
-    });
-  });
-  $("f-tags").addEventListener("click", function (e) {
-    var btn = e.target.closest("button[data-tag]");
-    if (!btn) return;
-    var tag = btn.getAttribute("data-tag");
-    state.tag = state.tag === tag ? null : tag;
-    renderView();
-  });
-  $("f-reset").addEventListener("click", resetFilters);
   document.body.addEventListener("click", function (e) {
     var tr = e.target.closest("tr[data-hash]");
     if (tr) openOp(tr.getAttribute("data-hash"));
