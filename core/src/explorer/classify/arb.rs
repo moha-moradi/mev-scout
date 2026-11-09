@@ -175,13 +175,14 @@ pub(super) fn classify_atomic_arbs(
         // non-swap third party, attribute Inferred + forwarded_profit (unless
         // that party is a tip sink / coinbase).
         let mut forwarded_from: Option<Address> = None;
-        let forwarded = forwarded_anchor_recipient(
+        let mut forwarded_token: Option<Address> = None;
+        let forwarded = forwarded_recipient(
             &ledger,
             &tx.transfers,
             &tx.swaps,
             &profit_candidates,
             &input.tip_sinks,
-            anchor,
+            &input.ctx.profit_policy.priority,
             tx.from,
             tx.to,
         );
@@ -199,8 +200,10 @@ pub(super) fn classify_atomic_arbs(
                 ForwardedLookup::Hit {
                     recipient,
                     forwarded_from: from_addr,
+                    token,
                 } => {
                     forwarded_from = Some(*from_addr);
+                    forwarded_token = Some(*token);
                     Some(*recipient)
                 }
                 ForwardedLookup::TipSink | ForwardedLookup::None => None,
@@ -218,7 +221,33 @@ pub(super) fn classify_atomic_arbs(
         // contract ledger still shows +amountOut (funding credit + cycle).
         // Combine with the EOA's negative anchor residual so profit is
         // amountOut−amountIn, not the gross contract balance.
-        let amount = anchor_profit_amount(&ledger, tx.from, searcher, anchor);
+        //
+        // The profit is not always in the anchor token: an exact-input route
+        // repays the anchor leg exactly (net zero) and keeps the surplus in
+        // another priority token (usually wrapped native). mev.zone reports
+        // that surplus as the tx profit, so fall back to the first priority
+        // token with a positive residual. Forwarded profit uses the token the
+        // beneficiary actually received.
+        let (profit_token, amount) = if let Some(token) = forwarded_token {
+            (token, profit_amount(&ledger, tx.from, searcher, token))
+        } else {
+            let anchor_amount = profit_amount(&ledger, tx.from, searcher, anchor);
+            if !anchor_amount.is_zero() {
+                (anchor, anchor_amount)
+            } else {
+                input
+                    .ctx
+                    .profit_policy
+                    .priority
+                    .iter()
+                    .filter(|t| **t != anchor)
+                    .find_map(|t| {
+                        let amt = profit_amount(&ledger, tx.from, searcher, *t);
+                        (!amt.is_zero()).then_some((*t, amt))
+                    })
+                    .unwrap_or((anchor, U256::ZERO))
+            }
+        };
         if amount.is_zero() {
             rejects.push(classify_reject(
                 input.block,
@@ -252,13 +281,14 @@ pub(super) fn classify_atomic_arbs(
             continue;
         }
 
-        // Anchor-only profit (matches mev.zone amountOut−amountIn). Extra
-        // positive residuals stay in details, not profit_tokens (USD-sum).
-        let profit_tokens: Vec<(Address, U256)> = vec![(anchor, amount)];
+        // Anchor-token profit when the cycle returns the surplus in the start
+        // token; otherwise the priority token that retained it. Extra positive
+        // residuals stay in details, not profit_tokens (USD-sum).
+        let profit_tokens: Vec<(Address, U256)> = vec![(profit_token, amount)];
         let other_positives: Vec<serde_json::Value> = ledger
             .positive_tokens(searcher)
             .into_iter()
-            .filter(|t| *t != anchor)
+            .filter(|t| *t != profit_token)
             .map(|t| {
                 serde_json::json!({
                     "token": format!("{t:#x}"),
@@ -288,7 +318,7 @@ pub(super) fn classify_atomic_arbs(
             "pnl": {
                 "basis": PnlBasis::R.as_str(),
                 "profit_amount": amount.to_string(),
-                "profit_token": format!("{anchor:#x}"),
+                "profit_token": format!("{profit_token:#x}"),
             },
             "other_residuals": other_positives,
             "route": tx.swaps.iter().map(|s| serde_json::json!({
@@ -315,7 +345,7 @@ pub(super) fn classify_atomic_arbs(
         }
         events.push(MevEvent {
             pools: tx.swaps.iter().map(|s| s.pool).collect(),
-            profit_token: Some(anchor),
+            profit_token: Some(profit_token),
             profit_amount: Some(amount),
             profit_tokens,
             gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
@@ -574,6 +604,7 @@ enum ForwardedLookup {
     Hit {
         recipient: Address,
         forwarded_from: Address,
+        token: Address,
     },
     /// Single residual holder is coinbase / configured tip sink — not PnL.
     TipSink,
@@ -583,15 +614,19 @@ enum ForwardedLookup {
 /// When no searcher candidate holds a positive anchor residual, recover a
 /// single third-party recipient that received the cycle profit solely from
 /// `tx.from` / `tx.to` and did not participate in swaps.
+///
+/// The surplus is not always denominated in the anchor token: an exact-input
+/// route can repay the anchor leg to the wei and forward the remainder in
+/// wrapped native. Every priority token is therefore considered, in order.
 // Eight correlated ledger views of one tx.
 #[allow(clippy::too_many_arguments)]
-fn forwarded_anchor_recipient(
+fn forwarded_recipient(
     ledger: &DeltaLedger,
     transfers: &[TransferFact],
     swaps: &[SwapFact],
     candidates: &[Address],
     tip_sinks: &HashSet<Address>,
-    anchor: Address,
+    tokens: &[Address],
     from: Address,
     to: Option<Address>,
 ) -> ForwardedLookup {
@@ -600,53 +635,54 @@ fn forwarded_anchor_recipient(
         .filter(|s| !has_unresolved_tokens(s) && s.amm != Amm::Aggregator)
         .map(|s| s.pool)
         .collect();
-    let mut holders: Vec<Address> = ledger
-        .pos
-        .keys()
-        .filter(|(addr, tok)| {
-            *tok == anchor
-                && !addr.is_zero()
-                && !candidates.contains(addr)
-                && !route_pools.contains(addr)
-                && ledger.net(*addr, anchor) > U256::ZERO
-        })
-        .map(|(addr, _)| *addr)
-        .collect();
-    holders.sort();
-    holders.dedup();
-    if holders.len() != 1 {
-        return ForwardedLookup::None;
-    }
-    let recipient = holders[0];
-    if tip_sinks.contains(&recipient) {
-        return ForwardedLookup::TipSink;
-    }
-    // Recipient must not have funded any swap leg (not a cycle actor).
-    if swaps.iter().any(|s| s.owner == Some(recipient)) {
-        return ForwardedLookup::None;
-    }
     let funders: HashSet<Address> = [Some(from), to].into_iter().flatten().collect();
-    let inbound: Vec<&TransferFact> = transfers
-        .iter()
-        .filter(|t| t.token == anchor && t.to == recipient && !t.amount.is_zero())
-        .collect();
-    if inbound.is_empty() {
-        return ForwardedLookup::None;
+    for token in tokens {
+        let mut holders: Vec<Address> = ledger
+            .pos
+            .keys()
+            .filter(|(addr, tok)| {
+                *tok == *token
+                    && !addr.is_zero()
+                    && !candidates.contains(addr)
+                    && !route_pools.contains(addr)
+                    && ledger.net(*addr, *token) > U256::ZERO
+            })
+            .map(|(addr, _)| *addr)
+            .collect();
+        holders.sort();
+        holders.dedup();
+        if holders.len() != 1 {
+            continue;
+        }
+        let recipient = holders[0];
+        // Recipient must not have funded any swap leg (not a cycle actor).
+        if swaps.iter().any(|s| s.owner == Some(recipient)) {
+            continue;
+        }
+        let inbound: Vec<&TransferFact> = transfers
+            .iter()
+            .filter(|t| t.token == *token && t.to == recipient && !t.amount.is_zero())
+            .collect();
+        if inbound.is_empty() || !inbound.iter().all(|t| funders.contains(&t.from)) {
+            continue;
+        }
+        if tip_sinks.contains(&recipient) {
+            return ForwardedLookup::TipSink;
+        }
+        // Prefer the contract (`to`) as forwarded_from when it sent; else EOA.
+        let forwarded_from = to
+            .filter(|c| inbound.iter().any(|t| t.from == *c))
+            .unwrap_or(from);
+        if forwarded_from.is_zero() {
+            continue;
+        }
+        return ForwardedLookup::Hit {
+            recipient,
+            forwarded_from,
+            token: *token,
+        };
     }
-    if !inbound.iter().all(|t| funders.contains(&t.from)) {
-        return ForwardedLookup::None;
-    }
-    // Prefer the contract (`to`) as forwarded_from when it sent; else EOA.
-    let forwarded_from = to
-        .filter(|c| inbound.iter().any(|t| t.from == *c))
-        .unwrap_or(from);
-    if forwarded_from.is_zero() {
-        return ForwardedLookup::None;
-    }
-    ForwardedLookup::Hit {
-        recipient,
-        forwarded_from,
-    }
+    ForwardedLookup::None
 }
 
 /// flow ownership: a closed cycle must be attributable
@@ -662,8 +698,10 @@ fn forwarded_anchor_recipient(
 /// input is funded by the previous pool rather than by the searcher contract
 /// (regression: 5 mev.zone arbs where exactly one hop was funded by a route
 /// pool while the rest were funded by the searcher). Only *external* owners
-/// must collapse to a single candidate; a pool never appearing in the
-/// resolved route (e.g. an aggregator/router) is not neutralized.
+/// must be tx-level actors. A multi-router route is still one searcher's
+/// cycle when every external funder is a candidate (sender, receiver-side
+/// contract, or a transfer participant): the executor contract and the
+/// searcher contract each fund their own legs.
 pub(crate) fn flow_attributable(swaps: &[SwapFact], candidates: &[Address]) -> bool {
     let route_pools: HashSet<Address> = swaps
         .iter()
@@ -675,7 +713,7 @@ pub(crate) fn flow_attributable(swaps: &[SwapFact], candidates: &[Address]) -> b
         })
         .map(|s| s.pool)
         .collect();
-    let mut owner: Option<Address> = None;
+    let mut owners: Vec<Address> = Vec::new();
     for s in swaps {
         if has_unresolved_tokens(s) {
             continue;
@@ -686,26 +724,17 @@ pub(crate) fn flow_attributable(swaps: &[SwapFact], candidates: &[Address]) -> b
         if route_pools.contains(&o) {
             continue; // intermediate hop funded by a pool of this route
         }
-        match owner {
-            Some(cur) if cur != o => return false,
-            _ => owner = Some(o),
+        if !owners.contains(&o) {
+            owners.push(o);
         }
     }
-    match owner {
-        None => true, // nothing to disprove
-        Some(o) => candidates.contains(&o),
-    }
+    owners.iter().all(|o| candidates.contains(o))
 }
 
 /// Anchor profit: searcher net, or searcher+EOA when the EOA funded the
 /// searcher (so capital inflow is not counted as profit).
-fn anchor_profit_amount(
-    ledger: &DeltaLedger,
-    eoa: Address,
-    searcher: Address,
-    anchor: Address,
-) -> U256 {
-    let searcher_net = ledger.net_signed(searcher, anchor);
+fn profit_amount(ledger: &DeltaLedger, eoa: Address, searcher: Address, token: Address) -> U256 {
+    let searcher_net = ledger.net_signed(searcher, token);
     if eoa.is_zero() || eoa == searcher {
         return if searcher_net.is_positive() {
             searcher_net.into_raw()
@@ -713,7 +742,7 @@ fn anchor_profit_amount(
             U256::ZERO
         };
     }
-    let eoa_net = ledger.net_signed(eoa, anchor);
+    let eoa_net = ledger.net_signed(eoa, token);
     let funded = eoa_net.is_negative() && searcher_net.is_positive();
     let combined = if funded {
         searcher_net + eoa_net
@@ -964,6 +993,145 @@ mod split_tests {
         assert_eq!(bundlers.len(), 1);
         assert_eq!(bundlers[0].kind, MevKind::Utility);
         assert_eq!(bundlers[0].details["protocol"], "erc4337");
+    }
+}
+
+#[cfg(test)]
+mod attribution_tests {
+    use super::*;
+    use crate::explorer::classify::classify_block;
+    use crate::explorer::test_fixtures::{
+        block, swap, swap_owned, transfer, tx_to, ATK, POOL_A, POOL_B, TOKA, USDC, WNATIVE,
+    };
+    use alloy::primitives::address;
+
+    const EXEC: Address = address!("9000000000000000000000000000000000000009");
+    const POOL_C: Address = address!("3000000000000000000000000000000000000003");
+    const BENEFICIARY: Address = address!("b000000000000000000000000000000000000001");
+    const FUNDER: Address = address!("5000000000000000000000000000000000000005");
+
+    fn arb_event(input: &BlockInput) -> (MevEvent, Vec<RejectedCandidate>) {
+        let out = classify_block(input);
+        let ev = out
+            .events
+            .iter()
+            .find(|e| e.kind == MevKind::ArbAtomic)
+            .cloned();
+        (
+            ev.unwrap_or_else(|| panic!("no arb event; rejects: {:?}", out.rejects)),
+            out.rejects,
+        )
+    }
+
+    /// Exact-input route: the last hop returns exactly the 100 USDC anchor
+    /// input, so the anchor nets zero and the surplus is retained as 10
+    /// WNATIVE by the executor. Profit must be reported in WNATIVE.
+    #[test]
+    fn profit_retained_in_priority_token_when_anchor_nets_zero() {
+        let mut input = block(vec![tx_to(
+            0,
+            ATK,
+            EXEC,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, WNATIVE, 200, 50),
+                swap(POOL_C, WNATIVE, USDC, 40, 100),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, EXEC, 200),
+                transfer(2, TOKA, EXEC, POOL_B, 200),
+                transfer(3, WNATIVE, POOL_B, EXEC, 50),
+                transfer(4, WNATIVE, EXEC, POOL_C, 40),
+                transfer(5, USDC, POOL_C, ATK, 100),
+            ],
+        )]);
+        input.ctx.profit_policy.priority.push(WNATIVE);
+
+        let (ev, _) = arb_event(&input);
+        assert_eq!(ev.profit_token, Some(WNATIVE));
+        assert_eq!(ev.profit_amount, Some(U256::from(10u64)));
+        assert_eq!(ev.confidence, Confidence::Exact);
+        assert_eq!(
+            ev.details["pnl"]["profit_token"].as_str(),
+            Some(format!("{WNATIVE:#x}").as_str())
+        );
+    }
+
+    /// Executor nets zero in every priority token and forwards the 10 WNATIVE
+    /// surplus (not the USDC anchor) to a single non-swap beneficiary. The
+    /// forwarded residual must classify as Inferred with `forwarded_profit`.
+    #[test]
+    fn forwarded_profit_in_priority_token_is_inferred() {
+        let mut input = block(vec![tx_to(
+            0,
+            ATK,
+            EXEC,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, WNATIVE, 200, 50),
+                swap(POOL_C, WNATIVE, USDC, 40, 100),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, EXEC, 200),
+                transfer(2, TOKA, EXEC, POOL_B, 200),
+                transfer(3, WNATIVE, POOL_B, EXEC, 50),
+                transfer(4, WNATIVE, EXEC, BENEFICIARY, 10),
+                transfer(5, WNATIVE, EXEC, POOL_C, 40),
+                transfer(6, USDC, POOL_C, ATK, 100),
+            ],
+        )]);
+        input.ctx.profit_policy.priority.push(WNATIVE);
+
+        let (ev, _) = arb_event(&input);
+        assert_eq!(ev.profit_token, Some(WNATIVE));
+        assert_eq!(ev.profit_amount, Some(U256::from(10u64)));
+        assert_eq!(ev.confidence, Confidence::Inferred);
+        assert_eq!(
+            ev.details["forwarded_from"].as_str(),
+            Some(format!("{EXEC:#x}").as_str())
+        );
+        assert!(ev.details["tags"]
+            .as_array()
+            .is_some_and(|tags| tags.iter().any(|t| t.as_str() == Some("forwarded_profit"))));
+    }
+
+    /// Multi-router route: the searcher contract funds the first leg and the
+    /// executor contract funds the second; both are tx-level candidates, so
+    /// the cycle is attributable and must classify.
+    #[test]
+    fn multi_router_owners_that_are_candidates_are_attributable() {
+        let input = block(vec![tx_to(
+            0,
+            ATK,
+            EXEC,
+            true,
+            vec![
+                swap_owned(FUNDER, POOL_A, USDC, TOKA, 100, 200),
+                swap_owned(EXEC, POOL_B, TOKA, USDC, 200, 110),
+            ],
+            vec![
+                transfer(0, USDC, ATK, FUNDER, 100),
+                transfer(1, USDC, FUNDER, POOL_A, 100),
+                transfer(2, TOKA, POOL_A, EXEC, 200),
+                transfer(3, TOKA, EXEC, POOL_B, 200),
+                transfer(4, USDC, POOL_B, FUNDER, 110),
+            ],
+        )]);
+
+        let (ev, rejects) = arb_event(&input);
+        assert!(
+            !rejects
+                .iter()
+                .any(|r| r.reject_reason == RejectReason::MixedFlowOwner.as_str()),
+            "candidate owners must not veto: {rejects:?}"
+        );
+        assert_eq!(ev.searcher, FUNDER);
+        assert_eq!(ev.profit_token, Some(USDC));
+        assert_eq!(ev.profit_amount, Some(U256::from(10u64)));
     }
 }
 
