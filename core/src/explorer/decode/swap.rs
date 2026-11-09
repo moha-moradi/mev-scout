@@ -13,7 +13,8 @@ use crate::pool::decoders::{
     FLUID_SWAP_TOPIC, LB_SWAP_TOPIC, METRIC_SWAP_TOPIC, PENDLE_SWAP_TOPIC, SOLIDLY_SWAP_TOPIC,
 };
 
-/// Signed pool deltas: negative amount is token in, positive is token out.
+/// Signed Uniswap-V3-style pool deltas: **positive** = pool balance increased
+/// (user sold that token → token in); **negative** = pool paid out (token out).
 /// Tick sits in the word at bytes 128..160 when the log is long enough (V3/V4/Infinity).
 /// Returns false when the amounts are missing or both zero.
 fn apply_signed_deltas(fact: &mut SwapFact, data: &[u8]) -> bool {
@@ -25,14 +26,18 @@ fn apply_signed_deltas(fact: &mut SwapFact, data: &[u8]) -> bool {
     if a0.is_zero() && a1.is_zero() {
         return false;
     }
-    if a0 < alloy::primitives::I256::ZERO {
-        fact.amount_in = a0.wrapping_abs().into_raw();
+    if a0 > alloy::primitives::I256::ZERO {
+        // Pool received token0.
+        fact.amount_in = a0.into_raw();
         fact.amount_out = a1.wrapping_abs().into_raw();
         fact.token_in = super::sentinels::TOKEN0_SENTINEL;
+        fact.token_out = super::sentinels::TOKEN1_SENTINEL;
     } else {
+        // a0 <= 0: pool sent token0 (or a0==0) → token1 is the input side.
         fact.amount_in = a1.wrapping_abs().into_raw();
         fact.amount_out = a0.wrapping_abs().into_raw();
         fact.token_in = super::sentinels::TOKEN1_SENTINEL;
+        fact.token_out = super::sentinels::TOKEN0_SENTINEL;
     }
     if data.len() >= 160 {
         fact.tick = Some(i32::from_be_bytes([
@@ -264,14 +269,17 @@ fn decode_metric(log: &LogData) -> Option<(Amm, SwapFact)> {
         return None;
     }
     let mut fact = blank_swap(Amm::Metric, log.address);
-    if a0 < alloy::primitives::I256::ZERO {
-        fact.amount_in = a0.wrapping_abs().into_raw();
+    // Same Uniswap-V3 pool-delta convention as `apply_signed_deltas`.
+    if a0 > alloy::primitives::I256::ZERO {
+        fact.amount_in = a0.into_raw();
         fact.amount_out = a1.wrapping_abs().into_raw();
         fact.token_in = super::sentinels::TOKEN0_SENTINEL;
+        fact.token_out = super::sentinels::TOKEN1_SENTINEL;
     } else {
         fact.amount_in = a1.wrapping_abs().into_raw();
         fact.amount_out = a0.wrapping_abs().into_raw();
         fact.token_in = super::sentinels::TOKEN1_SENTINEL;
+        fact.token_out = super::sentinels::TOKEN0_SENTINEL;
     }
     Some((Amm::Metric, fact))
 }

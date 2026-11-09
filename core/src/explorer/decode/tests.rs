@@ -237,13 +237,14 @@ fn transfer_decodes() {
 #[test]
 fn v3_swap_decodes_direction() {
     let pool = address!("1111111111111111111111111111111111111111");
-    // amount0 = -100 (pool received), amount1 = +90 (pool paid out)
+    // Uniswap V3 pool deltas: amount0 = +100 (pool received token0),
+    // amount1 = -90 (pool paid token1).
     let mut data = vec![0u8; 160];
-    for b in data[0..24].iter_mut() {
+    data[24..32].copy_from_slice(&100u64.to_be_bytes());
+    for b in data[32..56].iter_mut() {
         *b = 0xff;
     }
-    data[24..32].copy_from_slice(&(-100i64).to_be_bytes());
-    data[56..64].copy_from_slice(&90u64.to_be_bytes());
+    data[56..64].copy_from_slice(&(-90i64).to_be_bytes());
     let l = log(pool, vec![V3_SWAP_TOPIC, B256::ZERO, B256::ZERO], data);
     let (amm, s) = decode_swap(&l).unwrap();
     assert_eq!(amm, Amm::V3);
@@ -251,6 +252,7 @@ fn v3_swap_decodes_direction() {
     assert_eq!(s.amount_in, U256::from(100));
     assert_eq!(s.amount_out, U256::from(90));
     assert_eq!(s.token_in, TOKEN0_SENTINEL);
+    assert_eq!(s.token_out, TOKEN1_SENTINEL);
 }
 
 #[test]
@@ -258,15 +260,16 @@ fn donaswap_v3_swap_decodes_like_v3() {
     // Real Donaswap V3 pool (Avalanche 0x85b54e9e…, factory 0xf72f4652…):
     // V3 layout plus two trailing uint128 protocol-fee words (data = 224).
     let pool = address!("85b54e9e86c2061c4d49608c51111db2a914d731");
-    // amount0 = -1091246873451144093 (WAVAX received), amount1 = +12641094804701311522 (GPC paid out)
+    // Pool deltas: amount0 = +1091246873451144093 (WAVAX in),
+    // amount1 = -12641094804701311522 (GPC out). Magnitude > i64::MAX →
+    // build i256 two's-complement via u64 wrapping_neg + sign-extend.
     let mut data = vec![0u8; 224];
-    // sign-extension: amount0 = -1091246873451144093 (WAVAX received)
-    for b in data[0..24].iter_mut() {
+    data[24..32].copy_from_slice(&1_091_246_873_451_144_093u64.to_be_bytes());
+    let amount1_mag = 12_641_094_804_701_311_522u64;
+    for b in data[32..56].iter_mut() {
         *b = 0xff;
     }
-    data[24..32].copy_from_slice(&(-1_091_246_873_451_144_093i64).to_be_bytes());
-    // amount1 = +12641094804701311522 (GPC paid out)
-    data[56..64].copy_from_slice(&12_641_094_804_701_311_522u64.to_be_bytes());
+    data[56..64].copy_from_slice(&amount1_mag.wrapping_neg().to_be_bytes());
     // tick right-aligned in bytes 128..160
     data[156..160].copy_from_slice(&(-5_120i32).to_be_bytes());
     let l = log(
@@ -280,6 +283,7 @@ fn donaswap_v3_swap_decodes_like_v3() {
     assert_eq!(s.amount_in, U256::from(1_091_246_873_451_144_093u64));
     assert_eq!(s.amount_out, U256::from(12_641_094_804_701_311_522u64));
     assert_eq!(s.token_in, TOKEN0_SENTINEL);
+    assert_eq!(s.token_out, TOKEN1_SENTINEL);
     assert_eq!(s.tick, Some(-5_120));
 }
 
@@ -650,7 +654,7 @@ fn registry_resolves_sentinel_direction_without_transfers() {
     assert_eq!(s.token_out, t1);
     assert_eq!(s.token_source, LegSource::Registry);
 
-    // V3 token1-in sentinel: registry resolves token_in = t1, token_out = t0.
+    // V3 token1-in: amount0 negative (pool paid token0) => token_in = t1.
     let mut data = vec![0u8; 160];
     for b in data[0..24].iter_mut() {
         *b = 0xff; // amount0 negative
@@ -665,8 +669,8 @@ fn registry_resolves_sentinel_direction_without_transfers() {
     .unwrap();
     s3.log_index = 0;
     attach_swap_tokens(std::slice::from_mut(&mut s3), &[], &pools);
-    assert_eq!(s3.token_in, t0); // amount0 < 0 => token0 in
-    assert_eq!(s3.token_out, t1);
+    assert_eq!(s3.token_in, t1); // amount0 < 0 => token1 in
+    assert_eq!(s3.token_out, t0);
     assert_eq!(s3.token_source, LegSource::Registry);
 }
 
