@@ -20,7 +20,7 @@ pub struct Cli {
     #[arg(global = true, short, long)]
     pub verbose: bool,
 
-    /// Suppress all output except the final summary
+    /// Lower tracing to `error` only (stdout tables/ledger/summaries still print)
     #[arg(global = true, long)]
     pub quiet: bool,
 }

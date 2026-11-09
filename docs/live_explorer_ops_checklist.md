@@ -124,12 +124,16 @@ These are candidates for §7, not necessarily dead everywhere:
   hosts; the binary has no `--progress` flag and never selects it.
 - `Fetcher::with_sig_resolver` and `core::sigs`: no callers from jobs; the
   signature DB is not wired into ingest.
-- `jobs::job_run`: library-only, used by core integration tests. `jobs::job_tokens`:
-  no callers at all.
+- `jobs::job_run`: library-only, used by core integration tests.
+  (`jobs::job_tokens` was removed in Phase B.)
 - `JobProgress::cancelled`: every binary sink returns `false`; `--loop` stops
   on duration/max-blocks or process kill, not via progress cancellation.
 - Duplicate validation/parsing: `--duration`/`--max-blocks` are checked and
   parsed in `cli/src/commands/live.rs` and again in `core/src/jobs/live.rs`.
+- `BarProgress` only renders `fetch`/`backfill`; live `detect`/`resolve`/
+  `pool_init` events are ignored (bar still advances on `fetch`).
+- Duplicated `IngestConfig` runtime overlay (was in `job_index` + CLI
+  backfill): collapsed to `IngestConfig::from_app_config` in Cycle 3.
 
 ### 2.6 Runnable checklist (PowerShell, CWD = repo root)
 
@@ -392,12 +396,19 @@ to remove** = no non-negotiable goal and no live test depends on it; **Tests**
 | 15 | `[explorer]` classification knobs on `live` | Live never reads them | no effect on `live` | no | no (needed by `index`) | explorer tests | explorer product | keep |
 | 16 | Live modules from `explorer index` | `job_index` imports ingest/store only | no detector/paper work in index | no | no (isolation) | — | isolation | keep |
 | 17 | `output.output` on `live` | `live` renders tables directly | `live` ignored `output = "table"` (rendered tables by design) | no | no (report/discover need it) | `core/tests/config.rs` | report formats | keep |
+| 18 | Duplicated `IngestConfig` overlay | Same 9-field block in `jobs/index.rs` + `cli/.../backfill.rs` | both paths exercised (bounded index + tip loop) | no | yes (dedup only) | explorer tests | none | **simplified** (`IngestConfig::from_app_config`) |
+| 19 | `--quiet` clap help text | Claimed "final summary only"; §0 says tracing-only | `--quiet` attempted; clap dishonest vs docs/CLI.md | no | yes (help text) | none | none | **fixed** (clap text matches §0) |
+| 20 | `BarProgress` ignores live stages | Only `fetch`/`backfill`; live emits `detect`/`resolve`/`pool_init` | code-read + live emits `fetch` too | no | no | none | observability UX | keep + document |
+| 21 | Dual live duration/max-blocks/`--exec` validate | CLI fail-fast + `job_live` re-check | fail-fast messages observed before bootstrap | no | no (deliberate) | CLI tests | fail-fast safety | keep |
+| 22 | `StdoutJsonProgress` / discarded `IndexOutcome` / pub loop outcomes | Embedding / library surface | binary never selects JSON sink; `cmd_index` drops outcome | embedding | no | none | embedding contract | keep + document |
+| 23 | `JobProgress::cancelled` always false in binary | Core still polls cancel in loops | tip loop exits on duration flag (row 11 fix) | embedding | no | none | cancellation contract | keep |
+| 24 | No `job_backfill`; CLI owns historical path | `BackfillOutcome` struct-only; `cmd_backfill` → `run_range` | bounded index exercised | no | no | — | architecture | keep (smell only) |
 
-A row was eligible for removal only when **Observed = exercised and
+A row was eligible for removal/simplify only when **Observed = exercised and
 unaffected**, **Optional = no/library-only**, **Safe = yes**, and **Goal impact
-= none**. Two rows qualified (`gas_limits`, `job_tokens`); both were removed.
-Everything else is either a live library API, a documented future, or required
-by another product surface.
+= none**. Phase B removed `gas_limits` + `job_tokens`. Cycle 3 simplified the
+`IngestConfig` overlay and fixed `--quiet` clap honesty. Everything else stays
+library API, deliberate fail-fast, or documented embedding/future.
 
 ### 7.1 Evidence log
 
@@ -446,26 +457,55 @@ RPC one-shot / `index` rows from 2026-11-07 remain the acceptance evidence for
 network paths. No new `safe=yes` / `goal impact=none` candidates appeared;
 rows 3–6 stay deferred library API with CLI `..Default` honesty.
 
+#### 2026-11-09 (Cycle 3, Avalanche)
+
+| Step | Result |
+|---|---|
+| `config` | exit 0; resolved dump `chain = "avalanche"` (~745 lines) |
+| `live --duration 15m` | exit 1: `--duration requires --loop` |
+| `live --max-blocks 5` | exit 1: `--max-blocks requires --loop` |
+| `live --loop --duration notatime` | exit 1: invalid duration |
+| `live --exec testnet` | exit 1: expected `none` / `revm` / `anvil` |
+| `--quiet` / `-v live --blocks 8` | **environmental blocked**: hung >12m in pool/code probes (`eth_getCode`) with publicnode/getblock rate-limit / CANCEL resets; killed. Not treated as dead code. |
+| `report` | exit 1: no runs in run-history (cascade from blocked live) |
+| `explorer index --from-block 99684950 --to-block 99684955` | exit 0; 6 blocks indexed, 0 ops in 1.2s (1/5 providers failed validation; eth_getBlockReceipts missing on one) |
+| bare `explorer --windows 1d,7d --top 5` | exit 0; offline revenue tables from existing DB |
+| `explorer dashboard --db … --format json` | exit 0; wrote dashboard artifact |
+| `explorer index --duration 30s` | exit 1: requires `--loop` |
+| `explorer index --loop --days 3` | exit 1: cannot combine with `--loop` |
+| `explorer --windows 1d index` | exit 1: report flags belong on bare `explorer` |
+| `explorer index --from-block 100 --to-block 50` | exit 1: `--to-block < --from-block` |
+| `explorer index --loop --duration 20s` | exit 0; 16 blocks indexed, 142 ops total in 22.5s (terminates; row 11 fix holds) |
+| Cycle 3 simplify | `IngestConfig::from_app_config` dedup (row 18); `--quiet` clap help fixed (row 19) |
+
+`sqlite3` still absent on this host; counts from command output. Scratch copies
+under `cache/cycle3-scratch/` (gitignored).
+
 ---
 
 ## 8. Phase B execution order (after the matrix is filled)
 
-**Status (2026-11-07 / 2026-11-08):** first pass removed `gas.gas_limits` and
+**Status (2026-11-07 / 2026-11-08 / 2026-11-09):** first pass removed `gas.gas_limits` and
 `job_tokens` (rows 1 and 10) and fixed the `index --loop` termination bug
 (row 11). Second pass: CLI `LiveOpts` construction uses `..Default::default()`
 for library-only fields (rows 3–6 honesty without removing the library API);
-stale `--progress` / `tokens job` comments cleaned. Remaining candidates stay
-deferred: live library APIs, `job_run`/corpus tests, or documented future work.
+stale `--progress` / `tokens job` comments cleaned. Cycle 3: deduped ingest
+config assembly (row 18), fixed `--quiet` clap text (row 19), documented
+`BarProgress` live-stage gap (row 20). Remaining candidates stay deferred:
+live library APIs, `job_run`/corpus tests, embedding sinks, or documented
+future work.
 
 1. **Config surface** — done for `gas_limits`; `strategies` emptiness-only
    documented in `mev-scout.example.toml` + `docs/CLI.md`; corpus knobs kept.
 2. **CLI / `LiveOpts` honesty** — library-only fields stay on `LiveOpts` for
    tests/embeds; binary no longer names them. `StdoutJsonProgress` kept as
-   public embedding sink (not binary-wired).
+   public embedding sink (not binary-wired). `--quiet` clap help aligned with
+   tracing-only behavior (Cycle 3).
 3. **Dead library commands** — `job_tokens` removed; `job_run` kept for corpus;
    `sigs` kept as documented future.
 4. **Dedup** — dual CLI+job duration/`--max-blocks` checks kept deliberately
-   (fail-fast before bootstrap vs job re-entry).
+   (fail-fast before bootstrap vs job re-entry). `IngestConfig` runtime overlay
+   collapsed to `from_app_config` (Cycle 3).
 5. **Docs sync** — `docs/CLI.md`, this checklist, and `mev-scout.example.toml`
    describe the same surface.
 

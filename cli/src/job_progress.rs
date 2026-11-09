@@ -9,8 +9,9 @@
 //! `mev_scout_core::progress::NoopProgress`, which is silent for library hosts).
 pub use mev_scout_core::progress::{JobProgress, ProgressEvent};
 
-/// Sink for the CLI's plain mode: fetch/backfill indicatif bar (or spinner
-/// when total is unknown), other stages ignored.
+/// Sink for the CLI's plain mode: `fetch`/`backfill` indicatif bar (or spinner
+/// when total is unknown). Live also emits `detect`/`resolve`/`pool_init`;
+/// those stages are ignored here (bar stays driven by `fetch` only).
 #[derive(Default)]
 pub struct BarProgress {
     bar: std::sync::Mutex<Option<indicatif::ProgressBar>>,
