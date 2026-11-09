@@ -1,33 +1,12 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use alloy::primitives::Address;
-use anyhow::Context;
 
 use crate::cache::SqliteStore;
-use crate::config::validation;
 use crate::config::Config;
 use crate::dex_type::DexType;
-use crate::explorer::ingest::{run_live, IngestConfig, PoolViews};
-use crate::explorer::store::ExplorerStore;
 use crate::pool::discovery::is_epoch_venue_factory;
-use crate::progress::JobProgress;
 use crate::types::ChainName;
-
-use super::rpc::init_rpc;
-
-#[derive(Debug, Clone, Default)]
-pub struct IndexOpts {
-    pub duration: Option<String>,
-}
-
-pub struct IndexOutcome {
-    pub blocks_indexed: u64,
-    pub ops: u64,
-    pub elapsed: Duration,
-}
 
 /// Pool → (token0, token1) plus skim-eligible V2-like and epoch-venue sets.
 #[derive(Debug, Clone, Default)]
@@ -43,89 +22,6 @@ fn is_v2_like(dex: DexType) -> bool {
         dex,
         DexType::UniswapV2 | DexType::Solidly | DexType::Camelot
     )
-}
-
-pub async fn job_index(
-    config: &Config,
-    opts: &IndexOpts,
-    progress: &dyn JobProgress,
-) -> anyhow::Result<IndexOutcome> {
-    let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let chain = v.chain_name;
-    let setup = init_rpc(config, chain, true).await?;
-    let store = ExplorerStore::open(config.effective_explorer_db_path(&chain))?;
-
-    let (_, chain_cfg) = validation::resolve_chain(config).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let cfg = IngestConfig::from_app_config(chain, &chain_cfg, config);
-
-    // pool registry (pool → token0/token1) for swap-direction
-    // resolution. Missing/empty registry degrades to transfer pairing.
-    let registry = load_pool_registry(config, &chain);
-
-    let t0 = Instant::now();
-
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_cancel = stop.clone();
-    let cancel_poll = async {
-        loop {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            if progress.cancelled() {
-                stop_cancel.store(true, Ordering::Relaxed);
-                break;
-            }
-            // The deadline task shares this flag. Without this arm, `join!`
-            // would wait forever on this poller after `run_live` returns.
-            if stop_cancel.load(Ordering::Relaxed) {
-                break;
-            }
-        }
-    };
-    let deadline_dur = opts
-        .duration
-        .as_deref()
-        .map(|d| humantime::parse_duration(d).with_context(|| format!("invalid duration '{d}'")))
-        .transpose()?;
-    let stop_deadline = stop.clone();
-    let deadline_poll = async move {
-        if let Some(dur) = deadline_dur {
-            tokio::time::sleep(dur).await;
-            stop_deadline.store(true, Ordering::Relaxed);
-        }
-    };
-
-    progress.log(&format!(
-        "Live indexing — {chain} from current tip (head − {} confirmations; no historical catch-up)",
-        cfg.confirmations
-    ));
-    let (_, _, indexed) = tokio::join!(
-        cancel_poll,
-        deadline_poll,
-        run_live(
-            &setup.rpc,
-            &store,
-            &cfg,
-            PoolViews {
-                tokens: &registry.tokens,
-                v2_like: &registry.v2_like,
-                epoch_venue: &registry.epoch_venue,
-            },
-            config.explorer.poll_interval_ms,
-            stop,
-            progress,
-        )
-    );
-    let blocks_indexed = indexed?;
-    let elapsed = t0.elapsed();
-    let ops = store.op_count_since(0)?;
-    progress.log(&format!(
-        "Live indexing done — {blocks_indexed} blocks indexed, {ops} ops total in {:.1}s",
-        elapsed.as_secs_f64(),
-    ));
-    Ok(IndexOutcome {
-        blocks_indexed,
-        ops,
-        elapsed,
-    })
 }
 
 /// Load the pool → (token0, token1) registry and V2-like skim set from the

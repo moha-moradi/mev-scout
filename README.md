@@ -79,9 +79,9 @@ mev-scout discover --blocks 2000
 # Re-render the latest run offline
 mev-scout report
 
-# Index realized MEV (trailing 7 days), follow tip, then summarize
+# Index realized MEV (trailing 7 days / --hours / --days), then summarize
 mev-scout explorer index
-mev-scout explorer index --loop --duration 15m
+mev-scout explorer index --hours 24
 mev-scout explorer
 ```
 
@@ -103,15 +103,15 @@ or executed FlashArb net (see [§3.7](docs/CLI.md#37-ledger-was-paper)).
 At session end it prints and persists cost, remaining balance, net P&L and a
 per-strategy breakdown; `report` shows a run's ledger session alongside its
 results. `--max-fills-per-block` moved to `[paper]` in the TOML.
-Bare `explorer` is the revenue report; `explorer index` covers both historical
-backfill (default trailing 7 days) and tip-follow (`--loop`).
+Bare `explorer` is the revenue report; `explorer index` is historical backfill
+only (default trailing 7 days).
 
 Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live
 --blocks` sets the one-shot window (default 64); `--loop` follows the tip.
 `discover` takes optional `--blocks` / `--block` / `--from-block`/`--to-block`,
 and `--incremental`. Source and enrich live under `[discover]` in TOML.
 `explorer` takes `--windows` (`Nh`/`Nd`/`Nw` or `all`) / `--kind` / `--confidence` (`exact`|`inferred`|`all`) / `--top`. `explorer index` takes
-`--days` or `--from-block`/`--to-block` (bounded), or `--loop [--duration]`.
+`--hours`, `--days`, or `--from-block`/`--to-block` (bounded; mutually exclusive).
 
 ## Layout
 

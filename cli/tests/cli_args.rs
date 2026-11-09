@@ -470,7 +470,7 @@ fn explorer_confidence_flag_resolves_to_documented_values() {
     }
 }
 
-/// `explorer index` without `--loop` is a bounded backfill (default 7 days).
+/// `explorer index` is a bounded historical backfill (default 7 days).
 #[test]
 fn explorer_index_defaults_to_backfill_shape() {
     use clap::Parser;
@@ -480,8 +480,7 @@ fn explorer_index_defaults_to_backfill_shape() {
     match cli.command {
         Some(Command::Explorer(a)) => match a.command {
             Some(ExplorerCommand::Index(i)) => {
-                assert!(!i.r#loop);
-                assert!(i.duration.is_none());
+                assert!(i.hours.is_none());
                 assert!(i.days.is_none());
                 assert!(i.from_block.is_none());
                 assert!(i.to_block.is_none());
@@ -491,19 +490,24 @@ fn explorer_index_defaults_to_backfill_shape() {
         other => panic!("expected Explorer, got {other:?}"),
     }
 
-    let cli = Cli::parse_from([
-        "mev-scout",
-        "explorer",
-        "index",
-        "--loop",
-        "--duration",
-        "15m",
-    ]);
+    let cli = Cli::parse_from(["mev-scout", "explorer", "index", "--days", "30"]);
     match cli.command {
         Some(Command::Explorer(a)) => match a.command {
             Some(ExplorerCommand::Index(i)) => {
-                assert!(i.r#loop);
-                assert_eq!(i.duration.as_deref(), Some("15m"));
+                assert_eq!(i.days, Some(30));
+                assert!(i.hours.is_none());
+            }
+            other => panic!("expected Index, got {other:?}"),
+        },
+        other => panic!("expected Explorer, got {other:?}"),
+    }
+
+    let cli = Cli::parse_from(["mev-scout", "explorer", "index", "--hours", "6"]);
+    match cli.command {
+        Some(Command::Explorer(a)) => match a.command {
+            Some(ExplorerCommand::Index(i)) => {
+                assert_eq!(i.hours, Some(6));
+                assert!(i.days.is_none());
             }
             other => panic!("expected Index, got {other:?}"),
         },
@@ -511,19 +515,41 @@ fn explorer_index_defaults_to_backfill_shape() {
     }
 }
 
-/// `--loop` + `--days` is rejected at dispatch (after clap parse).
+/// `--hours` and `--days` together are rejected at dispatch.
 #[test]
-fn explorer_index_rejects_loop_with_days() {
-    let ws = temp_ws("args_explorer_index_loop_days");
+fn explorer_index_rejects_hours_with_days() {
+    let ws = temp_ws("args_explorer_index_hours_days");
     let out = run(
         &ws,
-        &["-f", &cfg(), "explorer", "index", "--loop", "--days", "7"],
+        &[
+            "-f",
+            &cfg(),
+            "explorer",
+            "index",
+            "--hours",
+            "6",
+            "--days",
+            "1",
+        ],
     );
-    expect_fail(&out, "explorer index --loop --days");
+    expect_fail(&out, "explorer index --hours --days");
     assert!(
-        out.combined().contains("cannot be combined with --loop"),
-        "expected loop/days conflict message, got:\n{}",
+        out.combined().contains("mutually exclusive"),
+        "expected hours/days conflict message, got:\n{}",
         out.combined()
+    );
+}
+
+/// Tip-follow flags were removed; `--loop` is an unknown argument on index.
+#[test]
+fn explorer_index_rejects_loop_flag() {
+    let ws = temp_ws("args_explorer_index_loop");
+    let out = run(&ws, &["-f", &cfg(), "explorer", "index", "--loop"]);
+    expect_fail(&out, "explorer index --loop");
+    let combined = out.combined();
+    assert!(
+        combined.contains("unexpected argument") || combined.contains("unrecognized"),
+        "expected clap unknown-arg rejection for --loop, got:\n{combined}"
     );
 }
 

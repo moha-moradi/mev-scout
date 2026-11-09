@@ -27,6 +27,11 @@ pub fn blocks_per_day(chain: crate::types::ChainName) -> u64 {
     chain_timing(&chain.to_string()).blocks_per_day
 }
 
+/// Blocks per hour — `blocks_per_day / 24`, so `--hours 24` matches `--days 1`.
+pub fn blocks_per_hour(chain: crate::types::ChainName) -> u64 {
+    (blocks_per_day(chain) / 24).max(1)
+}
+
 pub fn chain_timing(chain: &str) -> ChainTimingParams {
     match chain.to_lowercase().as_str() {
         "ethereum" => ChainTimingParams {

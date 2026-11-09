@@ -31,9 +31,8 @@ pub struct Cli {
 /// still finishing quickly.
 pub const DEFAULT_SINGLE_PASS_BLOCKS: u64 = 64;
 
-/// Trailing window `explorer index` (without `--loop`) uses when no range flag
-/// is given, so the 1d/7d/30d revenue reports have data without the user
-/// picking a range.
+/// Trailing window `explorer index` uses when no range flag is given, so the
+/// 1d/7d/30d revenue reports have data without the user picking a range.
 pub const DEFAULT_BACKFILL_DAYS: u64 = 7;
 
 /// Default windows for bare `explorer` (revenue report).
@@ -86,11 +85,11 @@ pub enum Command {
 /// `explorer report`).
 #[derive(Subcommand, Debug, Clone)]
 pub enum ExplorerCommand {
-    /// Index blocks into the explorer store.
+    /// Index a historical block range into the explorer store.
     ///
-    /// Without `--loop` this backfills a historical range (default: trailing
-    /// 7 days) and exits. With `--loop` it streams tip blocks until Ctrl+C
-    /// (or `--duration`). Idempotent, resumable, reorg-aware.
+    /// Backfills a trailing window (`--hours`, `--days`, or default 7 days)
+    /// or an exact `--from-block`/`--to-block` range, then exits. Idempotent,
+    /// resumable.
     Index(IndexArgs),
     /// Emit a forensic static HTML/JSON dashboard from explorer SQLite.
     ///
@@ -202,17 +201,19 @@ pub struct DashboardArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct IndexArgs {
-    /// Continuously index new tip blocks until Ctrl+C
-    #[arg(long, help_heading = "Live")]
-    pub r#loop: bool,
-
-    /// Stop continuous indexing after this duration (requires --loop).
-    /// Accepts humantime suffixes: 90s, 15m, 1h.
-    #[arg(long, value_name = "DURATION", help_heading = "Live")]
-    pub duration: Option<String>,
+    /// Backfill the trailing N hours up to the current confirmed tip.
+    /// Incompatible with `--days` / `--from-block`/`--to-block`.
+    #[arg(
+        long,
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..=8760),
+        help_heading = "Range"
+    )]
+    pub hours: Option<u64>,
 
     /// Backfill the trailing N days up to the current confirmed tip
-    /// (default 7 when no range flag is given). Incompatible with --loop.
+    /// (default 7 when no range flag is given).
+    /// Incompatible with `--hours` / `--from-block`/`--to-block`.
     #[arg(
         long,
         value_name = "N",
@@ -221,7 +222,7 @@ pub struct IndexArgs {
     )]
     pub days: Option<u64>,
 
-    /// Exact range start (requires --to-block). Inclusive. Incompatible with --loop.
+    /// Exact range start (requires --to-block). Inclusive.
     #[arg(
         long = "from-block",
         value_name = "NUMBER",
@@ -230,7 +231,7 @@ pub struct IndexArgs {
     )]
     pub from_block: Option<u64>,
 
-    /// Exact range end (requires --from-block). Inclusive. Incompatible with --loop.
+    /// Exact range end (requires --from-block). Inclusive.
     #[arg(
         long = "to-block",
         value_name = "NUMBER",

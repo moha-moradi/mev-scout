@@ -1,12 +1,11 @@
-//! ``explorer index`` (without ``--loop``) — index a historical block range
-//! (clock or exact) into the explorer store so the revenue-report windows
-//! (1d/7d/30d) have realized data. Idempotent and gap-resumable via
-//! `blocks_classified`.
+//! ``explorer index`` — index a historical block range (clock or exact) into
+//! the explorer store so the revenue-report windows (1d/7d/30d) have realized
+//! data. Idempotent and gap-resumable via `blocks_classified`.
 use super::*;
 
 use crate::job_progress::JobProgress;
 
-use mev_scout_core::chain::timing::blocks_per_day;
+use mev_scout_core::chain::timing::{blocks_per_day, blocks_per_hour};
 use mev_scout_core::explorer::ingest::{
     run_range, safe_head, IngestConfig, PoolViews, RangeRequest,
 };
@@ -14,6 +13,7 @@ use mev_scout_core::jobs::{init_rpc, load_pool_registry, BackfillOutcome};
 
 pub async fn cmd_backfill(
     config: &Config,
+    hours: Option<u64>,
     days: Option<u64>,
     from_block: Option<u64>,
     to_block: Option<u64>,
@@ -24,20 +24,26 @@ pub async fn cmd_backfill(
     let (_, chain_cfg) = validation::resolve_chain(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let cfg = IngestConfig::from_app_config(chain, &chain_cfg, config);
 
-    let (from, to) = match (days, from_block, to_block) {
-        (Some(d), None, None) => {
+    let (from, to) = match (hours, days, from_block, to_block) {
+        (Some(h), None, None, None) => {
+            let setup = init_rpc(config, chain, false).await?;
+            let head = safe_head(&setup.rpc, &cfg).await?;
+            let span = h.saturating_mul(blocks_per_hour(chain));
+            (head.saturating_sub(span), head)
+        }
+        (None, Some(d), None, None) => {
             let setup = init_rpc(config, chain, false).await?;
             let head = safe_head(&setup.rpc, &cfg).await?;
             let span = d.saturating_mul(blocks_per_day(chain));
             (head.saturating_sub(span), head)
         }
-        (None, Some(f), Some(t)) => {
+        (None, None, Some(f), Some(t)) => {
             if t < f {
                 anyhow::bail!("--to-block ({t}) < --from-block ({f})");
             }
             (f, t)
         }
-        (None, None, None) => {
+        (None, None, None, None) => {
             // Zero-arg backfill defaults to the trailing week so the 1d/7d/30d
             // revenue reports have data without the user picking a range.
             let d = crate::cli::DEFAULT_BACKFILL_DAYS;
@@ -46,7 +52,9 @@ pub async fn cmd_backfill(
             let span = d.saturating_mul(blocks_per_day(chain));
             (head.saturating_sub(span), head)
         }
-        _ => anyhow::bail!("--days cannot be combined with --from-block/--to-block"),
+        _ => anyhow::bail!(
+            "--hours / --days / --from-block/--to-block are mutually exclusive — pick one range form"
+        ),
     };
     if to < from {
         anyhow::bail!(

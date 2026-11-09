@@ -1,4 +1,4 @@
-//! `mev-scout explorer` subcommands: index, report, backfill.
+//! `mev-scout explorer` subcommands: index (historical), report, dashboard.
 use comfy_table::Table;
 
 use mev_scout_core::config::validation;
@@ -23,12 +23,10 @@ fn short_addr(s: &str) -> String {
 
 mod backfill;
 pub mod dashboard;
-mod index;
 mod report;
 
 pub use backfill::cmd_backfill;
 pub use dashboard::cmd_dashboard;
-pub use index::cmd_index;
 pub use report::cmd_explorer_report;
 
 /// Run `explorer dashboard` from clap [`crate::cli::DashboardArgs`].

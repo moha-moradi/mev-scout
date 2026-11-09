@@ -290,9 +290,6 @@ pub struct ExplorerConfig {
     /// Confirmation lag before a block is indexed (default 6 ≈ 12s on Polygon).
     #[serde(default = "default_explorer_confirmations")]
     pub confirmations: u64,
-    /// Live-mode polling interval in milliseconds.
-    #[serde(default = "default_explorer_poll_ms")]
-    pub poll_interval_ms: u64,
     /// Detector-vs-realized profit tolerance for corpus / MEV gate checks
     /// (percent, absolute value). `|profit_error_pct| > this` => `Fail`.
     #[serde(default = "default_explorer_mev_tolerance_pct")]
@@ -370,9 +367,6 @@ fn default_live_poll_ms() -> u64 {
 }
 fn default_explorer_confirmations() -> u64 {
     6
-}
-fn default_explorer_poll_ms() -> u64 {
-    2000
 }
 fn default_explorer_mev_tolerance_pct() -> f64 {
     20.0
@@ -554,7 +548,6 @@ impl Default for ExplorerConfig {
         ExplorerConfig {
             db_path: String::new(),
             confirmations: default_explorer_confirmations(),
-            poll_interval_ms: default_explorer_poll_ms(),
             mev_tolerance_pct: default_explorer_mev_tolerance_pct(),
             mev_error_usd_tol: default_explorer_mev_error_usd_tol(),
             tip_sink_addresses: Vec::new(),
@@ -1050,7 +1043,6 @@ pub struct OutputOverrides {
 pub struct ExplorerOverrides {
     pub db_path: Option<String>,
     pub confirmations: Option<u64>,
-    pub poll_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1183,7 +1175,7 @@ impl Config {
             self,
             overrides,
             explorer,
-            [(db_path), (confirmations, copy), (poll_interval_ms, copy)]
+            [(db_path), (confirmations, copy)]
         );
         Ok(())
     }

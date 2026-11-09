@@ -9,8 +9,7 @@ mod run;
 
 pub use backfill::BackfillOutcome;
 pub use discover::{job_discover, DiscoverOpts, DiscoverOutcome};
-pub use index::load_pool_registry;
-pub use index::{job_index, IndexOpts, IndexOutcome, PoolRegistry};
+pub use index::{load_pool_registry, PoolRegistry};
 pub use live::{job_live, LiveLoopOutcome, LiveOneShotOutcome, LiveOpts, LiveOutcome};
 pub use report::{job_report, ReportOpts, ReportOutcome};
 pub use rpc::{init_rpc, RpcSetup};

@@ -11,7 +11,7 @@ mod report;
 
 pub use config::cmd_config;
 pub use discover::cmd_discover;
-pub use explorer::{cmd_backfill, cmd_explorer_report, cmd_index, run_dashboard};
+pub use explorer::{cmd_backfill, cmd_explorer_report, run_dashboard};
 pub use live::cmd_live;
 pub use report::cmd_report;
 
@@ -70,20 +70,16 @@ impl CliCommand for ExplorerArgs {
                 .await
             }
             Some(ExplorerCommand::Index(a)) => {
-                if a.r#loop {
-                    if a.days.is_some() || a.from_block.is_some() || a.to_block.is_some() {
-                        anyhow::bail!(
-                            "--days / --from-block / --to-block cannot be combined with --loop"
-                        );
-                    }
-                    cmd_index(config, a.duration.as_deref(), progress).await
-                } else {
-                    if a.duration.is_some() {
-                        anyhow::bail!("--duration requires --loop");
-                    }
-                    cmd_backfill(config, a.days, a.from_block, a.to_block, progress).await?;
-                    Ok(())
-                }
+                cmd_backfill(
+                    config,
+                    a.hours,
+                    a.days,
+                    a.from_block,
+                    a.to_block,
+                    progress,
+                )
+                .await?;
+                Ok(())
             }
             Some(ExplorerCommand::Dashboard(a)) => {
                 let _ = progress;

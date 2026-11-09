@@ -151,14 +151,14 @@ scan.
 cargo build -j 2 --release -p mev-scout-cli
 ./target/release/mev-scout --config mev-scout.local.toml live
 ./target/release/mev-scout --config mev-scout.local.toml live --loop
-./target/release/mev-scout --config mev-scout.local.toml explorer index --days 1
+./target/release/mev-scout --config mev-scout.local.toml explorer index --hours 24
 ./target/release/mev-scout --config mev-scout.local.toml discover --blocks 2000
 ```
 
 `live` with no flags scans the last 64 blocks and exits. `explorer index`
-without `--days` / `--loop` is the ingest; bare `explorer` is the revenue
-report and does not need the node. Bound SQLite with `--days` /
-`--duration`. Deleting `cache/*.sqlite` is safe.
+(default trailing 7 days, or `--hours` / `--days` / `--from-block`/`--to-block`)
+is the historical ingest; bare `explorer` is the revenue report and does not
+need the node. Deleting `cache/*.sqlite` is safe.
 
 ## 5. From the laptop
 

@@ -40,8 +40,8 @@ from the CLI in favour of `live --blocks` for a bounded window; `report` prints 
 run's ledger session alongside its results.
 
 `explorer stats`, `explorer report`, and `explorer backfill` were removed —
-bare `explorer` is the revenue report, and `explorer index` covers both
-historical backfill (default trailing 7 days) and tip-follow (`--loop`).
+bare `explorer` is the revenue report, and `explorer index` is historical
+backfill only (default trailing 7 days; tip-follow was removed).
 
 ---
 
@@ -104,9 +104,8 @@ Bare `explorer` takes `--windows` / `--kind` / `--confidence` / `--top`
 (revenue report). `--confidence` restricts rows to `exact`, `inferred` or `all`.
 `--windows` accepts comma-separated `Nh` / `Nd` / `Nw` durations or `all`
 (e.g. `12h,1d,7d,all`); coverage is derived from the chain's block time.
-`explorer index` without `--loop` takes `--days` (1–365) or
-`--from-block`/`--to-block` (default trailing 7 days). With `--loop` it
-follows the tip (`--duration` optional).
+`explorer index` takes `--hours` (1–8760), `--days` (1–365), or
+`--from-block`/`--to-block` (default trailing 7 days). At most one form.
 
 `live --blocks N` (default 64) is the one-shot window, scanned as
 `tip − N + 1 ..= tip`. It is not a discover-style range. `--loop` follows the
@@ -403,10 +402,8 @@ flowchart TB
     B --> C{"subcommand"}
     C -- "bare / none" --> R["revenue report:<br/>cost · profit · volume per window"]
     C -- "dashboard" --> D["static HTML/JSON<br/>read-only · no migrate"]
-    C -- "index no --loop" --> BF["ingest: historical range<br/>(default trailing 7 days)"]
-    C -- "index --loop" --> E["ingest: live stream<br/>(head − confirmations)<br/>idempotent · reorg-aware · classify-in-stream"]
+    C -- "index" --> BF["ingest: historical range<br/>(default trailing 7 days)"]
     BF --> F["decode → classify → profit<br/>(balance-delta accounting + gas + USD)"]
-    E --> F
     F --> L["mev_ops + blocks/txs/transfers/swaps<br/>+ opportunities + rejected_candidates<br/>+ sync_state checkpoints"]
 ```
 
@@ -428,23 +425,22 @@ mev-scout explorer --windows all --kind sandwich --top 20
 
 #### 3.6.2 `explorer index`
 
-Index blocks into the explorer store. Without `--loop` this backfills a
-historical range (default: trailing 7 days) and exits — idempotent and
-gap-resumable via `blocks_classified`. With `--loop` it streams tip blocks
-(`head − confirmations`) until Ctrl+C or `--duration` elapses; on each start
-it jumps to the current confirmed tip and only follows new blocks forward.
-`--days` / `--from-block`+`--to-block` cannot be combined with `--loop`;
-`--duration` requires `--loop`.
+Index a historical block range into the explorer store (default: trailing
+7 days), then exit — idempotent and gap-resumable via `blocks_classified`.
+Use `--hours`, `--days`, or an exact `--from-block`/`--to-block` window
+(mutually exclusive). Tip-follow (`--loop`) was removed; continuous
+detection stays on `live --loop`. `--hours 24` covers the same span as
+`--days 1`.
 
 ```powershell
 mev-scout explorer index
+mev-scout explorer index --hours 6
 mev-scout explorer index --days 30
 mev-scout explorer index --from-block 65000000 --to-block 65001000
-mev-scout explorer index --loop
-mev-scout explorer index --loop --duration 15m
 ```
 
-Ingest tuning lives in TOML `[explorer]`: `confirmations`, `poll_interval_ms`.
+Ingest tuning lives in TOML `[explorer]`: `confirmations` (plus classification
+knobs).
 
 #### 3.6.3 `explorer dashboard` — static forensic HTML/JSON
 
@@ -490,10 +486,10 @@ HTML notes (offline single-file):
 
 Any change to `decode` / `classify` / P&L invalidates existing `mev_ops` rows for
 the affected window, so before/after Phase numbers are only comparable after a
-replay. `index` is replay-safe (INSERT OR REPLACE, reorg-aware, idempotent), so
-the wipe is required only for classifier *semantics* changes, not plain re-indexes.
-Rewind the checkpoint and re-index from tip with `--loop`, or rewrite a
-historical window with a bounded `explorer index`:
+replay. `index` is replay-safe (INSERT OR REPLACE, idempotent), so the wipe is
+required only for classifier *semantics* changes, not plain re-indexes.
+Rewind the checkpoint and rewrite the historical window with a bounded
+`explorer index`:
 
 ```bash
 # 1) Wipe the affected window on the forensic DB (example: Polygon, from N).
@@ -503,18 +499,17 @@ sqlite3 cache/explorer-polygon.sqlite \
    DELETE FROM blocks_classified WHERE block >= N;
    UPDATE sync_state SET indexed_to = N-1 WHERE chain_id = 137;"
 
-# 2) Resume tip-follow indexing, or rewrite a historical window with --days /
-#    --from-block/--to-block.
-mev-scout explorer index --loop --duration 1h
+# 2) Rewrite the window with --hours / --days or --from-block/--to-block.
+mev-scout explorer index --hours 24
 ```
 
 #### Phase-0 baseline recipe and ship gates
 
-Live-window recipe (e.g. Avalanche / Polygon): run the indexer for a measurement
+Historical-window recipe (e.g. Avalanche / Polygon): backfill a measurement
 window, then inspect with bare `explorer`:
 
 ```bash
-mev-scout explorer index --loop --duration 1h
+mev-scout explorer index --hours 24
 mev-scout explorer --windows 1d,7d,30d
 ```
 
@@ -533,7 +528,7 @@ Pangolin V3, LFJ LB + Pharaoh DLMM. Use public endpoints from
 ```bash
 # config: chain = "avalanche"
 mev-scout discover --blocks 2000
-mev-scout explorer index --loop --duration 1h
+mev-scout explorer index --hours 24
 mev-scout explorer --windows 1d,7d,30d
 ```
 

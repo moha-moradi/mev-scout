@@ -1,21 +1,21 @@
-//! Live/tip explorer indexing for tag coverage.
+//! Historical explorer indexing for tag coverage.
 //!
 //! Gated: the test is `#[ignore]`d, so a plain `cargo test` run skips it. Set
 //! `MEV_SCOUT_COVERAGE=1` and select it explicitly:
 //! ```text
 //! cargo test -p mev-scout-core --test explorer_tag_coverage -- --ignored --nocapture
 //! ```
-//! Optional: `MEV_SCOUT_COVERAGE_DURATION=15m`, `MEV_SCOUT_COVERAGE_CONFIG=mev-scout.coverage.toml`,
+//! Optional: `MEV_SCOUT_COVERAGE_DAYS=1`, `MEV_SCOUT_COVERAGE_CONFIG=mev-scout.coverage.toml`,
 //! and `MEV_SCOUT_COVERAGE_STRICT=1` to fail on incomplete tag coverage instead
 //! of printing a warning.
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
 
+use mev_scout_core::chain::timing::blocks_per_day;
 use mev_scout_core::config::Config;
-use mev_scout_core::explorer::ingest::{run_live, IngestConfig, PoolViews};
+use mev_scout_core::explorer::ingest::{
+    run_range, safe_head, IngestConfig, PoolViews, RangeRequest,
+};
 use mev_scout_core::explorer::store::ExplorerStore;
 use mev_scout_core::jobs::{init_rpc, load_pool_registry};
 use mev_scout_core::types::ChainName;
@@ -32,7 +32,7 @@ const AVAX_SKIP: &[&str] = &["bad_debt_liq"];
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "live RPC — set MEV_SCOUT_COVERAGE=1"]
-async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
+async fn historical_tag_coverage() -> anyhow::Result<()> {
     if std::env::var("MEV_SCOUT_COVERAGE").ok().as_deref() != Some("1") {
         eprintln!("skip: set MEV_SCOUT_COVERAGE=1 to run");
         return Ok(());
@@ -55,9 +55,11 @@ async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
             .unwrap_or_else(|| PathBuf::from("mev-scout.coverage.toml"));
         root.to_string_lossy().into_owned()
     });
-    let duration = parse_duration_env(
-        &std::env::var("MEV_SCOUT_COVERAGE_DURATION").unwrap_or_else(|_| "10m".into()),
-    )?;
+    let days: u64 = std::env::var("MEV_SCOUT_COVERAGE_DAYS")
+        .unwrap_or_else(|_| "1".into())
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid MEV_SCOUT_COVERAGE_DAYS: {e}"))?;
+    anyhow::ensure!(days >= 1, "MEV_SCOUT_COVERAGE_DAYS must be >= 1");
 
     eprintln!("config={cfg_path}");
     let config = Config::load(&cfg_path).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -66,20 +68,19 @@ async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
     let store = ExplorerStore::open(config.effective_explorer_db_path(&chain))?;
     let (_, chain_cfg) = mev_scout_core::config::validation::resolve_chain(&config)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let mut ingest = IngestConfig::from_chain(chain, &chain_cfg);
-    ingest.confirmations = config.explorer.confirmations;
-    ingest.rpc_batch_blocks = config.effective_rpc(chain).rpc_batch_blocks;
+    let ingest = IngestConfig::from_app_config(chain, &chain_cfg, &config);
+
+    let head = safe_head(&setup.rpc, &ingest).await?;
+    let span = days.saturating_mul(blocks_per_day(chain));
+    let from = head.saturating_sub(span);
+    let to = head;
+    anyhow::ensure!(to >= from, "empty coverage range");
 
     let registry = load_pool_registry(&config, &chain);
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop2 = stop.clone();
-    let deadline = tokio::spawn(async move {
-        tokio::time::sleep(duration).await;
-        stop2.store(true, Ordering::Relaxed);
-    });
+    let bc = config.effective_block_concurrency(chain, &setup.provider_configs);
 
-    eprintln!("Live coverage index — {chain} for {duration:?}");
-    let indexed = run_live(
+    eprintln!("Historical coverage index — {chain} {from}..={to} ({days}d, concurrency={bc})");
+    let out = run_range(
         &setup.rpc,
         &store,
         &ingest,
@@ -88,14 +89,18 @@ async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
             v2_like: &registry.v2_like,
             epoch_venue: &registry.epoch_venue,
         },
-        config.explorer.poll_interval_ms,
-        stop,
+        RangeRequest {
+            from_block: from,
+            to_block: to,
+            block_concurrency: bc,
+        },
         &mev_scout_core::progress::NoopProgress,
     )
     .await?;
-    let _ = deadline.await;
     eprintln!(
-        "indexed {indexed} tip blocks; ops={}",
+        "indexed {} blocks, {} ops; store ops={}",
+        out.blocks_processed,
+        out.ops,
         store.op_count_since(0)?
     );
 
@@ -114,7 +119,7 @@ async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
     if std::env::var("MEV_SCOUT_COVERAGE_STRICT").ok().as_deref() == Some("1") {
         anyhow::ensure!(
             missing.is_empty(),
-            "tag coverage incomplete after {duration:?}: missing {missing:?}"
+            "tag coverage incomplete after {days}d: missing {missing:?}"
         );
     } else if !missing.is_empty() {
         eprintln!(
@@ -122,24 +127,10 @@ async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
         );
     }
     anyhow::ensure!(
-        indexed > 0 || store.op_count_since(0)? > 0,
+        out.blocks_processed > 0 || store.op_count_since(0)? > 0,
         "no blocks indexed"
     );
     Ok(())
-}
-
-fn parse_duration_env(s: &str) -> anyhow::Result<Duration> {
-    let s = s.trim();
-    if let Some(num) = s.strip_suffix('s') {
-        return Ok(Duration::from_secs(num.parse()?));
-    }
-    if let Some(num) = s.strip_suffix('m') {
-        return Ok(Duration::from_secs(num.parse::<u64>()? * 60));
-    }
-    if let Some(num) = s.strip_suffix('h') {
-        return Ok(Duration::from_secs(num.parse::<u64>()? * 3600));
-    }
-    Ok(Duration::from_secs(s.parse()?))
 }
 
 fn collect_tags(store: &ExplorerStore) -> anyhow::Result<HashSet<String>> {
