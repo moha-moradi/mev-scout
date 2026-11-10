@@ -991,7 +991,7 @@ pre.raw {
 
     $("overview-ops").innerHTML = searchEvents().slice().reverse().slice(0, 40).map(function (e) {
       var key = sliceKey(e.kind, e.subkind);
-      return '<tr class="clickable" data-hash="' + esc(e.tx_hash) + '"><td>' + esc(relTime(e.ts))
+      return '<tr class="clickable" data-op-id="' + esc(String(e.id)) + '" data-hash="' + esc(e.tx_hash) + '"><td>' + esc(relTime(e.ts))
         + '</td><td><span class="' + pillClass(key) + '" title="' + esc(familyLabel(key)) + '">'
         + esc(sliceLabel(key)) + "</span></td><td>"
         + esc(short(e.tx_hash)) + '</td><td>' + usd(e.net_profit_usd, true) + "</td></tr>";
@@ -1140,7 +1140,10 @@ pre.raw {
       markLine: { silent: true, symbol: "none", data: [{ xAxis: 0 }], lineStyle: { color: "#8296b0", type: "solid" }, label: { show: false } } }]
     });
     var eligible = rows.reduce(function (n, r) { return n + r.ops_eligible; }, 0);
-    $("analytics-roi-cap").textContent = eligible + " / " + (K.ops || 0) + " operations have comparable economics. Unavailable observations are not zero-profit observations.";
+    $("analytics-roi-cap").textContent = eligible + " / " + (K.ops || 0) + " operations have comparable economics. "
+      + "Cost = recorded receipt gas + known financing fees, not deposited/borrowed capital or swap volume; off-ledger payouts (e.g. builder payments) are excluded. "
+      + "Read as a ratio of sums: every $10 of recorded cost → the gross/net in the table. Historical, not a forecast return. "
+      + "Unavailable observations are not zero-profit observations.";
     $("analytics-economics").innerHTML = rows.map(function (r) {
       var reason = Object.keys(r.exclusion_reasons || {}).map(function (k) { return k.replace(/_/g, " ") + ": " + r.exclusion_reasons[k]; }).join("; ");
       return '<tr><td>' + strategyBadge(r.slice_key) + '</td><td title="' + esc(reason || "All observations eligible") + '">'
@@ -1325,16 +1328,36 @@ pre.raw {
     var rows = searchEvents().slice().reverse();
     $("ops-tbody").innerHTML = rows.map(function (e) {
       var key = sliceKey(e.kind, e.subkind);
-      var active = state.opHash === e.tx_hash ? " active" : "";
-      return '<tr class="clickable' + active + '" data-hash="' + esc(e.tx_hash) + '"><td>'
+      var active = String(state.opId) === String(e.id) ? " active" : "";
+      return '<tr class="clickable' + active + '" data-op-id="' + esc(String(e.id)) + '" data-hash="' + esc(e.tx_hash) + '"><td>'
         + esc(fmtTime(e.ts)) + '</td><td><span class="' + pillClass(key) + '">'
         + esc(sliceLabel(key)) + "</span></td><td>" + usd(e.net_profit_usd, true) + "</td></tr>";
     }).join("") || '<tr><td colspan="3" class="empty">No operations</td></tr>';
   }
 
-  function openOp(hash) {
-    state.opHash = hash;
-    setView("operations");
+  function openOp(key, fromHash) {
+    // Ids distinguish several positions closed in the same tx; a legacy
+    // transaction hash still resolves when it maps to exactly one operation.
+    var evs = P.evidence || [];
+    var ev = evs.filter(function (x) { return String(x.id) === String(key); })[0];
+    if (!ev) {
+      var byHash = evs.filter(function (x) { return x.tx_hash === key; });
+      if (byHash.length) ev = byHash[0];
+    }
+    var row = ev ? null : (P.events || []).filter(function (x) {
+      return String(x.id) === String(key) || x.tx_hash === key;
+    })[0];
+    if (ev) {
+      state.opId = ev.id;
+      state.opHash = ev.tx_hash;
+    } else if (row) {
+      state.opId = row.id;
+      state.opHash = row.tx_hash;
+    } else {
+      state.opId = null;
+      state.opHash = String(key);
+    }
+    setView("operations", fromHash === true ? false : undefined);
     renderOpDetail();
   }
 
@@ -1352,9 +1375,26 @@ pre.raw {
 
   function renderOpDetail() {
     renderOperationsList();
-    var evMap = evidenceByHash();
-    var ev = state.opHash ? evMap[state.opHash] : null;
-    var row = (P.events || []).filter(function (e) { return e.tx_hash === state.opHash; })[0];
+    var byId = evidenceById();
+    var ev = state.opId != null ? byId[String(state.opId)] : null;
+    if (!ev && state.opHash) {
+      // Legacy #/op/<txhash>: resolve when the hash identifies one operation.
+      var matches = (P.evidence || []).filter(function (x) { return x.tx_hash === state.opHash; });
+      if (matches.length) ev = matches[0];
+    }
+    if (!ev && state.opId == null && state.opHash) {
+      var hashRow = (P.events || []).filter(function (x) { return x.tx_hash === state.opHash; })[0];
+      if (hashRow) state.opId = hashRow.id;
+    }
+    var row = state.opId != null
+      ? (P.events || []).filter(function (e) { return String(e.id) === String(state.opId); })[0]
+      : null;
+    if (ev) {
+      state.opId = ev.id;
+      state.opHash = ev.tx_hash;
+    } else if (row) {
+      state.opHash = row.tx_hash;
+    }
     if (!ev && !row) {
       $("op-empty").style.display = "";
       $("op-body").style.display = "none";
@@ -1383,6 +1423,18 @@ pre.raw {
     if (ev && ev.pricing_clamped) badges += ' <span class="pill warn">pricing_clamped</span>';
     if (ev && ev.flash_fee_unpriced) badges += ' <span class="pill warn">flash_fee_unpriced</span>';
     if (!ev && row) badges += ' <span class="pill warn">evidence not emitted</span>';
+    // Several positions can close in one transaction; let the reader pick the
+    // exact operation instead of silently showing the first one.
+    var siblings = (P.evidence || []).filter(function (x) {
+      return state.opHash && x.tx_hash === state.opHash;
+    });
+    if (siblings.length > 1) {
+      badges += ' <span class="caption">positions in this tx:</span> ' + siblings.map(function (s) {
+        var active = String(s.id) === String(state.opId);
+        return '<button class="pill' + (active ? " ok" : "") + '" data-op-id="' + esc(String(s.id)) + '">'
+          + esc(sliceLabel(sliceKey(s.kind, s.subkind))) + " #" + esc(String(s.id)) + "</button>";
+      }).join(" ");
+    }
     $("op-badges").innerHTML = badges;
 
     var net = ev ? ev.net_profit_usd : row.net_profit_usd;
@@ -1390,6 +1442,7 @@ pre.raw {
     var gas = ev ? ev.gas_cost_usd : row.gas_cost_usd;
     var vol = ev ? ev.volume_usd : row.volume_usd;
     var flash = ev ? ev.flashloan_fee_usd : null;
+    var acc = (ev && ev.details && ev.details.jit_accounting) || null;
     $("op-kpis").innerHTML = [
       { l: "Net profit", v: usd(net, true) },
       { l: "Gross profit", v: usd(gross, false) },
@@ -1450,6 +1503,18 @@ pre.raw {
         ]
       });
     }
+    // Waterfall reconciliation note: the netted flash fee must not be taken
+    // twice, and an unknown cost is incomplete — never a fabricated zero bar.
+    var wfNote = $("op-waterfall-note");
+    if (ev && ev.details && ev.details.flashloan_fee_netted_in_ledger) {
+      wfNote.textContent = "Flash-loan fee is already netted in the ledger residual; the waterfall does not subtract it again.";
+    } else if (acc && acc.valuation && acc.valuation.pricing_complete === false) {
+      wfNote.textContent = "Incomplete pricing: gross/net stay empty instead of a partial sum. Cost bars reflect recorded receipt gas only.";
+    } else if (!priced) {
+      wfNote.textContent = "Profit unavailable — gross/net are NULL, not zero.";
+    } else {
+      wfNote.textContent = "Net = gross − recorded gas − known financing cost.";
+    }
 
     var route = (ev && ev.route) || [];
     var amms = {};
@@ -1467,6 +1532,9 @@ pre.raw {
     if (ev && ev.flash_fee_unpriced) {
       factRows.push(["Flash fee", "unpriced — omitted from USD waterfall"]);
     }
+    if (ev && ev.economics && ev.economics.roi_pct != null) {
+      factRows.push(["Return on recorded cost", percent(ev.economics.roi_pct) + " (historical, not a forecast)"]);
+    }
     if (!ev && row) {
       factRows.push(["Evidence", "not emitted (budget/cap)"]);
     }
@@ -1475,10 +1543,23 @@ pre.raw {
     }).join("");
 
     if (!route.length) {
-      $("op-route").innerHTML = !ev && row
-        ? '<div class="empty">Route unavailable — evidence not emitted</div>'
-        : '<div class="empty">No route legs</div>';
-      $("op-route-cap").textContent = "";
+      if (acc && acc.version) {
+        // JIT is a liquidity position, not a swap route: show its tokens as
+        // deposits/withdrawals instead of inventing a hop.
+        var t0 = acc.token0 || "";
+        var t1 = acc.token1 || "";
+        $("op-route").innerHTML = '<div class="route-edge">Deposit → position → withdraw</div>'
+          + '<div class="route-node jit"><div><b>Tokens</b></div><div>'
+          + tokenLabel(t0) + " · " + tokenLabel(t1) + "</div></div>"
+          + '<div class="caption">Pool ' + esc(short(acc.pool || "")) + " · ticks "
+          + esc(String(acc.tick_lower)) + " → " + esc(String(acc.tick_upper)) + "</div>";
+        $("op-route-cap").textContent = "JIT position tokens — no swap route is assumed";
+      } else {
+        $("op-route").innerHTML = !ev && row
+          ? '<div class="empty">Route unavailable — evidence not emitted</div>'
+          : '<div class="empty">No route legs</div>';
+        $("op-route-cap").textContent = "";
+      }
     } else {
       var html = "";
       var nonReg = false;
@@ -1518,6 +1599,60 @@ pre.raw {
     $("op-victims").textContent = victims.length
       ? ("Victims: " + victims.map(short).join(", "))
       : "No victim hashes";
+    var accEl = $("op-accounting");
+    if (!acc || !acc.version) {
+      accEl.innerHTML = "";
+    } else {
+      var verified = acc.status === "verified";
+      var raw = function (v) {
+        return v == null ? '<span class="null">—</span>' : esc(String(v));
+      };
+      var v = acc.valuation || {};
+      var rows = [
+        ["Deposited (Mint)", acc.mint_amount0, acc.mint_amount1],
+        ["Withdrawn (Collect)", acc.collect_amount0, acc.collect_amount1],
+        ["Burn principal", acc.burn_amount0, acc.burn_amount1],
+        ["Paid LP fees", acc.fee_amount0, acc.fee_amount1],
+        ["Net cashflow", acc.cashflow_amount0, acc.cashflow_amount1]
+      ].map(function (r) {
+        return "<tr><td>" + esc(r[0]) + "</td><td>" + raw(r[1]) + "</td><td>" + raw(r[2]) + "</td></tr>";
+      }).join("");
+      var timeline = (acc.timeline || []).map(function (t) {
+        return "<tr><td>" + esc(t.kind) + "</td><td>" + t.block_number + "</td><td>"
+          + esc(dateTime(t.ts)) + '</td><td title="' + esc(t.tx_hash || "") + '">'
+          + esc(short(t.tx_hash || "")) + "</td><td>" + raw(t.amount0) + "</td><td>"
+          + raw(t.amount1) + "</td></tr>";
+      }).join("");
+      accEl.innerHTML = '<div class="card"><h2>JIT accounting</h2>'
+        + '<div class="accounting-note ' + (verified ? "verified" : "") + '">'
+        + '<b>' + (verified ? "Verified settled cycle" : "Not verifiable") + "</b> · method "
+        + esc(acc.method || "—")
+        + (verified
+          ? " — paid LP fees = ΣCollect − ΣBurn principal per token, valued at each cashflow's own hour."
+          : " — reason(s): " + esc((acc.reasons || []).join(", ") || "unsupported or incomplete evidence")
+            + ". Profit stays unknown; no estimate is substituted.")
+        + "</div>"
+        + '<table class="facts"><tr><td>Pool</td><td title="' + esc(acc.pool || "") + '">' + esc(short(acc.pool || "")) + "</td></tr>"
+        + "<tr><td>Owner</td><td>" + esc(short(acc.owner || "")) + "</td></tr>"
+        + "<tr><td>Beneficiary</td><td>" + esc(acc.beneficiary ? short(acc.beneficiary) : "—") + "</td></tr>"
+        + "<tr><td>Tokens</td><td>" + tokenLabel(acc.token0 || "") + " / " + tokenLabel(acc.token1 || "") + "</td></tr>"
+        + "<tr><td>Range</td><td>" + esc(String(acc.tick_lower)) + " → " + esc(String(acc.tick_upper)) + "</td></tr>"
+        + "<tr><td>Archive baselines</td><td>" + ((acc.baselines || []).length || "—") + "</td></tr></table>"
+        + '<h3 style="margin-top:14px">Settlement (raw units)</h3>'
+        + '<div class="table-wrap"><table><thead><tr><th></th><th>Token 0</th><th>Token 1</th></tr></thead><tbody>'
+        + rows + "</tbody></table></div>"
+        + '<h3 style="margin-top:14px">Value</h3><table class="facts">'
+        + "<tr><td>Gross</td><td>" + usd(v.gross_usd, true) + "</td></tr>"
+        + "<tr><td>Gas (all owned receipts, once)</td><td>" + usd(v.gas_usd, true) + "</td></tr>"
+        + "<tr><td>LP fees received</td><td>" + usd(v.paid_fees_usd, true) + "</td></tr>"
+        + "<tr><td>Net</td><td>" + usd(v.net_profit_usd, true) + "</td></tr>"
+        + "<tr><td>Pricing</td><td>" + (v.pricing_complete ? "complete (≈USD)" : "incomplete — NULL") + "</td></tr></table>"
+        + '<h3 style="margin-top:14px">Event timeline</h3>'
+        + '<div class="table-wrap"><table><thead><tr><th>Event</th><th>Block</th><th>UTC</th><th>Tx</th><th>Amount 0</th><th>Amount 1</th></tr></thead><tbody>'
+        + (timeline || '<tr><td colspan="6">No LP events</td></tr>') + "</tbody></table></div>"
+        + '<div class="caption">Gross counts received value minus deposited value at their own hours; principal price changes are part of the position result. Paid LP fees are shown separately. USD is approximate; missing quotes keep gross/net NULL.</div>'
+        + "</div>";
+    }
     $("op-raw").textContent = JSON.stringify((ev && ev.details) || {}, null, 2);
 
     var chainId = S.db && S.db.chain_id;
@@ -1637,15 +1772,19 @@ pre.raw {
 
   function parseHash() {
     var h = (location.hash || "").replace(/^#\/?/, "");
+    if (h.indexOf("operation/") === 0) {
+      openOp(h.slice("operation/".length), true);
+      return;
+    }
     if (h.indexOf("op/") === 0) {
-      state.opHash = h.slice(3);
-      setView("operations");
+      // Legacy transaction-hash deep link.
+      openOp(h.slice(3), true);
       return;
     }
     if (["analytics", "operations", "searchers", "pools", "health", "overview"].indexOf(h) >= 0) {
-      return setView(h);
+      return setView(h, false);
     }
-    setView("overview");
+    setView("overview", false);
   }
 
   document.querySelectorAll(".navbtn").forEach(function (b) {
@@ -1656,14 +1795,46 @@ pre.raw {
     renderView();
   });
   document.body.addEventListener("click", function (e) {
+    var pick = e.target.closest("[data-op-id]");
+    if (pick) {
+      openOp(pick.getAttribute("data-op-id"));
+      return;
+    }
     var tr = e.target.closest("tr[data-hash]");
     if (tr) openOp(tr.getAttribute("data-hash"));
   });
+  // Strategy definitions: hover, keyboard focus and tap all reach the same
+  // tooltip. Escape dismisses it.
+  document.addEventListener("pointerover", function (e) {
+    var t = e.target.closest && e.target.closest("[data-strategy]");
+    if (t) showStrategyHelp(t);
+  });
+  document.addEventListener("pointerout", function (e) {
+    var t = e.target.closest && e.target.closest("[data-strategy]");
+    if (t && !t.contains(e.relatedTarget)) hideStrategyHelp();
+  });
+  document.addEventListener("focusin", function (e) {
+    var t = e.target.closest && e.target.closest("[data-strategy]");
+    if (t) showStrategyHelp(t);
+  });
+  document.addEventListener("focusout", function (e) {
+    if (e.target.closest && e.target.closest("[data-strategy]")) hideStrategyHelp();
+  });
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest && e.target.closest("[data-strategy]");
+    if (t) showStrategyHelp(t);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") hideStrategyHelp();
+  });
   $("op-copy").addEventListener("click", function () {
-    var url = location.href.split("#")[0] + "#/op/" + (state.opHash || "");
+    var key = state.opId != null ? String(state.opId) : (state.opHash || "");
+    var url = location.href.split("#")[0] + "#/operation/" + key;
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url);
   });
   window.addEventListener("hashchange", parseHash);
+  // pushState entries are restored with popstate, not hashchange.
+  window.addEventListener("popstate", parseHash);
   window.addEventListener("resize", function () {
     Object.keys(charts).forEach(function (id) {
       if (charts[id]) try { charts[id].resize(); } catch (e) {}

@@ -164,6 +164,13 @@ pub struct TransferRow {
     pub amount: U256,
 }
 
+/// Ordered LP evidence for one block, persisted in the block-facts transaction.
+pub struct JitJournalInput<'a> {
+    pub block: &'a crate::explorer::jit_accounting::LpBlock,
+    /// Open-position retention window, in blocks.
+    pub window_blocks: u64,
+}
+
 /// Everything a single indexed block contributes to the store.
 pub struct BlockFactsInput<'a> {
     pub block_number: u64,
@@ -177,6 +184,8 @@ pub struct BlockFactsInput<'a> {
     pub events: &'a [MevEvent],
     pub native_price_usd: Option<f64>,
     pub token_prices: &'a std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
+    /// Receipt-local LP journal + open-position update, committed with the facts.
+    pub jit_journal: Option<JitJournalInput<'a>>,
 }
 
 /// One scanner opportunity row to insert (`opportunities` results table).
@@ -379,6 +388,7 @@ mod tests {
                 events: p.events,
                 native_price_usd: Some(0.75),
                 token_prices: p.token_prices,
+                jit_journal: None,
             })
             .unwrap()
     }
@@ -1076,6 +1086,7 @@ mod tests {
                     events: std::slice::from_ref(&ev),
                     native_price_usd,
                     token_prices: &prices,
+                    jit_journal: None,
                 })
                 .unwrap();
         }
@@ -1776,5 +1787,211 @@ mod tests {
             "stored 4.0 quote, got {profit}"
         );
         assert_eq!(kind, "arb_atomic");
+    }
+
+    fn jit_accounting(
+        status: &str,
+        gross: Option<f64>,
+        ts: u64,
+    ) -> crate::explorer::jit_accounting::JitAccounting {
+        use crate::explorer::jit_accounting::{Gas, JitAccounting, Timeline, Valuation};
+        JitAccounting {
+            version: 1,
+            status: status.into(),
+            method: "v3_settled_cashflows".into(),
+            reasons: vec![],
+            pool: address!("3333000000000000000000000000000000000003"),
+            owner: address!("2222000000000000000000000000000000000002"),
+            beneficiary: None,
+            token0: address!("4444000000000000000000000000000000000004"),
+            token1: address!("5555000000000000000000000000000000000005"),
+            tick_lower: -10,
+            tick_upper: 10,
+            mint_amount0: Some("1000".into()),
+            mint_amount1: Some("2000".into()),
+            burn_amount0: Some("1000".into()),
+            burn_amount1: Some("2000".into()),
+            collect_amount0: Some("1100".into()),
+            collect_amount1: Some("2200".into()),
+            fee_amount0: Some("100".into()),
+            fee_amount1: Some("200".into()),
+            cashflow_amount0: Some("100".into()),
+            cashflow_amount1: Some("200".into()),
+            timeline: vec![
+                Timeline {
+                    kind: "mint".into(),
+                    block_number: 100,
+                    ts,
+                    tx_index: 0,
+                    log_index: 1,
+                    tx_hash: b256!(
+                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    ),
+                    amount0: "1000".into(),
+                    amount1: "2000".into(),
+                    liquidity: "50".into(),
+                },
+                Timeline {
+                    kind: "collect".into(),
+                    block_number: 100,
+                    ts,
+                    tx_index: 1,
+                    log_index: 2,
+                    tx_hash: b256!(
+                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    ),
+                    amount0: "1100".into(),
+                    amount1: "2200".into(),
+                    liquidity: "0".into(),
+                },
+            ],
+            gas: vec![Gas {
+                tx_hash: b256!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                ts,
+                gas_used: "1".into(),
+                effective_gas_price_wei: "100".into(),
+                gas_cost_wei: "100".into(),
+            }],
+            baselines: vec![],
+            quotes: vec![],
+            valuation: Valuation {
+                gross_usd: gross,
+                gas_usd: Some(2.5),
+                net_profit_usd: gross.map(|g| g - 2.5),
+                paid_fees_usd: Some(0.25),
+                pricing_complete: gross.is_some(),
+            },
+            usd_approximate: true,
+        }
+    }
+
+    fn jit_event(block: u64, status: &str, gross: Option<f64>, ts: u64) -> MevEvent {
+        let mut ev = sample_event(block);
+        ev.kind = MevKind::Jit;
+        ev.profit_token = None;
+        ev.profit_amount = None;
+        ev.profit_tokens.clear();
+        ev.gas_cost_wei = U256::ZERO;
+        let accounting = jit_accounting(status, gross, ts);
+        ev.details = serde_json::json!({
+            "jit_accounting": serde_json::to_value(accounting).unwrap(),
+            "usd_approximate": gross.is_none(),
+        });
+        ev
+    }
+
+    /// JIT profit is the reconciled valuation, never the classifier's old
+    /// in-range fee estimate. Gas is the per-receipt valuation too.
+    #[test]
+    fn jit_profit_comes_only_from_its_valuation() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let prices = std::collections::HashMap::new();
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 900,
+                block_hash: &b256!(
+                    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                ),
+                ts: 1_700_000_000,
+                tx_count: 2,
+                swaps: &[],
+                events: &[jit_event(900, "verified", Some(12.5), 1_700_000_000)],
+                token_prices: &prices,
+            },
+        );
+        let op = store.ops_in_range(900, 900, &[], None).unwrap().remove(0);
+        assert!((op.profit_usd.unwrap() - 12.5).abs() < 1e-9);
+        assert!((op.gas_cost_usd.unwrap() - 2.5).abs() < 1e-9);
+        assert!((op.net_profit_usd.unwrap() - 10.0).abs() < 1e-9);
+    }
+
+    /// An unverified cycle stores NULL profit, not the old estimate and not 0.
+    #[test]
+    fn unverified_jit_has_null_profit() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let prices = std::collections::HashMap::new();
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 901,
+                block_hash: &b256!(
+                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                ),
+                ts: 1_700_000_000,
+                tx_count: 2,
+                swaps: &[],
+                events: &[jit_event(901, "unavailable", None, 1_700_000_000)],
+                token_prices: &prices,
+            },
+        );
+        let op = store.ops_in_range(901, 901, &[], None).unwrap().remove(0);
+        assert_eq!(op.profit_usd, None);
+        assert_eq!(op.net_profit_usd, None);
+    }
+
+    /// Repricing JIT with missing quotes must clear the stale figure, then
+    /// restore it with the same evaluator once quotes exist.
+    #[test]
+    fn jit_reprice_clears_stale_profit_then_restores_from_quotes() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let prices = std::collections::HashMap::new();
+        let ts = 7_200u64;
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 902,
+                block_hash: &b256!(
+                    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                ),
+                ts,
+                tx_count: 2,
+                swaps: &[],
+                events: &[jit_event(902, "verified", Some(99.0), ts)],
+                token_prices: &prices,
+            },
+        );
+        let decimals = |addr: Address| {
+            (addr == address!("4444000000000000000000000000000000000004")
+                || addr == address!("5555000000000000000000000000000000000005"))
+            .then_some(6)
+        };
+        store.reprice_range(902, 902, decimals).unwrap();
+        let op = store.ops_in_range(902, 902, &[], None).unwrap().remove(0);
+        assert_eq!(op.profit_usd, None, "missing quotes clear stale profit");
+        assert_eq!(op.net_profit_usd, None);
+
+        let hour = ts / 3600;
+        store
+            .put_price(
+                address!("4444000000000000000000000000000000000004"),
+                hour,
+                1.0,
+                "t",
+            )
+            .unwrap();
+        store
+            .put_price(
+                address!("5555000000000000000000000000000000000005"),
+                hour,
+                1.0,
+                "t",
+            )
+            .unwrap();
+        store.put_price(Address::ZERO, hour, 1.0, "t").unwrap();
+        store.reprice_range(902, 902, decimals).unwrap();
+        let op = store.ops_in_range(902, 902, &[], None).unwrap().remove(0);
+        // Gross = (1100+2200 - 1000-2000) / 1e6 = 0.0003; gas = 100 wei.
+        let expected = 300.0 / 1e6;
+        assert!(
+            (op.profit_usd.unwrap() - expected).abs() < 1e-12,
+            "{:?}",
+            op.profit_usd
+        );
+        assert!(
+            (op.net_profit_usd.unwrap() - (expected - 100.0 / 1e18)).abs() < 1e-15,
+            "{:?}",
+            op.net_profit_usd
+        );
     }
 }

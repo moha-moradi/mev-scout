@@ -337,6 +337,7 @@ fn golden_block_persists_mev_ops_rows() {
             events: &events,
             native_price_usd: Some(0.75),
             token_prices: &prices,
+            jit_journal: None,
         })
         .unwrap();
     assert_eq!(n, 3);

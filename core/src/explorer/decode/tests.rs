@@ -143,8 +143,8 @@ fn v3_mint_sign_extends_negative_ticks_from_topics() {
         vec![
             V3_MINT_TOPIC,
             b256!("0000000000000000000000000000000000000000000000000000000000000001"),
-            b256!("0000000000000000000000000000000000000000000000000000000000ffffff"),
-            b256!("0000000000000000000000000000000000000000000000000000000000f27618"),
+            b256!("fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff27618"),
+            b256!("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
         ],
         hexdata(concat!(
             "0000000000000000000000000000000000000000000000000000000000000001",
@@ -154,8 +154,8 @@ fn v3_mint_sign_extends_negative_ticks_from_topics() {
         )),
     );
     let f = decode_v3_mint_burn(&l).unwrap();
-    assert_eq!(f.tick_lower, -1);
-    assert_eq!(f.tick_upper, -887272);
+    assert_eq!(f.tick_lower, -887272);
+    assert_eq!(f.tick_upper, -1);
 }
 
 #[test]

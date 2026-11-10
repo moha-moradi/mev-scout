@@ -165,6 +165,7 @@ impl ExplorerStore {
             events,
             native_price_usd,
             token_prices,
+            jit_journal,
         } = facts;
         let now = crate::utils::epoch_secs() as i64;
         // All business logic (PnL annotation, sandwich gate, volume,
@@ -363,6 +364,19 @@ impl ExplorerStore {
              VALUES(?1, ?2, ?3)",
             rusqlite::params![block_number as i64, now, inserted as i64],
         )?;
+        // The LP journal, the position state it implies and the block
+        // checkpoint must land together: a Mint whose Burn state is missing
+        // would turn the next block's JIT detection into noise.
+        if let Some(journal) = jit_journal {
+            super::jit_positions::write_jit_block(&tx, journal.block)?;
+            super::jit_positions::apply_jit_lifecycle(&tx, journal.block)?;
+            let cutoff = block_number.saturating_sub(journal.window_blocks) as i64;
+            tx.execute(
+                "DELETE FROM jit_open_positions WHERE opened_block < ?1",
+                [cutoff],
+            )?;
+            tx.execute("DELETE FROM jit_blocks WHERE block_number < ?1", [cutoff])?;
+        }
         tx.commit()?;
 
         // Best-effort (see the doc comment): the facts above are committed.

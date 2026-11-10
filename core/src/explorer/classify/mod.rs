@@ -269,11 +269,35 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
         .filter(|e| e.kind == MevKind::ArbAtomic)
         .map(|e| e.tx_index)
         .collect();
+    let arb_by_tx: HashMap<u64, &MevEvent> = events
+        .iter()
+        .filter(|e| e.kind == MevKind::ArbAtomic)
+        .map(|e| (e.tx_index, e))
+        .collect();
     let mut jit_arb_txs: std::collections::HashSet<u64> = std::collections::HashSet::new();
     for ev in jit_events.iter_mut() {
         if arb_txs.contains(&ev.tx_index) {
             ev.kind = MevKind::JitArb;
             ev.details["components"] = serde_json::json!(["JIT", "Arb"]);
+            // Suppressing the standalone ArbAtomic must not erase the arb
+            // evidence: keep its ledger, route and pools here so the combined
+            // operation stays inspectable even though its profit is unknown.
+            if let Some(arb) = arb_by_tx.get(&ev.tx_index) {
+                ev.details["arb_evidence"] = serde_json::json!({
+                    "tx_hash": format!("{:#x}", arb.tx_hash),
+                    "pools": arb.pools.iter().map(|p| format!("{p:#x}")).collect::<Vec<_>>(),
+                    "profit_tokens": arb.profit_tokens.iter()
+                        .map(|(t, a)| serde_json::json!({"token": format!("{t:#x}"), "amount": a.to_string()}))
+                        .collect::<Vec<_>>(),
+                    "profit_usd": arb.profit_usd,
+                    "details": arb.details.clone(),
+                });
+                if ev.details.get("route").is_none() {
+                    if let Some(route) = arb.details.get("route") {
+                        ev.details["route"] = route.clone();
+                    }
+                }
+            }
             jit_arb_txs.insert(ev.tx_index);
         }
     }

@@ -1,10 +1,12 @@
-//! JIT open-positions + price cache for ExplorerStore.
+//! JIT open-positions + ordered LP journal + price cache for ExplorerStore.
 use std::collections::HashMap;
 
 use alloy::primitives::Address;
 use rusqlite::types::Value;
+use rusqlite::Connection;
 
 use super::{ExplorerStore, OpenPosition};
+use crate::explorer::jit_accounting::LpBlock;
 
 /// A quote is usable only when it is a positive, finite USD amount. `0.0`
 /// (and NaN/inf) rows are treated as absent on both write and read.
@@ -323,12 +325,305 @@ impl ExplorerStore {
         )?;
         Ok(n)
     }
+
+    /// Persist one block's ordered LP journal (receipt-local log order).
+    ///
+    /// Rows are replaced, not appended: a retried block must converge instead
+    /// of duplicating facts. Callers inside the block-facts transaction reach
+    /// [`write_jit_block`] directly so evidence, state and checkpoint commit
+    /// together.
+    pub fn put_jit_block(&self, block: &LpBlock) -> anyhow::Result<()> {
+        write_jit_block(&self.conn, block)
+    }
+
+    /// Ordered journal rows `from_block..=to_block`, ascending. A corrupt row
+    /// fails the read instead of being skipped: missing evidence must not look
+    /// like an empty block when reconciling a position cycle.
+    pub fn jit_blocks_range(&self, from_block: u64, to_block: u64) -> anyhow::Result<Vec<LpBlock>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT journal FROM jit_blocks
+              WHERE block_number BETWEEN ?1 AND ?2
+              ORDER BY block_number ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![from_block as i64, to_block as i64], |r| {
+            r.get::<_, String>(0)
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let json = row?;
+            let block = serde_json::from_str::<LpBlock>(&json)
+                .map_err(|e| anyhow::anyhow!("jit_blocks.journal is not a valid LpBlock: {e}"))?;
+            out.push(block);
+        }
+        Ok(out)
+    }
+
+    /// Drop journal rows older than `before_block` (bounded retention).
+    pub fn prune_jit_blocks(&self, before_block: u64) -> anyhow::Result<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM jit_blocks WHERE block_number < ?1",
+            [before_block as i64],
+        )?;
+        Ok(n)
+    }
+
+    /// Replay every retained journal row into `jit_open_positions`.
+    ///
+    /// Used after a reorg: deleting a closing Burn also deleted the row it
+    /// closed, and the opening Mint may sit before the fork point and survive.
+    /// Rebuilding from the surviving journals restores that state instead of
+    /// trusting the mutated table.
+    pub fn rebuild_jit_positions(&self) -> anyhow::Result<()> {
+        replay_jit_positions(&self.conn)
+    }
+}
+
+/// Delete the materialized position table and replay every retained journal
+/// into it. Used after a reorg, inside the unwind transaction.
+pub(crate) fn replay_jit_positions(conn: &Connection) -> anyhow::Result<()> {
+    let mut stmt = conn.prepare("SELECT journal FROM jit_blocks ORDER BY block_number ASC")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut journals = Vec::new();
+    for row in rows {
+        let json = row?;
+        journals.push(
+            serde_json::from_str::<LpBlock>(&json)
+                .map_err(|e| anyhow::anyhow!("jit_blocks.journal is not a valid LpBlock: {e}"))?,
+        );
+    }
+    drop(stmt);
+    conn.execute("DELETE FROM jit_open_positions", [])?;
+    for block in &journals {
+        apply_jit_lifecycle(conn, block)?;
+    }
+    Ok(())
+}
+
+/// Insert/replace one journal row on a connection that may already hold the
+/// block-facts transaction.
+pub(crate) fn write_jit_block(conn: &Connection, block: &LpBlock) -> anyhow::Result<()> {
+    let journal = serde_json::to_string(block).map_err(|e| {
+        anyhow::anyhow!("serialize LP journal for block {}: {e}", block.block_number)
+    })?;
+    conn.execute(
+        "INSERT OR REPLACE INTO jit_blocks
+           (block_number, block_hash, parent_hash, ts, complete, journal)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            block.block_number as i64,
+            format!("{:#x}", block.hash),
+            block.parent_hash.map(|h| format!("{h:#x}")),
+            block.ts as i64,
+            block.complete as i64,
+            journal,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Apply one block's LP facts to the open-position state in receipt order.
+///
+/// This replaces overwrite-on-mint/delete-on-burn: a Mint adds liquidity and
+/// keeps the earliest opening block, a partial Burn leaves the remainder open,
+/// and a Mint after a full Burn is a distinct reopen. Collects move value but
+/// do not change open liquidity.
+pub(crate) fn apply_jit_lifecycle(conn: &Connection, journal: &LpBlock) -> anyhow::Result<()> {
+    let read_liquidity = |f: &crate::explorer::types::JitFact| -> anyhow::Result<Option<u128>> {
+        let v: Option<String> = conn
+            .query_row(
+                "SELECT liquidity FROM jit_open_positions
+                  WHERE pool = ?1 AND owner = ?2 AND tick_lower = ?3 AND tick_upper = ?4",
+                rusqlite::params![
+                    format!("{:#x}", f.pool),
+                    format!("{:#x}", f.owner),
+                    f.tick_lower as i64,
+                    f.tick_upper as i64,
+                ],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .unwrap_or(None);
+        match v {
+            Some(s) => s
+                .parse::<u128>()
+                .map(Some)
+                .map_err(|e| anyhow::anyhow!("jit_open_positions.liquidity {s:?}: {e}")),
+            None => Ok(None),
+        }
+    };
+    let delete = |f: &crate::explorer::types::JitFact| -> anyhow::Result<()> {
+        conn.execute(
+            "DELETE FROM jit_open_positions
+              WHERE pool = ?1 AND owner = ?2 AND tick_lower = ?3 AND tick_upper = ?4",
+            rusqlite::params![
+                format!("{:#x}", f.pool),
+                format!("{:#x}", f.owner),
+                f.tick_lower as i64,
+                f.tick_upper as i64,
+            ],
+        )?;
+        Ok(())
+    };
+    let upsert = |f: &crate::explorer::types::JitFact, liquidity: u128| -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO jit_open_positions
+               (pool, owner, tick_lower, tick_upper, opened_block, liquidity)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(pool, owner, tick_lower, tick_upper) DO UPDATE SET
+               liquidity = excluded.liquidity,
+               opened_block = MIN(jit_open_positions.opened_block, excluded.opened_block)",
+            rusqlite::params![
+                format!("{:#x}", f.pool),
+                format!("{:#x}", f.owner),
+                f.tick_lower as i64,
+                f.tick_upper as i64,
+                journal.block_number as i64,
+                liquidity.to_string(),
+            ],
+        )?;
+        Ok(())
+    };
+    for tx in &journal.txs {
+        for f in &tx.facts {
+            let current = read_liquidity(f)?;
+            if f.is_mint {
+                let open = current.unwrap_or(0);
+                let Some(sum) = open.checked_add(f.liquidity) else {
+                    // An overflowing lifetime is not a position we can track;
+                    // drop it rather than keep a wrong smaller number.
+                    delete(f)?;
+                    continue;
+                };
+                if sum > 0 {
+                    upsert(f, sum)?;
+                } else {
+                    delete(f)?;
+                }
+            } else if !f.is_collect {
+                match current {
+                    Some(open) if f.liquidity >= open => delete(f)?,
+                    Some(open) => upsert(f, open - f.liquidity)?,
+                    None => {}
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::explorer::jit_accounting::{LpBlock, LpTx};
     use crate::explorer::store::ExplorerStore;
+    use crate::explorer::types::JitFact;
+    use alloy::primitives::{b256, B256, U256};
+
+    fn position_fact(is_mint: bool, liquidity: u128, log_index: u64) -> JitFact {
+        JitFact {
+            tx_index: 0,
+            log_index,
+            pool: Address::repeat_byte(0x33),
+            owner: Address::repeat_byte(0x11),
+            tick_lower: -10,
+            tick_upper: 10,
+            is_mint,
+            is_collect: false,
+            sender: None,
+            recipient: None,
+            liquidity,
+            amount0: U256::ZERO,
+            amount1: U256::ZERO,
+            bin_amm: false,
+        }
+    }
+
+    fn journal(block_number: u64, seed: u8, facts: Vec<JitFact>) -> LpBlock {
+        LpBlock {
+            block_number,
+            hash: B256::repeat_byte(seed),
+            parent_hash: None,
+            ts: block_number * 12,
+            complete: true,
+            txs: vec![LpTx {
+                tx_hash: b256!("00000000000000000000000000000000000000000000000000000000000000aa"),
+                tx_index: 0,
+                from: Address::repeat_byte(0x11),
+                to: None,
+                facts,
+                transfers: vec![],
+                gas: None,
+                other_activity: false,
+            }],
+            swaps: vec![],
+        }
+    }
+
+    fn ingest(store: &ExplorerStore, block: &LpBlock) -> anyhow::Result<()> {
+        store.put_jit_block(block)?;
+        apply_jit_lifecycle(store.connection(), block)
+    }
+
+    /// Additions add liquidity, partial burns leave the remainder open, and a
+    /// Mint after a full Burn is a distinct reopen — not an overwrite.
+    #[test]
+    fn lifecycle_is_additive_and_ordered() {
+        let store = ExplorerStore::open_in_memory().expect("open store");
+        ingest(&store, &journal(1, 0x01, vec![position_fact(true, 100, 1)])).expect("mint");
+        assert_eq!(store.open_positions(0).expect("open")[0].liquidity, 100);
+
+        ingest(&store, &journal(2, 0x02, vec![position_fact(false, 40, 1)])).expect("partial");
+        let open = store.open_positions(0).expect("open");
+        assert_eq!(open.len(), 1);
+        assert_eq!(
+            open[0].liquidity, 60,
+            "partial burn must leave the remainder"
+        );
+
+        ingest(&store, &journal(3, 0x03, vec![position_fact(false, 60, 1)])).expect("close");
+        assert!(store.open_positions(0).expect("open").is_empty());
+
+        ingest(&store, &journal(4, 0x04, vec![position_fact(true, 30, 1)])).expect("reopen");
+        let open = store.open_positions(0).expect("open");
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].liquidity, 30);
+        assert_eq!(open[0].opened_block, 4, "reopen is a new position");
+    }
+
+    /// Liquidity added while a position is open is summed, and the earliest
+    /// opening block is kept (the cycle still starts there).
+    #[test]
+    fn addition_while_open_sums_and_keeps_earliest_block() {
+        let store = ExplorerStore::open_in_memory().expect("open store");
+        ingest(&store, &journal(5, 0x05, vec![position_fact(true, 100, 1)])).expect("mint");
+        ingest(&store, &journal(6, 0x06, vec![position_fact(true, 25, 1)])).expect("add");
+        let open = store.open_positions(0).expect("open");
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].liquidity, 125);
+        assert_eq!(open[0].opened_block, 5);
+    }
+
+    /// A reorg removes the journal rows from the abandoned chain and rebuilds
+    /// open state from surviving evidence: a position opened before the fork
+    /// must come back as open instead of vanishing with its deleted close.
+    #[test]
+    fn reorg_rebuilds_open_state_from_surviving_journal() {
+        let store = ExplorerStore::open_in_memory().expect("open store");
+        ingest(&store, &journal(1, 0x11, vec![position_fact(true, 100, 1)])).expect("mint");
+        ingest(&store, &journal(2, 0x12, vec![position_fact(false, 40, 1)])).expect("partial");
+        ingest(&store, &journal(3, 0x13, vec![position_fact(false, 60, 1)])).expect("close");
+        assert!(store.open_positions(0).expect("open").is_empty());
+
+        store.unwind_from(2).expect("unwind");
+        let open = store.open_positions(0).expect("open");
+        assert_eq!(open.len(), 1, "opening before the fork survives");
+        assert_eq!(open[0].liquidity, 100);
+        assert_eq!(
+            store.jit_blocks_range(1, 10).expect("journal").len(),
+            1,
+            "abandoned journal rows are gone"
+        );
+    }
 
     #[test]
     fn native_price_near_returns_bucket_nearest_ts() {

@@ -36,6 +36,7 @@ pub(crate) mod decode;
 pub(crate) mod golden;
 pub mod ingest;
 pub(crate) mod interest_attr;
+pub(crate) mod jit_accounting;
 pub(crate) mod pricing;
 pub mod profit;
 pub(crate) mod reject;

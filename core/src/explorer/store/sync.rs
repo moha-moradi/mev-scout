@@ -115,6 +115,15 @@ impl ExplorerStore {
             "DELETE FROM jit_open_positions WHERE opened_block >= ?1",
             [fork_block as i64],
         )?;
+        // Journal rows from the abandoned chain are gone. Rebuild the open
+        // state from the surviving ordered journals instead of trusting the
+        // mutated table: a position opened before the fork and closed after it
+        // must come back as open, not disappear with the removed close.
+        tx.execute(
+            "DELETE FROM jit_blocks WHERE block_number >= ?1",
+            [fork_block as i64],
+        )?;
+        super::jit_positions::replay_jit_positions(&tx)?;
         tx.execute(
             "DELETE FROM oracle_answers WHERE block_number >= ?1",
             [fork_block as i64],

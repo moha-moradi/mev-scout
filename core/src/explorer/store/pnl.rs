@@ -81,7 +81,15 @@ pub fn annotate_event_with_volume(
     let mut pricing_clamped = false;
     let mut unpriced_residual = false;
     let mut native_unpriced = false;
-    let profit_usd = if ev.kind == MevKind::Liquidation {
+    // Settled V3 JIT reaches profit only through its reconciled valuation; the
+    // classifier's old in-range fee estimate is never a profit basis. Missing
+    // pricing leaves the totals NULL instead of a zero.
+    let jit_accounting = matches!(ev.kind, MevKind::Jit | MevKind::JitArb)
+        .then(|| crate::explorer::jit_accounting::JitAccounting::from_details(&ev.details))
+        .flatten();
+    let profit_usd = if let Some(accounting) = &jit_accounting {
+        accounting.valuation.gross_usd.filter(|v| v.is_finite())
+    } else if ev.kind == MevKind::Liquidation {
         let (usd, conf, details) = liquidation_pnl(ev, token_prices);
         confidence = conf;
         details_json = details;
@@ -199,9 +207,14 @@ pub fn annotate_event_with_volume(
             ],
         );
     }
-    // Gas in USD via native price (gas wei → native → USD).
-    let gas_usd =
-        native_price_usd.map(|np| crate::explorer::pricing::wei_to_usd(ev.gas_cost_wei, np));
+    // Gas in USD via native price (gas wei → native → USD). JIT gas is already
+    // valued per receipt in its own accounting (all owned txs, counted once).
+    let gas_usd = match &jit_accounting {
+        Some(accounting) => accounting.valuation.gas_usd.filter(|v| v.is_finite()),
+        None => {
+            native_price_usd.map(|np| crate::explorer::pricing::wei_to_usd(ev.gas_cost_wei, np))
+        }
+    };
     // Flash-loan fee in USD via the borrowed token's price (2.2). A non-zero
     // fee whose token has no usable quote is not worth $0: the row keeps NULL
     // (never an invented zero) and the op is flagged so the report can say the

@@ -20,10 +20,13 @@ pub(super) struct JitEventPosition {
     tick_lower: i32,
     tick_upper: i32,
     mint_tx: u64,
+    /// Receipt-local Mint log index when the opening is in this block.
+    mint_log: Option<u64>,
     liquidity: u128,
     amount0: U256,
     amount1: U256,
     burn_tx: u64,
+    burn_log: u64,
     opened_block: u64,
     bin_amm: bool,
 }
@@ -83,10 +86,12 @@ pub(super) fn classify_jit(input: &BlockInput, drops: &mut DropSink) -> Vec<MevE
                     tick_lower: mint.tick_lower,
                     tick_upper: mint.tick_upper,
                     mint_tx: mint.tx_index,
+                    mint_log: Some(mint.log_index),
                     liquidity: mint.liquidity,
                     amount0: mint.amount0,
                     amount1: mint.amount1,
                     burn_tx: *burn_tx,
+                    burn_log: b.log_index,
                     opened_block: input.block,
                     bin_amm: mint.bin_amm,
                 },
@@ -129,10 +134,12 @@ pub(super) fn classify_jit(input: &BlockInput, drops: &mut DropSink) -> Vec<MevE
                     tick_lower: pos.tick_lower,
                     tick_upper: pos.tick_upper,
                     mint_tx: *burn_tx,
+                    mint_log: None,
                     liquidity: pos.liquidity,
                     amount0: U256::ZERO,
                     amount1: U256::ZERO,
                     burn_tx: *burn_tx,
+                    burn_log: b.log_index,
                     opened_block: pos.opened_block,
                     bin_amm: b.bin_amm,
                 },
@@ -153,10 +160,12 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
         tick_lower,
         tick_upper,
         mint_tx,
+        mint_log,
         liquidity,
         amount0,
         amount1,
         burn_tx,
+        burn_log,
         opened_block,
         bin_amm,
     } = pos;
@@ -216,6 +225,11 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
             // amount0/amount1 below.
             "liquidity": liquidity.to_string(),
             "burn_tx_index": burn_tx,
+            "burn_log_index": burn_log,
+            // Same-block opening is fully located; cross-block positions are
+            // resolved from the retained LP journal by block + key.
+            "opening_tx_index": mint_log.map(|_| mint_tx),
+            "opening_log_index": mint_log,
             "opened_block": opened_block,
             "held_blocks": input.block.saturating_sub(opened_block),
             "amount0": amount0.to_string(),
@@ -262,7 +276,7 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
 /// hashes are available in the same loop as decoding).
 pub(crate) fn stamp_jit_tx_hashes(events: &mut [MevEvent], tx_hashes: &HashMap<u64, B256>) {
     for ev in events.iter_mut() {
-        if ev.kind == MevKind::Jit && ev.tx_hash == B256::ZERO {
+        if matches!(ev.kind, MevKind::Jit | MevKind::JitArb) && ev.tx_hash == B256::ZERO {
             if let Some(h) = tx_hashes.get(&ev.tx_index) {
                 ev.tx_hash = *h;
             }

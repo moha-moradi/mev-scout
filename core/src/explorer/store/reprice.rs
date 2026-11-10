@@ -45,9 +45,15 @@ impl ExplorerStore {
                 ts: r.get::<_, i64>(7)? as u64,
             })
         })?;
-        let mut pending: Vec<(i64, f64, Option<f64>, i64)> = Vec::new();
+        let mut pending: Vec<RepriceUpdate> = Vec::new();
         for row in rows {
             let row = row?;
+            if matches!(row.kind.as_str(), "jit" | "jit_arb") {
+                if let Some(update) = self.reprice_jit(&row, &decimals_of)? {
+                    pending.push(update);
+                    continue;
+                }
+            }
             let Some(profit_usd) = self.reprice_profit(&row, &decimals_of)? else {
                 continue;
             };
@@ -60,22 +66,120 @@ impl ExplorerStore {
             let net = row.gas_cost_usd.map(|gas| profit_usd - gas - fee_for_net);
             let excluded = (row.kind == MevKind::Sandwich.as_str()
                 && matches!(net, Some(n) if n <= 0.0)) as i64;
-            pending.push((row.id, profit_usd, net, excluded));
+            pending.push(RepriceUpdate {
+                id: row.id,
+                profit_usd: Some(profit_usd),
+                net_usd: net,
+                excluded,
+                gas_usd: None,
+                details_json: None,
+                usd_approximate: None,
+            });
         }
         drop(stmt);
         let mut updated = 0u64;
         let tx = self.conn.unchecked_transaction()?;
-        for (id, profit_usd, net, excluded) in pending {
+        for u in pending {
             let n = tx.execute(
                 "UPDATE mev_ops
-                    SET profit_usd = ?1, net_profit_usd = ?2, excluded_from_net = ?3
-                  WHERE id = ?4",
-                rusqlite::params![profit_usd, net, excluded, id],
+                    SET profit_usd = ?1,
+                        net_profit_usd = ?2,
+                        excluded_from_net = ?3,
+                        gas_cost_usd = COALESCE(?4, gas_cost_usd),
+                        details_json = COALESCE(?5, details_json),
+                        usd_approximate = COALESCE(?6, usd_approximate)
+                  WHERE id = ?7",
+                rusqlite::params![
+                    u.profit_usd,
+                    u.net_usd,
+                    u.excluded,
+                    u.gas_usd,
+                    u.details_json,
+                    u.usd_approximate,
+                    u.id
+                ],
             )?;
             updated += n as u64;
         }
         tx.commit()?;
         Ok(updated)
+    }
+
+    /// Re-evaluate a settled JIT row from its stored accounting journal and the
+    /// current `prices` table, using the same [`evaluate`] as ingest. A row
+    /// whose accounting is not verified, or whose quotes are now missing, has
+    /// its stale profit cleared instead of keeping an old valid-looking figure.
+    fn reprice_jit(
+        &self,
+        row: &RepriceRow,
+        decimals_of: &impl Fn(Address) -> Option<u32>,
+    ) -> anyhow::Result<Option<RepriceUpdate>> {
+        let Some(details) = row.details_json.as_deref() else {
+            return Ok(None);
+        };
+        let mut value: serde_json::Value = match serde_json::from_str(details) {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+        let Some(mut accounting) =
+            crate::explorer::jit_accounting::JitAccounting::from_details(&value)
+        else {
+            return Ok(None);
+        };
+        accounting.quotes.clear();
+        for point in &accounting.timeline {
+            if point.kind != "mint" && point.kind != "collect" {
+                continue;
+            }
+            let hour = point.ts / 3600;
+            for token in [accounting.token0, accounting.token1] {
+                let (Some(decimals), Some((usd, source))) =
+                    (decimals_of(token), self.price_at(token, hour)?)
+                else {
+                    continue;
+                };
+                accounting
+                    .quotes
+                    .push(crate::explorer::jit_accounting::Quote {
+                        token,
+                        hour,
+                        usd,
+                        decimals,
+                        source,
+                    });
+            }
+        }
+        for gas in &accounting.gas {
+            if let Some(native) = self.native_price_near(gas.ts)? {
+                accounting
+                    .quotes
+                    .push(crate::explorer::jit_accounting::Quote {
+                        token: Address::ZERO,
+                        hour: gas.ts / 3600,
+                        usd: native,
+                        decimals: 18,
+                        source: "native_cached".into(),
+                    });
+            }
+        }
+        accounting.quotes.sort_by_key(|a| (a.token, a.hour));
+        accounting
+            .quotes
+            .dedup_by(|a, b| a.token == b.token && a.hour == b.hour);
+        accounting.valuation = crate::explorer::jit_accounting::evaluate(&accounting);
+        let complete = accounting.status == "verified" && accounting.valuation.pricing_complete;
+        value["jit_accounting"] = serde_json::to_value(&accounting)
+            .map_err(|e| anyhow::anyhow!("serialize repriced JIT accounting: {e}"))?;
+        value["usd_approximate"] = serde_json::json!(!complete);
+        Ok(Some(RepriceUpdate {
+            id: row.id,
+            profit_usd: accounting.valuation.gross_usd,
+            net_usd: accounting.valuation.net_profit_usd,
+            excluded: 0,
+            gas_usd: accounting.valuation.gas_usd,
+            details_json: Some(value.to_string()),
+            usd_approximate: Some(i64::from(!complete)),
+        }))
     }
 
     fn reprice_profit(
@@ -126,6 +230,16 @@ struct RepriceRow {
     kind: String,
     details_json: Option<String>,
     ts: u64,
+}
+
+struct RepriceUpdate {
+    id: i64,
+    profit_usd: Option<f64>,
+    net_usd: Option<f64>,
+    excluded: i64,
+    gas_usd: Option<f64>,
+    details_json: Option<String>,
+    usd_approximate: Option<i64>,
 }
 
 fn details_flag(details_json: &Option<String>, key: &str) -> bool {

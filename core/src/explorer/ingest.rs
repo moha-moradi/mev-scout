@@ -16,9 +16,10 @@ use tracing::{debug, warn};
 
 use crate::data::{BlockData, ReceiptData, TxData};
 use crate::explorer::classify::{self, BlockContext, BlockInput, TxInput};
+use crate::explorer::jit_accounting::{self, ArchiveBudget, JitAccounting, LpBlock, Quote};
 use crate::explorer::pricing::{self, TokenUsd};
 use crate::explorer::store::{
-    BlockFactsInput, ExplorerStore, OpenPosition, SwapRow, TransferRow, TxRow,
+    BlockFactsInput, ExplorerStore, JitJournalInput, SwapRow, TransferRow, TxRow,
 };
 use crate::explorer::types::{MevEvent, MevKind};
 use crate::progress::{JobProgress, ProgressEvent};
@@ -538,6 +539,12 @@ pub async fn index_block_fetched(
         txs: tx_inputs,
     };
 
+    // Receipt-local, ordered LP journal for settled JIT reconciliation. The
+    // block is not persisted yet, so its parent comes from the retained
+    // journal or the hash-pinned header.
+    let mut journal = LpBlock::from_input(&input, &block_data, &txs, &receipts);
+    journal.parent_hash = parent_hash_for(rpc, store, &block_data).await;
+
     let classified = classify::classify_block(&input);
     blocking_store(|| -> anyhow::Result<()> {
         if cfg.record_rejections && !classified.rejects.is_empty() {
@@ -563,6 +570,35 @@ pub async fn index_block_fetched(
     let mut events: Vec<MevEvent> = classify::filter_unresolved(classified.events);
     classify::stamp_jit_tx_hashes(&mut events, &jit_hashes);
     let ops = events.len();
+
+    // Reconcile JIT positions before any valuation: only receipt-backed
+    // settled cashflows may become profit, and the old fee estimate is not a
+    // basis. The window starts at the oldest position this block can close
+    // (bounded by the configured window) and never includes blocks after this
+    // one (backfill safety).
+    let oldest_open = events
+        .iter()
+        .filter(|e| matches!(e.kind, MevKind::Jit | MevKind::JitArb))
+        .filter_map(|e| e.details.get("opened_block").and_then(|v| v.as_u64()))
+        .min()
+        .unwrap_or(block_number)
+        .max(block_number.saturating_sub(cfg.jit_window_blocks))
+        .min(block_number);
+    let mut window_blocks =
+        store.jit_blocks_range(oldest_open, block_number.saturating_sub(1))?;
+    window_blocks.push(journal.clone());
+    window_blocks.sort_by_key(|b| b.block_number);
+    window_blocks.retain(|b| b.block_number <= block_number);
+    let mut archive = ArchiveBudget::new(rpc);
+    jit_accounting::enrich(
+        &mut events,
+        &window_blocks,
+        pools.tokens,
+        cfg.chain_id,
+        cfg.jit_window_blocks,
+        &mut archive,
+    )
+    .await;
 
     blocking_store(|| persist_mode_b_lookback(store, block_number, &input.txs));
 
@@ -593,23 +629,30 @@ pub async fn index_block_fetched(
             });
         }
     }
+    // Price each JIT cashflow at its own hour, then evaluate with the same
+    // evaluator repricing uses. Quotes persist to `prices` as usual.
+    fill_jit_valuation(cfg, rpc, store, &mut events).await?;
 
     blocking_store(|| -> anyhow::Result<()> {
-        store.insert_block_facts(BlockFactsInput {
-            block_number,
-            block_hash: &block_data.hash,
-            ts: block_data.timestamp,
-            base_fee_gwei,
-            tx_count: txs.len(),
-            txs: &tx_rows,
-            swaps: &swap_rows,
-            transfers: &transfer_rows,
-            events: &events,
-            native_price_usd: native_price,
-            token_prices: &token_prices,
-        })?;
-
-        persist_jit_positions(store, block_number, &input.txs, cfg.jit_window_blocks)
+        store
+            .insert_block_facts(BlockFactsInput {
+                block_number,
+                block_hash: &block_data.hash,
+                ts: block_data.timestamp,
+                base_fee_gwei,
+                tx_count: txs.len(),
+                txs: &tx_rows,
+                swaps: &swap_rows,
+                transfers: &transfer_rows,
+                events: &events,
+                native_price_usd: native_price,
+                token_prices: &token_prices,
+                jit_journal: Some(JitJournalInput {
+                    block: &journal,
+                    window_blocks: cfg.jit_window_blocks,
+                }),
+            })
+            .map(|_| ())
     })?;
 
     Ok(IndexedBlock {
@@ -635,54 +678,106 @@ fn blocking_store<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
-/// Persist JIT open positions: record Mints not closed in the same
-/// block, delete rows for Burns, and prune positions outside the window.
-///
-/// All writes share one transaction on the store connection (the `record_*` /
-/// `close_*` helpers execute on that same connection, so they join it): a
-/// failure half-way must not leave a Mint recorded as open while its Burn is
-/// pending, which would turn the next block's JIT detection into noise.
-fn persist_jit_positions(
+/// Parent hash of exactly this header: the retained journal when the previous
+/// block is still in the window, otherwise a hash-pinned header read. A missing
+/// parent leaves settlement unprovable rather than guessing.
+async fn parent_hash_for(
+    rpc: &RpcClient,
     store: &ExplorerStore,
-    block_number: u64,
-    txs: &[TxInput],
-    jit_window_blocks: u64,
+    block_data: &BlockData,
+) -> Option<B256> {
+    if block_data.number == 0 {
+        return None;
+    }
+    if let Ok(rows) = store.jit_blocks_range(block_data.number - 1, block_data.number - 1) {
+        if let Some(prev) = rows.first() {
+            return Some(prev.hash);
+        }
+    }
+    rpc.parent_hash_at(block_data.hash, block_data.number)
+        .await
+        .ok()
+}
+
+/// Price every JIT cashflow at its own hour and run the shared evaluator.
+///
+/// The archive/ownership proof already ran during `enrich`; here only USD
+/// quotes are attached. A missing quote clears the derived totals (NULL, not a
+/// partial sum dressed as profit). Verified + complete rows are marked as
+/// priced so strategy ROI can admit them; everything else stays approximate.
+async fn fill_jit_valuation(
+    cfg: &IngestConfig,
+    rpc: &RpcClient,
+    store: &ExplorerStore,
+    events: &mut [MevEvent],
 ) -> anyhow::Result<()> {
-    let key = |j: &crate::explorer::types::JitFact| (j.pool, j.owner, j.tick_lower, j.tick_upper);
-    let mut opens = Vec::new();
-    let mut closes: Vec<(Address, Address, i32, i32)> = Vec::new();
-    for t in txs {
-        let burned: std::collections::HashSet<_> =
-            t.jit.iter().filter(|j| !j.is_mint).map(key).collect();
-        for j in t.jit.iter().filter(|j| j.is_mint) {
-            if burned.contains(&key(j)) {
-                continue; // same-block JIT, not an open position
+    let mut requests: BTreeMap<u64, BTreeSet<Address>> = BTreeMap::new();
+    for ev in events.iter() {
+        let Some(accounting) = JitAccounting::from_details(&ev.details) else {
+            continue;
+        };
+        for (hour, tokens) in jit_accounting::quote_requests(&accounting) {
+            requests.entry(hour).or_default().extend(tokens);
+        }
+    }
+    let mut priced: HashMap<u64, HashMap<Address, TokenUsd>> = HashMap::new();
+    for (hour, tokens) in requests {
+        let mut fetch: Vec<Address> = tokens.iter().copied().filter(|t| !t.is_zero()).collect();
+        if tokens.contains(&Address::ZERO) && !cfg.wrapped_native.is_zero() {
+            fetch.push(cfg.wrapped_native);
+        }
+        if fetch.is_empty() {
+            continue;
+        }
+        let ts = hour.saturating_mul(3600);
+        let quotes = warm_prices_for_tokens(cfg, rpc, &fetch, ts, store).await?;
+        priced.insert(hour, quotes);
+    }
+
+    for ev in events.iter_mut() {
+        let Some(mut accounting) = JitAccounting::from_details(&ev.details) else {
+            continue;
+        };
+        accounting.quotes.clear();
+        for point in &accounting.timeline {
+            if point.kind != "mint" && point.kind != "collect" {
+                continue;
             }
-            opens.push(OpenPosition {
-                pool: j.pool,
-                owner: j.owner,
-                tick_lower: j.tick_lower,
-                tick_upper: j.tick_upper,
-                opened_block: block_number,
-                liquidity: j.liquidity,
-            });
+            let hour = point.ts / 3600;
+            for token in [accounting.token0, accounting.token1] {
+                if let Some(q) = priced.get(&hour).and_then(|m| m.get(&token)) {
+                    accounting.quotes.push(Quote {
+                        token,
+                        hour,
+                        usd: q.usd,
+                        decimals: q.decimals,
+                        source: "llama".into(),
+                    });
+                }
+            }
         }
-        for j in t.jit.iter().filter(|j| !j.is_mint) {
-            closes.push((j.pool, j.owner, j.tick_lower, j.tick_upper));
+        for gas in &accounting.gas {
+            let hour = gas.ts / 3600;
+            if let Some(q) = priced.get(&hour).and_then(|m| m.get(&cfg.wrapped_native)) {
+                accounting.quotes.push(Quote {
+                    token: Address::ZERO,
+                    hour,
+                    usd: q.usd,
+                    decimals: 18,
+                    source: "native_via_wrapped".into(),
+                });
+            }
         }
+        accounting.quotes.sort_by_key(|a| (a.token, a.hour));
+        accounting
+            .quotes
+            .dedup_by(|a, b| a.token == b.token && a.hour == b.hour);
+        accounting.valuation = jit_accounting::evaluate(&accounting);
+        let complete = accounting.valuation.pricing_complete && accounting.status == "verified";
+        ev.details["usd_approximate"] = serde_json::json!(!complete);
+        ev.details["jit_accounting"] = serde_json::to_value(&accounting)
+            .map_err(|e| anyhow::anyhow!("serialize JIT accounting: {e}"))?;
     }
-    if opens.is_empty() && closes.is_empty() {
-        return Ok(());
-    }
-    let tx = store.connection().unchecked_transaction()?;
-    if !opens.is_empty() {
-        store.record_jit_open(&opens)?;
-    }
-    if !closes.is_empty() {
-        store.close_jit_positions(&closes)?;
-    }
-    store.prune_jit_positions(block_number.saturating_sub(jit_window_blocks))?;
-    tx.commit()?;
     Ok(())
 }
 
@@ -863,6 +958,17 @@ pub fn event_tokens(events: &[MevEvent]) -> Vec<Address> {
         {
             if !a.is_zero() {
                 v.push(a);
+            }
+        }
+    }
+    // JIT settlement values both pool tokens; warm them at the block hour as
+    // well so the base map (volume/display) is not silently missing them.
+    for e in events.iter() {
+        if let Some(a) = JitAccounting::from_details(&e.details) {
+            for t in [a.token0, a.token1] {
+                if priceable(t) {
+                    v.push(t);
+                }
             }
         }
     }

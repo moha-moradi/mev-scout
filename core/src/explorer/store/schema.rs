@@ -38,6 +38,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v11_paper_fill_verification,
     migrate_v12_paper_exec,
     migrate_v13_paper_exec_cost,
+    migrate_v14_jit_journal,
 ];
 
 /// Current schema head (`PRAGMA user_version` after a full migrate).
@@ -318,6 +319,27 @@ fn migrate_v13_paper_exec_cost(conn: &Connection) -> anyhow::Result<()> {
     ExplorerStore::ensure_column(conn, "paper_sessions", "revert_gas_wei", "TEXT")?;
     ExplorerStore::ensure_column(conn, "paper_sessions", "exec_loss_wei", "TEXT")?;
     ExplorerStore::ensure_column(conn, "paper_sessions", "setup_gas_wei", "TEXT")?;
+    Ok(())
+}
+
+/// Ordered per-block LP journal for settled V3 JIT reconciliation.
+///
+/// One row per indexed block, including blocks without LP events: absence of
+/// a Mint is only meaningful when the whole canonical receipt set was read.
+/// The JSON payload is the receipt-local ordered journal; the scalar columns
+/// exist so a reorg unwind or a window read never has to parse unrelated rows.
+fn migrate_v14_jit_journal(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS jit_blocks(
+           block_number INTEGER PRIMARY KEY,
+           block_hash TEXT NOT NULL,
+           parent_hash TEXT,
+           ts INTEGER NOT NULL,
+           complete INTEGER NOT NULL,
+           journal TEXT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS idx_jit_blocks_hash ON jit_blocks(block_hash);",
+    )?;
     Ok(())
 }
 

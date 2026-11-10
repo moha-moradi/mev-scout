@@ -65,7 +65,32 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
                     .cloned()
                     .unwrap_or(serde_json::json!(0)),
             );
-            format!("Jit|{:#x}|{}|{}", first_pool(&ev.pools), lo, hi)
+            // Owner and opening coordinates keep two positions in one tx (and
+            // two managers on the same range) from collapsing into one row.
+            let owner = ev
+                .details
+                .get("owner")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<Address>().ok())
+                .unwrap_or(ev.searcher);
+            let opening = ev
+                .details
+                .get("opened_block")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(ev.block);
+            let opening_log = ev
+                .details
+                .get("opening_log_index")
+                .and_then(|v| v.as_u64())
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "-".into());
+            format!(
+                "Jit|{:#x}|{:#x}|{}|{}|open:{opening}:{opening_log}",
+                first_pool(&ev.pools),
+                owner,
+                lo,
+                hi
+            )
         }
         MevKind::Skim => {
             format!("Skim|{:#x}|{:#x}", first_pool(&ev.pools), ev.searcher)
