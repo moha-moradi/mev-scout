@@ -322,8 +322,14 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
     let sync = load_sync_state(&tx)?;
     let ops = load_ops_window(&tx, &caps, opts.window.since_ts, opts.window.until_ts)?;
     let block_rows = load_block_rows(&tx, opts.window.since_ts, opts.window.until_ts)?;
-    let first_block = block_rows.iter().filter_map(|(n, ts)| n.map(|n| (n, *ts))).min();
-    let last_block = block_rows.iter().filter_map(|(n, ts)| n.map(|n| (n, *ts))).max();
+    let first_block = block_rows
+        .iter()
+        .filter_map(|(n, ts)| n.map(|n| (n, *ts)))
+        .min();
+    let last_block = block_rows
+        .iter()
+        .filter_map(|(n, ts)| n.map(|n| (n, *ts)))
+        .max();
     let mut sorted_blocks: Vec<i64> = block_rows.iter().map(|(_, ts)| *ts).collect();
     let blocks_in_window = block_rows.len() as i64;
     sorted_blocks.sort_unstable();
@@ -653,12 +659,20 @@ fn load_block_rows(
         // Cannot assign rows without chain timestamps to a time window.
         return Ok(Vec::new());
     }
-    let number = if cols.contains("block_number") { "block_number" } else { "NULL" };
+    let number = if cols.contains("block_number") {
+        "block_number"
+    } else {
+        "NULL"
+    };
     let mut stmt = conn.prepare(&format!(
         "SELECT {number}, ts FROM blocks WHERE ts >= ?1 AND ts <= ?2"
     ))?;
     let rows = stmt.query_map(rusqlite::params![since, until], |r| {
-        Ok((r.get::<_, Option<i64>>(0)?.and_then(|n| u64::try_from(n).ok()), r.get(1)?))
+        Ok((
+            r.get::<_, Option<i64>>(0)?
+                .and_then(|n| u64::try_from(n).ok()),
+            r.get(1)?,
+        ))
     })?;
     let mut out = Vec::new();
     for row in rows {

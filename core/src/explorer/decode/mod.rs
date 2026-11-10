@@ -141,7 +141,9 @@ pub(crate) fn log_family(topic0: B256) -> Option<LogFamily> {
             Some(LogFamily::FlashLoan)
         }
         t if t == *COMPOUND_V3_BUY_COLLATERAL_TOPIC => Some(LogFamily::BuyCollateral),
-        t if t == V3_MINT_TOPIC || t == V3_BURN_TOPIC || t == *jit::V3_COLLECT_TOPIC => Some(LogFamily::V3Liquidity),
+        t if t == V3_MINT_TOPIC || t == V3_BURN_TOPIC || t == *jit::V3_COLLECT_TOPIC => {
+            Some(LogFamily::V3Liquidity)
+        }
         t if t == *LB_DEPOSITED_TO_BINS_TOPIC || t == *LB_WITHDRAWN_FROM_BINS_TOPIC => {
             Some(LogFamily::LbLiquidity)
         }

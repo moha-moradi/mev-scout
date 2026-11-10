@@ -29,7 +29,10 @@ impl OperationEconomics {
     }
 
     fn with_details(op: &OpRecord, details: &Value) -> Self {
-        let netted = details.get("flashloan_fee_netted_in_ledger").and_then(Value::as_bool) == Some(true);
+        let netted = details
+            .get("flashloan_fee_netted_in_ledger")
+            .and_then(Value::as_bool)
+            == Some(true);
         let mut result = Self {
             gross_usd: finite(op.profit_usd),
             net_usd: finite(op.net_profit_usd),
@@ -73,9 +76,15 @@ fn reconciles(a: f64, b: f64) -> bool {
 fn detail_issue(details: &Value, key: &str) -> bool {
     details.get(key).and_then(Value::as_bool) == Some(true)
         || ["tags", "reasons", "pricing_issues"].iter().any(|field| {
-            details.get(field).and_then(Value::as_array).is_some_and(|values| {
-                values.iter().filter_map(Value::as_str).any(|v| v.eq_ignore_ascii_case(key))
-            })
+            details
+                .get(field)
+                .and_then(Value::as_array)
+                .is_some_and(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|v| v.eq_ignore_ascii_case(key))
+                })
         })
 }
 
@@ -90,10 +99,20 @@ fn complete_economics(
         return Err("gas_cost_as_profit");
     }
     let jit = matches!(op.kind.as_str(), "jit" | "jit_arb");
-    if jit && details.pointer("/jit_accounting/status").and_then(Value::as_str) != Some("verified") {
+    if jit
+        && details
+            .pointer("/jit_accounting/status")
+            .and_then(Value::as_str)
+            != Some("verified")
+    {
         return Err("jit_unverified");
     }
-    if jit && details.pointer("/jit_accounting/valuation/pricing_complete").and_then(Value::as_bool) != Some(true) {
+    if jit
+        && details
+            .pointer("/jit_accounting/valuation/pricing_complete")
+            .and_then(Value::as_bool)
+            != Some(true)
+    {
         return Err("jit_pricing_incomplete");
     }
     let flags = [
@@ -108,12 +127,17 @@ fn complete_economics(
             return Err(name);
         }
     }
-    if details.get("approximate_reason").is_some_and(|v| !v.is_null()) {
+    if details
+        .get("approximate_reason")
+        .is_some_and(|v| !v.is_null())
+    {
         return Err("usd_approximate");
     }
-    if !jit && flags.iter().any(|(flag, name)| {
-        flag.is_none() && details.get(name).and_then(Value::as_bool) != Some(false)
-    }) {
+    if !jit
+        && flags.iter().any(|(flag, name)| {
+            flag.is_none() && details.get(name).and_then(Value::as_bool) != Some(false)
+        })
+    {
         return Err("legacy_pricing_flags_unknown");
     }
     let profit = finite(op.profit_usd).ok_or("gross_usd_unavailable")?;
@@ -124,8 +148,13 @@ fn complete_economics(
     }
     if jit {
         let valuation = &details["jit_accounting"]["valuation"];
-        for (key, stored) in [("gross_usd", profit), ("gas_usd", gas), ("net_profit_usd", net)] {
-            let quoted = finite(valuation.get(key).and_then(Value::as_f64)).ok_or("jit_valuation_unavailable")?;
+        for (key, stored) in [
+            ("gross_usd", profit),
+            ("gas_usd", gas),
+            ("net_profit_usd", net),
+        ] {
+            let quoted = finite(valuation.get(key).and_then(Value::as_f64))
+                .ok_or("jit_valuation_unavailable")?;
             if !reconciles(quoted, stored) {
                 return Err("jit_valuation_mismatch");
             }
@@ -146,14 +175,20 @@ fn complete_economics(
 fn financing_cost(op: &OpRecord, details: &Value, netted: bool) -> Result<f64, &'static str> {
     // Older classifiers stored a primary/max fee, not necessarily a sum over all loans.
     if ["flash_providers", "flashloans"].iter().any(|key| {
-        details.get(key).and_then(Value::as_array).is_some_and(|v| v.len() > 1)
+        details
+            .get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|v| v.len() > 1)
     }) {
         return Err("legacy_multiple_flash_fees_unknown");
     }
     let raw_fee = ["flash_premium", "flashloan_fee_wei", "flash_fee_wei"]
-        .iter().find_map(|key| details.get(key).filter(|v| !v.is_null()));
+        .iter()
+        .find_map(|key| details.get(key).filter(|v| !v.is_null()));
     let raw_zero = raw_fee.is_some_and(|v| {
-        v.as_u64() == Some(0) || v.as_str().is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b == b'0'))
+        v.as_u64() == Some(0)
+            || v.as_str()
+                .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b == b'0'))
     });
     if let Some(fee) = op.flashloan_fee_usd {
         if !fee.is_finite() || fee < 0.0 {
@@ -167,14 +202,32 @@ fn financing_cost(op: &OpRecord, details: &Value, netted: bool) -> Result<f64, &
     if raw_zero {
         return Ok(0.0);
     }
-    let flash_present = netted || raw_fee.is_some()
-        || ["flash_arb", "flash_liquidation", "flash_funded", "flashloan_funded"].iter().any(|key| detail_issue(details, key))
-        || details.pointer("/arb_meta/flashloan_funded").and_then(Value::as_bool) == Some(true)
-        || ["flash_provider", "flash_provider_address", "flashloan_fee_token"].iter().any(|key| {
-            details.get(key).is_some_and(|v| !v.is_null())
-        })
+    let flash_present = netted
+        || raw_fee.is_some()
+        || [
+            "flash_arb",
+            "flash_liquidation",
+            "flash_funded",
+            "flashloan_funded",
+        ]
+        .iter()
+        .any(|key| detail_issue(details, key))
+        || details
+            .pointer("/arb_meta/flashloan_funded")
+            .and_then(Value::as_bool)
+            == Some(true)
+        || [
+            "flash_provider",
+            "flash_provider_address",
+            "flashloan_fee_token",
+        ]
+        .iter()
+        .any(|key| details.get(key).is_some_and(|v| !v.is_null()))
         || ["flashloans", "flash_providers"].iter().any(|key| {
-            details.get(key).and_then(Value::as_array).is_some_and(|v| !v.is_empty())
+            details
+                .get(key)
+                .and_then(Value::as_array)
+                .is_some_and(|v| !v.is_empty())
         });
     if flash_present {
         return Err("flash_fee_usd_unavailable");
@@ -189,7 +242,8 @@ fn financing_cost(op: &OpRecord, details: &Value, netted: bool) -> Result<f64, &
 }
 
 fn parse_details(raw: Option<&str>) -> Value {
-    raw.and_then(|s| serde_json::from_str(s).ok()).unwrap_or(Value::Null)
+    raw.and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(Value::Null)
 }
 
 /// One swap leg from `route_json`.
@@ -267,14 +321,10 @@ pub fn parse_route(route_json: Option<&str>) -> Vec<RouteLeg> {
             let token_out = str_field(leg, "token_out");
             let amount_in = str_field(leg, "amount_in");
             let amount_out = str_field(leg, "amount_out");
-            let (token_in_symbol, token_in_name) = token_in
-                .as_deref()
-                .map(token_meta)
-                .unwrap_or((None, None));
-            let (token_out_symbol, token_out_name) = token_out
-                .as_deref()
-                .map(token_meta)
-                .unwrap_or((None, None));
+            let (token_in_symbol, token_in_name) =
+                token_in.as_deref().map(token_meta).unwrap_or((None, None));
+            let (token_out_symbol, token_out_name) =
+                token_out.as_deref().map(token_meta).unwrap_or((None, None));
             let amount_in_human = token_in
                 .as_deref()
                 .zip(amount_in.as_deref())
@@ -314,7 +364,11 @@ pub fn parse_victim_hashes(raw: Option<&str>) -> Vec<String> {
 pub fn build_evidence(op: &OpRecord) -> OpEvidence {
     let parsed = parse_details(op.details_json.as_deref());
     let economics = OperationEconomics::with_details(op, &parsed);
-    let details = if parsed.is_null() { Value::Object(Default::default()) } else { parsed };
+    let details = if parsed.is_null() {
+        Value::Object(Default::default())
+    } else {
+        parsed
+    };
     let tags = string_array(&details, "tags");
     let reasons = string_array(&details, "reasons");
     let pnl_basis = details
@@ -322,7 +376,9 @@ pub fn build_evidence(op: &OpRecord) -> OpEvidence {
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let arb_meta = details.get("arb_meta").cloned();
-    let profit_amount_human = op.profit_token.as_deref()
+    let profit_amount_human = op
+        .profit_token
+        .as_deref()
         .zip(op.profit_amount.as_deref())
         .and_then(|(tok, amt)| humanize_amount(tok, amt));
     OpEvidence {

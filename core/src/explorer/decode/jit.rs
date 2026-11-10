@@ -3,9 +3,8 @@ use crate::utils::{i24_from_topic, topic_address};
 use alloy::primitives::{keccak256, Address, B256, U256};
 use std::sync::LazyLock;
 
-pub static V3_COLLECT_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256("Collect(address,address,int24,int24,uint128,uint128)")
-});
+pub static V3_COLLECT_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Collect(address,address,int24,int24,uint128,uint128)"));
 
 use crate::data::LogData;
 use crate::explorer::types::JitFact;
@@ -53,7 +52,9 @@ pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
     if log.topics[1][..12].iter().any(|b| *b != 0)
         || !valid_tick(&log.topics[2], tick_lower)
         || !valid_tick(&log.topics[3], tick_upper)
-        || tick_lower >= tick_upper || tick_lower < -887272 || tick_upper > 887272
+        || tick_lower >= tick_upper
+        || tick_lower < -887272
+        || tick_upper > 887272
     {
         return None;
     }
@@ -70,12 +71,19 @@ pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
     if (is_mint || is_collect) && log.data[..12].iter().any(|b| *b != 0) {
         return None;
     }
-    if (!is_collect && log.data[amount_off..amount_off + 16].iter().any(|b| *b != 0))
-        || (is_collect && (log.data[32..48].iter().any(|b| *b != 0)
-            || log.data[64..80].iter().any(|b| *b != 0))) {
+    if (!is_collect
+        && log.data[amount_off..amount_off + 16]
+            .iter()
+            .any(|b| *b != 0))
+        || (is_collect
+            && (log.data[32..48].iter().any(|b| *b != 0)
+                || log.data[64..80].iter().any(|b| *b != 0)))
+    {
         return None;
     }
-    let liquidity = if is_collect { 0 } else {
+    let liquidity = if is_collect {
+        0
+    } else {
         crate::utils::u128_from_be_bytes(&log.data[amount_off + 16..amount_off + 32])
     };
     let amount0 = U256::from_be_slice(&log.data[a0_off..a0_off + 32]);

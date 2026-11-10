@@ -106,7 +106,7 @@ pub struct TokenRow {
     pub priced_ops: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct FacetRow {
     pub value: String,
     pub ops: i64,
@@ -158,7 +158,7 @@ pub struct StrategySeriesPoint {
 }
 
 /// Matched-cohort execution economics across the full window, including known losses.
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
 pub struct StrategyEconomics {
     pub slice_key: String,
     pub ops_total: i64,
@@ -344,12 +344,24 @@ fn reduce_strategy_economics(ops: &[OpRecord]) -> Vec<StrategyEconomics> {
     for op in ops {
         let key = slice_key(&op.kind, op.subkind.as_deref());
         let (row, sums) = groups.entry(key.clone()).or_insert_with(|| {
-            (StrategyEconomics { slice_key: key, ..Default::default() }, [0.0; 3])
+            (
+                StrategyEconomics {
+                    slice_key: key,
+                    ..Default::default()
+                },
+                [0.0; 3],
+            )
         });
         row.ops_total += 1;
         let economics = OperationEconomics::from_record(op);
         if !economics.eligible {
-            *row.exclusion_reasons.entry(economics.reason.unwrap_or_else(|| "economics_unavailable".into())).or_default() += 1;
+            *row.exclusion_reasons
+                .entry(
+                    economics
+                        .reason
+                        .unwrap_or_else(|| "economics_unavailable".into()),
+                )
+                .or_default() += 1;
             continue;
         }
         if let (Some(gross), Some(cost), Some(net)) =
@@ -365,18 +377,21 @@ fn reduce_strategy_economics(ops: &[OpRecord]) -> Vec<StrategyEconomics> {
             sums[2] += net;
         }
     }
-    groups.into_values().map(|(mut row, [gross, cost, net])| {
-        // Never expose partial sums or ratios if the cohort overflows f64.
-        if row.ops_eligible > 0 && [gross, cost, net].iter().all(|v| v.is_finite()) {
-            row.gross_usd = Some(gross);
-            row.cost_usd = Some(cost);
-            row.net_usd = Some(net);
-            row.roi_pct = super::evidence::cost_ratio(net, cost, 100.0);
-            row.gross_per_10 = super::evidence::cost_ratio(gross, cost, 10.0);
-            row.net_per_10 = super::evidence::cost_ratio(net, cost, 10.0);
-        }
-        row
-    }).collect()
+    groups
+        .into_values()
+        .map(|(mut row, [gross, cost, net])| {
+            // Never expose partial sums or ratios if the cohort overflows f64.
+            if row.ops_eligible > 0 && [gross, cost, net].iter().all(|v| v.is_finite()) {
+                row.gross_usd = Some(gross);
+                row.cost_usd = Some(cost);
+                row.net_usd = Some(net);
+                row.roi_pct = super::evidence::cost_ratio(net, cost, 100.0);
+                row.gross_per_10 = super::evidence::cost_ratio(gross, cost, 10.0);
+                row.net_per_10 = super::evidence::cost_ratio(net, cost, 10.0);
+            }
+            row
+        })
+        .collect()
 }
 
 fn reduce_strategy_series(
@@ -563,7 +578,9 @@ fn build_op_index(ops: &[OpRecord]) -> OpIndex {
             op_flags(o),
             actor_id,
             eoa_id,
-            contract_id.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null),
+            contract_id
+                .map(serde_json::Value::from)
+                .unwrap_or(serde_json::Value::Null),
             o.block_number,
             tx_id,
             net,
@@ -1090,7 +1107,9 @@ fn reduce_facets(
             bump(&mut tags, t, o, caps);
         }
         // Facets need only the details arrays, not routes or enriched evidence.
-        if let Some(details) = o.details_json.as_deref()
+        if let Some(details) = o
+            .details_json
+            .as_deref()
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         {
             if let Some(arr) = details.get("reasons").and_then(|v| v.as_array()) {
@@ -1114,7 +1133,11 @@ fn reduce_facets(
         rows.sort_by(|a, b| b.ops.cmp(&a.ops).then(a.value.cmp(&b.value)));
         rows
     };
-    (to_rows(tags, catalogue), to_rows(reasons, &HashSet::new()), untagged_ops)
+    (
+        to_rows(tags, catalogue),
+        to_rows(reasons, &HashSet::new()),
+        untagged_ops,
+    )
 }
 
 fn event_row(o: &OpRecord) -> EventRow {
@@ -1284,7 +1307,18 @@ mod tests {
         };
         let ops = vec![
             op(
-                1, 100, "jit", None, "exact", Some(1.0), Some(1.0), None, "0xa", None, None, None,
+                1,
+                100,
+                "jit",
+                None,
+                "exact",
+                Some(1.0),
+                Some(1.0),
+                None,
+                "0xa",
+                None,
+                None,
+                None,
             ),
             op(
                 2,
@@ -1428,5 +1462,187 @@ mod tests {
         assert!(idx.slices.iter().any(|s| s == "utility/bundler"));
         assert!(idx.amms.iter().any(|a| a == "v3"));
         assert!(idx.tags.iter().any(|t| t == "flash_arb"));
+    }
+
+    fn caps() -> StoreCaps {
+        StoreCaps {
+            user_version: 0,
+            schema_head: 0,
+            has_subkind: true,
+            has_excluded_from_net: true,
+            has_volume_usd: true,
+            has_flashloan_fee_usd: true,
+            has_pricing_flags: true,
+            has_ops_ts_index: false,
+            has_ops_natural_key: false,
+            tables: vec![],
+        }
+    }
+
+    /// Numerator and denominator come from the same eligible cohort; known
+    /// losses (even excluded_from_net rows) stay in the comparison, while
+    /// bundler gas-as-profit and unverified JIT do not.
+    #[test]
+    fn strategy_economics_matched_cohort_keeps_losses() {
+        let mut loss = op(
+            2,
+            20,
+            "arb_atomic",
+            None,
+            "exact",
+            Some(-3.0),
+            Some(-2.0),
+            Some(1.0),
+            "0xb",
+            None,
+            Some("{}"),
+            None,
+        );
+        loss.excluded_from_net = Some(true);
+        let ops = vec![
+            op(
+                1,
+                10,
+                "arb_atomic",
+                None,
+                "exact",
+                Some(9.0),
+                Some(10.0),
+                Some(1.0),
+                "0xa",
+                None,
+                Some("{}"),
+                None,
+            ),
+            loss,
+            op(
+                3,
+                30,
+                "utility",
+                Some("bundler"),
+                "exact",
+                Some(5.0),
+                Some(5.0),
+                Some(0.0),
+                "0xc",
+                None,
+                Some(r#"{"pnl_basis":"gas_cost_as_profit"}"#),
+                None,
+            ),
+            op(
+                4,
+                40,
+                "jit",
+                None,
+                "exact",
+                Some(1.0),
+                Some(1.0),
+                Some(0.1),
+                "0xd",
+                None,
+                None,
+                None,
+            ),
+        ];
+        let rows = reduce_strategy_economics(&ops);
+        let arb = rows.iter().find(|r| r.slice_key == "arb_atomic").unwrap();
+        assert_eq!(arb.ops_total, 2);
+        assert_eq!(arb.ops_eligible, 2);
+        assert_eq!(arb.observed_losses, 1);
+        assert_eq!(arb.included_excluded_from_net, 1);
+        assert!((arb.gross_usd.unwrap() - 8.0).abs() < 1e-9);
+        assert!((arb.cost_usd.unwrap() - 2.0).abs() < 1e-9);
+        assert!((arb.net_usd.unwrap() - 6.0).abs() < 1e-9);
+        assert!((arb.roi_pct.unwrap() - 300.0).abs() < 1e-9);
+        assert!((arb.net_per_10.unwrap() - 30.0).abs() < 1e-9);
+        let bundler = rows
+            .iter()
+            .find(|r| r.slice_key == "utility/bundler")
+            .unwrap();
+        assert_eq!(bundler.ops_eligible, 0);
+        assert!(bundler.exclusion_reasons.contains_key("gas_cost_as_profit"));
+        let jit = rows.iter().find(|r| r.slice_key == "jit").unwrap();
+        assert_eq!(jit.ops_eligible, 0);
+        assert!(jit.exclusion_reasons.contains_key("jit_unverified"));
+    }
+
+    /// Zero recorded cost is N/A, never Infinity or a fabricated zero ratio.
+    #[test]
+    fn strategy_economics_zero_cost_is_na() {
+        let ops = vec![op(
+            1,
+            10,
+            "arb_atomic",
+            None,
+            "exact",
+            Some(5.0),
+            Some(5.0),
+            Some(0.0),
+            "0xa",
+            None,
+            Some("{}"),
+            None,
+        )];
+        let rows = reduce_strategy_economics(&ops);
+        let row = &rows[0];
+        assert_eq!(row.ops_eligible, 1);
+        assert_eq!(row.roi_pct, None);
+        assert_eq!(row.net_per_10, None);
+        assert_eq!(row.gross_per_10, None);
+    }
+
+    /// Tag membership is counted once per operation, and truncation/budget
+    /// caps never move the full-window economics or tag statistics.
+    #[test]
+    fn tags_and_economics_are_invariant_to_truncation() {
+        let ops = vec![
+            op(
+                1,
+                10,
+                "arb_atomic",
+                None,
+                "exact",
+                Some(9.0),
+                Some(10.0),
+                Some(1.0),
+                "0xa",
+                None,
+                Some(r#"{"tags":["flash_arb","flash_arb","multi_hop"]}"#),
+                None,
+            ),
+            op(
+                2,
+                20,
+                "arb_atomic",
+                None,
+                "exact",
+                Some(1.0),
+                Some(2.0),
+                Some(1.0),
+                "0xb",
+                None,
+                Some(r#"{"tags":["flash_arb"]}"#),
+                None,
+            ),
+        ];
+        let window = WindowSpec {
+            label: "t".into(),
+            since_ts: 0,
+            until_ts: 3_600,
+        };
+        let labels = HashMap::new();
+        let catalogue = HashSet::new();
+        let full = reduce(&ops, &caps(), &window, &[], &labels, &catalogue, 100, 100);
+        let trimmed = reduce(&ops, &caps(), &window, &[], &labels, &catalogue, 1, 0);
+        assert_eq!(full.strategy_economics, trimmed.strategy_economics);
+        assert_eq!(full.tag_facets, trimmed.tag_facets);
+        let flash = full
+            .tag_facets
+            .iter()
+            .find(|t| t.value == "flash_arb")
+            .unwrap();
+        assert_eq!(flash.ops, 2, "duplicate tag in one op counts once");
+        assert_eq!(trimmed.events.len(), 1);
+        assert_eq!(trimmed.evidence.len(), 0);
     }
 }

@@ -584,8 +584,7 @@ pub async fn index_block_fetched(
         .unwrap_or(block_number)
         .max(block_number.saturating_sub(cfg.jit_window_blocks))
         .min(block_number);
-    let mut window_blocks =
-        store.jit_blocks_range(oldest_open, block_number.saturating_sub(1))?;
+    let mut window_blocks = store.jit_blocks_range(oldest_open, block_number.saturating_sub(1))?;
     window_blocks.push(journal.clone());
     window_blocks.sort_by_key(|b| b.block_number);
     window_blocks.retain(|b| b.block_number <= block_number);
