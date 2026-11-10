@@ -316,6 +316,7 @@ impl super::SqliteStore {
             let logs: Vec<crate::data::LogData> =
                 super::SqliteStore::deserialize(&row.get::<_, Vec<u8>>(5)?)?;
             receipts.push(ReceiptData {
+                block_hash: None, // scanner cache is not hash-verified receipt evidence
                 tx_hash: super::SqliteStore::blob_to_b256(&row.get::<_, Vec<u8>>(0)?),
                 tx_index: row.get::<_, i64>(1)? as u64,
                 status: row.get::<_, i64>(2)? != 0,

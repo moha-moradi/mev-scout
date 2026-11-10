@@ -143,8 +143,55 @@ tr.clickable:hover td, tr.active td { background: rgba(79,209,197,.08); }
 .bar > i { display: block; height: 100%; background: var(--teal); }
 .caption { margin-top: 8px; color: var(--muted); font: 11px/1.4 var(--mono); }
 .footer-note { margin-top: 18px; color: var(--muted); font: 11px/1.5 var(--mono); text-align: center; }
-.ops-layout { display: grid; grid-template-columns: 340px 1fr; gap: 12px; min-height: 70vh; }
-.ops-list { max-height: calc(100vh - 120px); overflow: auto; }
+.ops-layout { min-height: 70vh; }
+.ops-layout.detail-open .ops-list { display: none; }
+.ops-layout:not(.detail-open) #op-detail { display: none; }
+.ops-list { overflow: auto; }
+#op-detail { padding: 20px; background: transparent; border: 0; box-shadow: none; }
+#op-detail .card { padding: 18px; }
+#op-detail h3 { color: var(--ink); font-size: 14px; letter-spacing: 0; text-transform: none; }
+.op-columns { grid-template-columns: minmax(0, 2.5fr) minmax(260px, 1fr); }
+.op-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+#op-title { display: inline-block; margin: 5px 0; }
+#op-back { margin-bottom: 12px; }
+#op-waterfall-note { min-height: 32px; }
+.strategy-help { cursor: help; border: 0; text-align: left; }
+.strategy-help:focus-visible, .btn:focus-visible, tr.clickable:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; }
+.strategy-glossary { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.strategy-tooltip { position: fixed; z-index: 1000; width: min(380px, calc(100vw - 24px)); padding: 16px; background: #101c2b; border: 1px solid #335168; border-radius: 12px; box-shadow: 0 12px 40px #0009; font: 12px/1.6 var(--sans); }
+.strategy-tooltip[hidden] { display: none; }
+.strategy-tooltip h3 { margin: 0 0 8px; color: var(--teal); font-size: 14px; }
+.strategy-tooltip p { margin: 7px 0; }
+.strategy-tooltip ul { padding-left: 18px; margin: 8px 0; }
+.strategy-tooltip .caption { border-top: 1px solid var(--line); padding-top: 8px; }
+.chart-help { max-width: 360px; white-space: normal; line-height: 1.5; }
+.chart-help p { margin: 6px 0; }
+.metric-table { margin-top: 12px; max-height: 250px; }
+.metric-table td { white-space: nowrap; }
+.tag-coverage { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.timeline { margin: 0; padding: 0; list-style: none; }
+.timeline li { position: relative; margin-left: 7px; padding: 0 0 20px 22px; border-left: 1px solid #2b4b56; }
+.timeline li:last-child { border-left-color: transparent; padding-bottom: 0; }
+.timeline li::before { content: ""; position: absolute; left: -5px; top: 5px; width: 9px; height: 9px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 8px #2dd4bf55; }
+.timeline strong { display: block; margin-bottom: 3px; }
+.evidence-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.evidence-label { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+.accounting-note { border-left: 3px solid var(--amber); padding: 10px 14px; background: #fbbf2408; line-height: 1.6; margin: 12px 0; }
+.accounting-note.verified { border-left-color: var(--teal); background: #2dd4bf08; }
+.route-leg { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+.route-token { min-width: 105px; max-width: 155px; text-align: center; font: 11px/1.5 var(--mono); }
+.route-token .amt { display: block; color: var(--teal); margin-top: 5px; overflow-wrap: anywhere; }
+.route-arrow { color: var(--muted); font-size: 22px; }
+.route-break { align-self: center; color: var(--amber); padding: 8px; border-left: 1px dashed var(--amber); font-size: 10px; }
+.route-node { width: 136px; height: 136px; border-radius: 50%; display: flex; flex-direction: column; justify-content: center; gap: 8px; border-width: 2px; }
+.cashflow-grid { display: grid; grid-template-columns: repeat(3, minmax(150px, 1fr)); gap: 12px; width: 100%; }
+.cashflow-card { border: 1px solid var(--line); border-radius: 12px; padding: 16px; background: var(--panel2); }
+.cashflow-card strong { display: block; margin-bottom: 10px; color: var(--teal); }
+.cashflow-card .token-line { margin-top: 8px; }
+#page-sub { max-width: 940px; line-height: 1.8; }
+#page-sub .coverage-time { display: block; }
+#op-facts td:last-child { overflow-wrap: anywhere; }
+#op-copy-status { min-height: 16px; }
 .op-head { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
 .op-head h1 { margin: 0; font-size: 22px; }
 .btn {
@@ -190,6 +237,22 @@ pre.raw {
   .app { grid-template-columns: 1fr; }
   .sidebar { position: relative; height: auto; flex-direction: row; flex-wrap: wrap; }
   .side-foot { display: none; }
+  .navbtn { width: auto; }
+  .op-columns { grid-template-columns: 1fr; }
+}
+@media (max-width: 600px) {
+  .main { padding: 12px 10px 24px; }
+  .brand { width: 100%; padding-bottom: 10px; }
+  .navbtn { padding: 9px; font-size: 12px; }
+  .kpis, .op-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .evidence-grid { grid-template-columns: 1fr; }
+  .kpi-value { font-size: 19px; }
+  .search { min-width: 0; width: 100%; }
+  .controls { width: 100%; }
+  #op-detail { padding: 0; }
+  #op-detail .card { padding: 12px; }
+  .cashflow-grid { grid-template-columns: 1fr; }
+  .chart-tall { height: 320px; }
 }
 </style>
 </head>
@@ -261,6 +324,25 @@ pre.raw {
     </section>
 
     <section class="view" id="view-analytics">
+      <div class="grid row2b" style="margin-bottom:14px">
+        <div class="card">
+          <h2>Strategy tags</h2>
+          <div class="chart chart-tall" id="chart-analytics-tags"></div>
+          <div class="caption tag-coverage" id="analytics-tags-cap"></div>
+          <div class="caption">Tags overlap: one operation can carry several tags, so percentages need not total 100%.</div>
+        </div>
+        <div class="card">
+          <h2>Net return on recorded execution cost</h2>
+          <div class="chart chart-tall" id="chart-analytics-roi"></div>
+          <div class="caption" id="analytics-roi-cap"></div>
+          <div class="caption">Historical observations, not expected returns. Cost = recorded gas + known financing fees, not trading volume or invested capital. Unobserved builder payments are not included.</div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <h2>What did each $10 of cost produce?</h2>
+        <div class="table-wrap metric-table"><table><thead><tr><th>Strategy</th><th>Eligible / total</th><th>Gross / $10</th><th>Net / $10</th><th>Return</th><th>Observed losses</th></tr></thead><tbody id="analytics-economics"></tbody></table></div>
+        <div class="caption">Each ratio uses the same fully priced operations for both profit and cost. Known losses are included here, including losses excluded from headline net. Hover or focus a strategy to read its detection rules.</div>
+      </div>
       <div class="grid row2">
         <div class="card"><h2>Strategy activity</h2><div class="chart chart-tall" id="chart-analytics-heat"></div></div>
         <div class="card">
@@ -282,14 +364,16 @@ pre.raw {
     </section>
 
     <section class="view" id="view-operations">
-      <div class="ops-layout">
+      <div class="ops-layout" id="ops-layout">
         <div class="card ops-list">
           <h2>Operations</h2>
+          <div class="caption" id="ops-selection-note" role="status"></div>
           <div class="table-wrap" style="max-height:none"><table><thead><tr><th>Time</th><th>Strategy</th><th>Net</th></tr></thead><tbody id="ops-tbody"></tbody></table></div>
         </div>
         <div class="card" id="op-detail">
           <div class="empty" id="op-empty">Select an operation</div>
           <div id="op-body" style="display:none">
+            <button class="btn" id="op-back" type="button">Back to operations</button>
             <div class="op-head">
               <div>
                 <div class="meta" id="op-crumb"></div>
@@ -301,21 +385,30 @@ pre.raw {
                 <a class="btn" id="op-explorer" target="_blank" rel="noopener">Explorer</a>
               </div>
             </div>
-            <div class="grid kpis" style="grid-template-columns:repeat(4,minmax(0,1fr))" id="op-kpis"></div>
-            <div class="grid row2b" style="margin-top:12px">
-              <div class="card" style="background:var(--panel2)"><h3>Profit waterfall</h3><div class="chart chart-sm" id="chart-op-waterfall"></div></div>
-              <div class="card" style="background:var(--panel2)"><h3>Operation facts</h3><table class="facts" id="op-facts"></table></div>
+            <div class="caption" id="op-copy-status" role="status" aria-live="polite"></div>
+            <div class="grid op-kpis" id="op-kpis"></div>
+            <div id="op-accounting"></div>
+            <div class="grid op-columns" style="margin-top:14px">
+              <div class="card"><h3>Profit waterfall</h3><div class="chart" id="chart-op-waterfall"></div><div class="caption" id="op-waterfall-note"></div></div>
+              <div class="card"><h3>Operation facts</h3><table class="facts" id="op-facts"></table></div>
             </div>
-            <div class="card" style="margin-top:12px;background:var(--panel2)">
-              <h3>Route &amp; token flow</h3>
-              <div class="route" id="op-route"></div>
-              <div class="caption" id="op-route-cap"></div>
+            <div class="grid op-columns" style="margin-top:14px">
+              <div class="card">
+                <h3>Route &amp; token flow</h3>
+                <div class="route" id="op-route"></div>
+                <div class="caption" id="op-route-cap"></div>
+              </div>
+              <div class="card"><h3>Observed execution timeline</h3><ol class="timeline" id="op-timeline"></ol></div>
             </div>
-            <div class="card" style="margin-top:12px;background:var(--panel2)">
+            <div class="card" style="margin-top:14px">
               <h3>Evidence</h3>
-              <div class="badge-row" id="op-tags"></div>
-              <div class="caption" id="op-victims" style="margin-top:8px"></div>
-              <details class="raw"><summary>Raw evidence JSON</summary><pre class="raw" id="op-raw"></pre></details>
+              <div class="grid evidence-grid">
+                <div><p class="evidence-label">Strategy tags</p><div class="badge-row" id="op-tags"></div></div>
+                <div><p class="evidence-label">Detection reasons &amp; limitations</p><div class="badge-row" id="op-reasons"></div></div>
+              </div>
+              <div class="caption" id="op-victims" style="margin-top:14px"></div>
+              <div id="op-strategy-guide" class="strategy-glossary"></div>
+              <details class="raw"><summary>View raw evidence JSON</summary><pre class="raw" id="op-raw"></pre></details>
             </div>
           </div>
         </div>
@@ -326,7 +419,9 @@ pre.raw {
       <div class="grid health-grid" id="health-grid"></div>
     </section>
 
+    <div class="card" style="margin-top:16px"><h2>Strategy field guide</h2><div class="caption">Hover, focus or tap a strategy for its definition, detection rules and accounting limits. Rules describe this implementation; historical run settings may not have been recorded.</div><div class="strategy-glossary" id="strategy-glossary"></div></div>
     <div class="footer-note" id="semantics-foot"></div>
+    <div class="strategy-tooltip" id="strategy-tooltip" role="tooltip" hidden></div>
   </main>
 </div>
 
@@ -345,7 +440,9 @@ pre.raw {
   var charts = {};
   var state = {
     view: "overview",
+    opId: null,
     opHash: null,
+    legacyHash: null,
     q: ""
   };
 
@@ -405,6 +502,130 @@ pre.raw {
   function familyLabel(key) {
     return key.indexOf("utility/") === 0 ? "utility" : "mev";
   }
+  var STRATEGY_INFO = {
+    arb_atomic: {
+      definition: "A searcher closes a token cycle across multiple pools inside one successful transaction.",
+      rules: ["A resolved, non-aggregator cycle touches at least two pools.", "Attributable token flows leave a positive residual; material inventory deficits reject the candidate."],
+      limits: "A detected cycle is not enough by itself. USD pricing and financing-cost coverage remain separate checks."
+    },
+    sandwich: {
+      definition: "An attacker trades before and after another trader on the same pool.",
+      rules: ["The same sender opens and then closes in the opposite direction.", "A different sender trades in the opening direction between those legs."],
+      limits: "Victim price degradation is evidence, not a mandatory gate. Known losses remain in the cost-return comparison even when excluded from headline net."
+    },
+    backrun: {
+      definition: "A profitable cycle follows a pool move by another trader.",
+      rules: ["A different sender first moves the same pool in the opposite direction.", "A subsequent closed cycle has attributable profit, a matching-unit size check and improved execution versus an earlier reference."],
+      limits: "Causality is inferred. The proximity and price-impact thresholds are configurable; historical settings may be unavailable."
+    },
+    frontrun: {
+      definition: "A searcher opens before another trader and closes profitably afterward.",
+      rules: ["A later third-party trade in the same direction executes worse.", "The searcher closes with a positive signed ledger over the opening-to-closing window; closing can be multi-hop."],
+      limits: "This is an inferred causal pattern, not proof of mempool intent. Proximity and impact thresholds are configurable."
+    },
+    liquidation: {
+      definition: "A liquidator repays debt and receives collateral or buys seized collateral.",
+      rules: ["Recognized protocol liquidation event signatures or a Compound BuyCollateral event.", "Collateral/debt amounts and token conversion evidence determine valuation."],
+      limits: "Receiving collateral is not all profit: debt and execution costs must be accounted for. Transfer mismatches remain visible as evidence."
+    },
+    jit: {
+      definition: "Liquidity is opened briefly around pool activity and then removed.",
+      rules: ["Liquidity events match the pool, owner and position range in on-chain order.", "Pool activity occurs during the position lifetime; only fully verified V3 settlement supports realised accounting."],
+      limits: "Paid fees are Collect minus Burn principal, not all pool swap fees. Pre-existing balances, shared ownership, incomplete settlement and unsupported LB accounting can leave profit unknown."
+    },
+    jit_arb: {
+      definition: "A JIT lifecycle overlaps an atomic arbitrage operation.",
+      rules: ["The JIT anchor transaction also satisfies atomic-arbitrage detection.", "The classifier upgrades the operation rather than counting a second standalone arbitrage."],
+      limits: "LP fees and arbitrage residuals must not be added twice. Combined profit stays unknown when overlapping flows cannot be reconciled."
+    },
+    skim: {
+      definition: "A searcher retrieves excess tokens held by a V2-like pool.",
+      rules: ["A configured V2-like pair sends tokens outward in a successful transaction.", "No same-pair Swap, Sync, Mint or Burn and no inbound transfer to that pair accompany the fingerprint."],
+      limits: "This is an event/transfer fingerprint, not a direct inspection of the called function."
+    },
+    "utility/keeper": {
+      definition: "An automation keeper performs a protocol maintenance action.",
+      rules: ["A Gelato ExecSuccess or Chainlink upkeep event matches the supported fingerprint.", "Explicit reward or fee evidence is used where available."],
+      limits: "Utility activity is not necessarily MEV. A reward field still requires complete cost and pricing evidence for return-on-cost."
+    },
+    "utility/claim_and_sell": {
+      definition: "A newly claimed or minted token is sold in the same transaction.",
+      rules: ["A nonzero transfer from the zero address and a swap selling that token coexist.", "An existing arbitrage is tagged; otherwise a positive sender residual can produce a utility operation."],
+      limits: "The fingerprint alone does not prove claim-before-sale ordering. Only attributable, priced income belongs in the economics comparison."
+    },
+    "utility/bundler": {
+      definition: "An account-abstraction bundler executes a user operation.",
+      rules: ["A successful decoded UserOperationEvent is present."],
+      limits: "The recorded actual_gas_cost field is reimbursement/cost evidence, not verified bundler profit. It is excluded from the return-on-cost chart."
+    },
+    utility: {
+      definition: "A supported protocol utility operation, separate from a proven MEV strategy.",
+      rules: ["Classification follows a supported event fingerprint or the indicated utility subkind."],
+      limits: "Inspect the subkind and raw evidence before interpreting a recorded amount as income."
+    }
+  };
+  function strategyDescription(key, detailed) {
+    var info = STRATEGY_INFO[key];
+    var html = '<div class="chart-help"><b>' + esc(sliceLabel(key)) + "</b>";
+    if (!info) return html + "<p>No rule description is available for this strategy.</p></div>";
+    html += "<p>" + esc(info.definition) + "</p>";
+    if (detailed) html += "<ul>" + info.rules.map(function (r) { return "<li>" + esc(r) + "</li>"; }).join("") + "</ul>";
+    return html + '<p class="caption">' + esc(info.limits) + "</p></div>";
+  }
+  function strategyBadge(key) {
+    return '<button type="button" class="' + pillClass(key) + ' strategy-help" data-strategy="' + esc(key)
+      + '" aria-label="' + esc(sliceLabel(key) + ": definition and detection rules") + '">' + esc(sliceLabel(key)) + "</button>";
+  }
+  function strategyKeyForLabel(label) {
+    return Object.keys(STRATEGY_INFO).concat(rollMix().map(function (m) { return m.key; }))
+      .find(function (key) { return sliceLabel(key) === label; });
+  }
+  function strategyLegend() {
+    return { show: true, formatter: function (p) {
+      var key = strategyKeyForLabel(p.name);
+      return key ? strategyDescription(key, true) : esc(p.name);
+    } };
+  }
+  function strategyAxisTooltip(p) {
+    var name = p.name || p.value || "";
+    var key = strategyKeyForLabel(name);
+    return key ? strategyDescription(key, true) : esc(name);
+  }
+  var helpTrigger = null;
+  var helpTimer = null;
+  function hideStrategyHelp() {
+    clearTimeout(helpTimer);
+    $("strategy-tooltip").hidden = true;
+    if (helpTrigger) helpTrigger.removeAttribute("aria-describedby");
+    helpTrigger = null;
+  }
+  function showStrategyHelp(trigger) {
+    clearTimeout(helpTimer);
+    if (helpTrigger && helpTrigger !== trigger) helpTrigger.removeAttribute("aria-describedby");
+    helpTrigger = trigger;
+    var el = $("strategy-tooltip");
+    el.innerHTML = strategyDescription(trigger.getAttribute("data-strategy"), true)
+      + '<div class="caption">Current implementation rules · historical run settings may not be recorded.</div>';
+    el.hidden = false;
+    trigger.setAttribute("aria-describedby", "strategy-tooltip");
+    var r = trigger.getBoundingClientRect();
+    var box = el.getBoundingClientRect();
+    el.style.left = Math.max(12, Math.min(r.left, window.innerWidth - box.width - 12)) + "px";
+    el.style.top = Math.max(12, r.bottom + box.height + 12 < window.innerHeight ? r.bottom + 8 : r.top - box.height - 8) + "px";
+    el.style.maxHeight = (window.innerHeight - 24) + "px";
+    el.style.overflowY = "auto";
+  }
+  function percent(v) {
+    return v == null || !Number.isFinite(v) ? "—" : v.toLocaleString("en-US", { maximumFractionDigits: 1 }) + "%";
+  }
+  function dateTime(ts) {
+    return ts == null || !Number.isFinite(ts) ? "—" : new Date(ts * 1000).toISOString().replace("T", " ").replace(".000Z", " UTC");
+  }
+  function duration(secs) {
+    if (secs == null || !Number.isFinite(secs) || secs < 0) return "—";
+    var d = Math.floor(secs / 86400), h = Math.floor(secs % 86400 / 3600), m = Math.floor(secs % 3600 / 60);
+    return (d ? d + "d " : "") + (h ? h + "h " : "") + (m ? m + "m " : "") + (secs % 60 ? secs % 60 + "s" : (!d && !h && !m ? "0s" : ""));
+  }
   function colorFor(key) {
     if (SLICE_COLORS[key]) return SLICE_COLORS[key];
     var h = 0;
@@ -417,7 +638,7 @@ pre.raw {
   }
   /** Format Option USD — never coerce null to zero. */
   function usd(v, signed) {
-    if (v == null || Number.isNaN(v)) return '<span class="null">—</span>';
+    if (v == null || !Number.isFinite(v)) return '<span class="null">—</span>';
     var a = Math.abs(v);
     var s = a >= 1e9 ? (a / 1e9).toFixed(2) + "B"
       : a >= 1e6 ? (a / 1e6).toFixed(2) + "M"
@@ -507,9 +728,9 @@ pre.raw {
   function strategySeries() { return P.strategy_series || []; }
   function scatterPoints() { return P.scatter_points || []; }
 
-  function evidenceByHash() {
+  function evidenceById() {
     var m = {};
-    (P.evidence || []).forEach(function (e) { m[e.tx_hash] = e; });
+    (P.evidence || []).forEach(function (e) { m[String(e.id)] = e; });
     return m;
   }
 
@@ -534,12 +755,13 @@ pre.raw {
           || eoa.toLowerCase().indexOf(q) >= 0
           || contract.toLowerCase().indexOf(q) >= 0
           || block.indexOf(q) >= 0
-          || slice.toLowerCase().indexOf(q) >= 0) {
-          hit[tx.toLowerCase()] = 1;
+          || slice.toLowerCase().indexOf(q) >= 0
+          || (r[14] || []).some(function (id) { return String((idx.tags || [])[id] || "").toLowerCase().indexOf(q) >= 0; })) {
+          hit[String(r[16])] = 1;
         }
       });
       return events.filter(function (e) {
-        return hit[String(e.tx_hash || "").toLowerCase()];
+        return hit[String(e.id)];
       });
     }
     return events.filter(function (e) {
@@ -554,15 +776,13 @@ pre.raw {
     });
   }
 
-  function unpricedJitCount() {
-    return (P.events || []).filter(function (e) {
-      return e.kind === "jit" && e.profit_usd == null;
-    }).length || Math.max(0, (Q.ops_unpriced || 0) - ((P.events || []).filter(function (e) {
-      return e.kind !== "jit" && e.profit_usd == null;
-    }).length));
+  function unmatchedJitCount() {
+    return (P.strategy_economics || []).filter(function (e) {
+      return e.slice_key === "jit" || e.slice_key === "jit_arb";
+    }).reduce(function (n, e) { return n + e.ops_total - e.ops_eligible; }, 0);
   }
 
-  function setView(name) {
+  function setView(name, updateHistory) {
     state.view = name;
     document.querySelectorAll(".navbtn").forEach(function (b) {
       b.classList.toggle("active", b.getAttribute("data-view") === name);
@@ -580,22 +800,25 @@ pre.raw {
       health: "Data Health"
     };
     $("page-title").textContent = titles[name] || name;
+    hideStrategyHelp();
     renderView();
-    if (name === "operations") {
-      history.replaceState(null, "", state.opHash ? "#/op/" + state.opHash : "#/operations");
-    } else {
-      history.replaceState(null, "", "#/" + name);
-    }
+    var hash = name === "operations" && state.opId != null ? "#/operation/" + state.opId : "#/" + name;
+    if (updateHistory !== false && location.hash !== hash) history.pushState(null, "", hash);
   }
 
   function renderChrome() {
     var chain = (S.db && S.db.chain_label) || "chain";
     var chainId = S.db && S.db.chain_id;
     var win = (S.window && S.window.label) || "window";
+    var range = C.min_block_number == null || C.max_block_number == null ? "Blocks —" : "Blocks "
+      + C.min_block_number.toLocaleString("en-US") + " → " + C.max_block_number.toLocaleString("en-US");
+    var first = C.first_block_ts, last = C.last_block_ts;
     $("page-sub").innerHTML = chainIcon(chainId)
-      + "<span>" + esc(chain) + " · window " + esc(win)
-      + (C.indexed_to != null ? " · indexed_to " + C.indexed_to : "")
-      + "</span>";
+      + "<span>" + esc(chain) + " · " + esc(range) + " · " + esc(String(C.blocks_in_window || 0)) + " indexed blocks"
+      + '<span class="coverage-time">' + esc(dateTime(first)) + " → " + esc(dateTime(last))
+      + " · " + esc(duration(first != null && last != null ? last - first : null)) + " on-chain span"
+      + " · selected window: " + esc(win) + "</span></span>";
+    $("strategy-glossary").innerHTML = Object.keys(STRATEGY_INFO).filter(function (k) { return k !== "utility"; }).map(strategyBadge).join("");
     $("side-meta").innerHTML = "v" + esc((S.generator && S.generator.version) || "?")
       + "<br>" + esc((S.db && S.db.status) || "")
       + "<br>schema " + esc((S.db && S.db.user_version) + "/" + (S.db && S.db.schema_head));
@@ -689,9 +912,13 @@ pre.raw {
         textStyle: darkText(),
         legend: {
           type: "scroll", bottom: 0, textStyle: darkText(),
-          pageTextStyle: darkText()
+          pageTextStyle: darkText(), tooltip: strategyLegend()
         },
-        tooltip: { trigger: "axis" },
+        tooltip: { trigger: "item", confine: true, formatter: function (p) {
+          var key = strategyKeyForLabel(p.seriesName);
+          return (key ? strategyDescription(key, true) : esc(p.seriesName))
+            + "<br>" + esc(dateTime(buckets[p.dataIndex])) + "<br>" + (key ? p.value + " operations" : usd(p.value, true));
+        } }, 
         grid: { left: 48, right: 52, top: 18, bottom: 52 },
         xAxis: {
           type: "category",
@@ -706,9 +933,9 @@ pre.raw {
         series: barSeries
       });
     }
-    var uj = (P.events || []).filter(function (e) { return e.kind === "jit" && e.profit_usd == null; }).length;
+    var uj = unmatchedJitCount();
     $("overview-pulse-cap").textContent = (Q.ops_unpriced || 0) + " unpriced ops in stacked counts · USD line uses priced net only"
-      + (uj ? (" · " + uj + " JIT unpriced") : "")
+      + (uj ? (" · " + uj + " JIT outside comparable-cost cohort") : "")
       + " · Bundler/Claim&sell are utility subkinds";
 
     var cMix = chart("chart-overview-mix");
@@ -718,8 +945,8 @@ pre.raw {
         tooltip: {
           trigger: "item",
           formatter: function (p) {
-            return p.name + "<br>" + p.value + " ops (" + p.percent + "%)"
-              + "<br><span style='opacity:.7'>" + familyLabel(mix[p.dataIndex] ? mix[p.dataIndex].key : "") + "</span>";
+            return strategyDescription(mix[p.dataIndex] ? mix[p.dataIndex].key : "", true)
+              + "<br>" + p.value + " ops (" + p.percent + "%)";
           }
         },
         series: [{
@@ -758,7 +985,7 @@ pre.raw {
     }).join("") || '<div class="empty">No searchers</div>';
 
     var badge = $("overview-unpriced-badge");
-    if (uj > 0) { badge.style.display = ""; badge.textContent = uj + " JIT unpriced"; }
+    if (uj > 0) { badge.style.display = ""; badge.textContent = uj + " JIT not comparable"; }
     else if ((Q.ops_unpriced || 0) > 0) { badge.style.display = ""; badge.textContent = Q.ops_unpriced + " unpriced"; }
     else badge.style.display = "none";
 
@@ -867,7 +1094,63 @@ pre.raw {
     return "priced " + priced + "/" + total;
   }
 
+  function renderAnalyticsEconomics() {
+    var tags = P.tag_facets || [];
+    var tagChart = chart("chart-analytics-tags");
+    if (tagChart) tagChart.setOption({
+      textStyle: darkText(),
+      grid: { left: 145, right: 46, top: 14, bottom: 30 },
+      tooltip: { trigger: "item", confine: true, formatter: function (p) {
+        var t = tags[p.dataIndex];
+        return "<b>" + esc(t.value) + "</b><br>" + t.ops + " operations · " + percent(K.ops ? t.ops / K.ops * 100 : null)
+          + " of all operations" + (t.out_of_catalogue ? "<br>Tag not in the current catalogue" : "");
+      } },
+      xAxis: { type: "value", name: "Operations", minInterval: 1, axisLabel: darkText(), splitLine: { lineStyle: { color: "#243044" } } },
+      yAxis: { type: "category", inverse: true, data: tags.map(function (t) { return t.value; }), axisLabel: { color: "#9aadc5", fontSize: 10, width: 130, overflow: "truncate" } },
+      dataZoom: tags.length > 10 ? [{ type: "slider", yAxisIndex: 0, right: 0, width: 12, startValue: 0, endValue: 9, showDetail: false, borderColor: "#243044", fillerColor: "rgba(45,212,191,.15)" }] : [],
+      graphic: tags.length ? [] : [{ type: "text", left: "center", top: "middle", style: { text: "No strategy tags in this window", fill: "#7f91ab" } }],
+      series: [{ type: "bar", data: tags.map(function (t) { return { value: t.ops, itemStyle: { color: t.out_of_catalogue ? "#fbbf24" : "#2dd4bf", borderRadius: [0, 4, 4, 0] } }; }), barMaxWidth: 20 }]
+    });
+    $("analytics-tags-cap").textContent = tags.length + " tags · " + (P.untagged_ops || 0) + " operations without tags · denominator: " + (K.ops || 0) + " operations";
+    var rows = (P.strategy_economics || []).slice().sort(function (a, b) {
+      if (a.roi_pct == null) return b.roi_pct == null ? a.slice_key.localeCompare(b.slice_key) : 1;
+      if (b.roi_pct == null) return -1;
+      return b.roi_pct - a.roi_pct;
+    });
+    var roiChart = chart("chart-analytics-roi");
+    if (roiChart) roiChart.setOption({
+      textStyle: darkText(),
+      grid: { left: 122, right: 48, top: 14, bottom: 30 },
+      tooltip: { trigger: "axis", confine: true, formatter: function (items) {
+        var p = items[0];
+        if (!p) return "No comparable observations";
+        var row = rows[p.dataIndex];
+        var reasons = Object.keys(row.exclusion_reasons || {}).map(function (r) { return esc(r.replace(/_/g, " ")) + ": " + row.exclusion_reasons[r]; });
+        return strategyDescription(row.slice_key, true) + "<br>Return on cost: " + percent(row.roi_pct)
+          + "<br>Per $10 cost: " + usd(row.net_per_10, true) + " net; " + usd(row.gross_per_10, true) + " gross"
+          + "<br>Eligible: " + row.ops_eligible + " / " + row.ops_total + " · losses: " + row.observed_losses
+          + (reasons.length ? "<br>Not comparable: " + reasons.join("<br>") : "");
+      } },
+      xAxis: { type: "value", name: "%", axisLabel: { color: "#8b9bb3", formatter: "{value}%" }, splitLine: { lineStyle: { color: "#243044" } } },
+      yAxis: { type: "category", inverse: true, data: rows.map(function (r) { return sliceLabel(r.slice_key); }), axisLabel: { color: "#9aadc5", fontSize: 10, width: 112, overflow: "truncate" } },
+      graphic: rows.some(function (r) { return r.roi_pct != null; }) ? [] : [{ type: "text", left: "center", top: "middle", style: { text: "No comparable positive-cost cohort", fill: "#7f91ab", fontSize: 11 } }],
+      series: [{ type: "bar", barMaxWidth: 24, data: rows.map(function (r) {
+        return { value: r.roi_pct, itemStyle: { color: r.roi_pct < 0 ? "#fb7185" : colorFor(r.slice_key), borderRadius: 3 } };
+      }), label: { show: true, position: "right", color: "#cbd5e1", fontSize: 10, formatter: function (p) { return percent(p.value); } },
+      markLine: { silent: true, symbol: "none", data: [{ xAxis: 0 }], lineStyle: { color: "#8296b0", type: "solid" }, label: { show: false } } }]
+    });
+    var eligible = rows.reduce(function (n, r) { return n + r.ops_eligible; }, 0);
+    $("analytics-roi-cap").textContent = eligible + " / " + (K.ops || 0) + " operations have comparable economics. Unavailable observations are not zero-profit observations.";
+    $("analytics-economics").innerHTML = rows.map(function (r) {
+      var reason = Object.keys(r.exclusion_reasons || {}).map(function (k) { return k.replace(/_/g, " ") + ": " + r.exclusion_reasons[k]; }).join("; ");
+      return '<tr><td>' + strategyBadge(r.slice_key) + '</td><td title="' + esc(reason || "All observations eligible") + '">'
+        + r.ops_eligible + " / " + r.ops_total + '</td><td>' + usd(r.gross_per_10, true) + '</td><td>' + usd(r.net_per_10, true)
+        + '</td><td class="' + (r.roi_pct < 0 ? "loss" : "gain") + '">' + percent(r.roi_pct) + '</td><td>' + r.observed_losses + '</td></tr>';
+    }).join("") || '<tr><td colspan="6" class="empty">No operations in this window</td></tr>';
+  }
+
   function renderAnalytics() {
+    renderAnalyticsEconomics();
     var mix = rollMix();
     var ss = strategySeries();
     var buckets = [];
@@ -893,7 +1176,7 @@ pre.raw {
         backgroundColor: "transparent",
         tooltip: {
           formatter: function (p) {
-            return sliceLabel(slices[p.value[1]]) + "<br>" + fmtTime(buckets[p.value[0]]) + "<br>ops " + p.value[2];
+            return strategyDescription(slices[p.value[1]], true) + "<br>" + esc(dateTime(buckets[p.value[0]])) + "<br>ops " + p.value[2];
           }
         },
         grid: { left: 110, right: 20, top: 10, bottom: 40 },
@@ -922,8 +1205,6 @@ pre.raw {
     }
     var confExact = 0, confInf = 0;
     (P.kind_matrix || []).forEach(function (c) {
-      var key = sliceKey(c.kind, c.subkind);
-      if (!passesSlice(key) || !passesUtility(key) || !passesConfidence(c.confidence)) return;
       if (c.confidence === "exact") confExact += c.ops || 0;
       else if (c.confidence === "inferred") confInf += c.ops || 0;
     });

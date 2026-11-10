@@ -186,7 +186,7 @@ pub(super) fn classify_atomic_arbs(
             tx.from,
             tx.to,
         );
-        let searcher = profit_candidates
+        let candidate = profit_candidates
             .iter()
             .copied()
             .find(|a| ledger.net(*a, anchor) > U256::ZERO)
@@ -195,19 +195,45 @@ pub(super) fn classify_atomic_arbs(
                     .iter()
                     .copied()
                     .find(|a| select_profit_token(&ledger, *a, &input.ctx.profit_policy).is_some())
-            })
-            .or_else(|| match &forwarded {
-                ForwardedLookup::Hit {
-                    recipient,
-                    forwarded_from: from_addr,
-                    token,
-                } => {
-                    forwarded_from = Some(*from_addr);
-                    forwarded_token = Some(*token);
-                    Some(*recipient)
-                }
-                ForwardedLookup::TipSink | ForwardedLookup::None => None,
             });
+        let forwarded_hit = match &forwarded {
+            ForwardedLookup::Hit {
+                recipient,
+                forwarded_from: from_addr,
+                token,
+            } => Some((*recipient, *from_addr, *token)),
+            ForwardedLookup::TipSink | ForwardedLookup::None => None,
+        };
+        // A minor beneficiary can qualify as a candidate (>=2 transfer
+        // participations) while the bulk of the profit is forwarded to a
+        // single non-candidate payee. Prefer the forwarded payee when it
+        // holds more of the same token; otherwise keep the exact candidate.
+        let (searcher, chosen_forwarded) = match (candidate, forwarded_hit) {
+            (Some(cand), Some((recipient, from_addr, token)))
+                if {
+                    let (cand_token, cand_amount) = candidate_profit(
+                        &ledger,
+                        tx.from,
+                        cand,
+                        anchor,
+                        &input.ctx.profit_policy.priority,
+                    );
+                    cand_token == token
+                        && cand_amount < profit_amount(&ledger, tx.from, recipient, token)
+                } =>
+            {
+                (Some(recipient), Some((from_addr, token)))
+            }
+            (Some(cand), _) => (Some(cand), None),
+            (None, Some((recipient, from_addr, token))) => {
+                (Some(recipient), Some((from_addr, token)))
+            }
+            (None, None) => (None, None),
+        };
+        if let Some((from_addr, token)) = chosen_forwarded {
+            forwarded_from = Some(from_addr);
+            forwarded_token = Some(token);
+        }
         let Some(searcher) = searcher else {
             let reason = match forwarded {
                 ForwardedLookup::TipSink => RejectReason::BuilderTip,
@@ -231,22 +257,13 @@ pub(super) fn classify_atomic_arbs(
         let (profit_token, amount) = if let Some(token) = forwarded_token {
             (token, profit_amount(&ledger, tx.from, searcher, token))
         } else {
-            let anchor_amount = profit_amount(&ledger, tx.from, searcher, anchor);
-            if !anchor_amount.is_zero() {
-                (anchor, anchor_amount)
-            } else {
-                input
-                    .ctx
-                    .profit_policy
-                    .priority
-                    .iter()
-                    .filter(|t| **t != anchor)
-                    .find_map(|t| {
-                        let amt = profit_amount(&ledger, tx.from, searcher, *t);
-                        (!amt.is_zero()).then_some((*t, amt))
-                    })
-                    .unwrap_or((anchor, U256::ZERO))
-            }
+            candidate_profit(
+                &ledger,
+                tx.from,
+                searcher,
+                anchor,
+                &input.ctx.profit_policy.priority,
+            )
         };
         if amount.is_zero() {
             rejects.push(classify_reject(
@@ -756,6 +773,29 @@ fn profit_amount(ledger: &DeltaLedger, eoa: Address, searcher: Address, token: A
     }
 }
 
+/// Reported profit for a searcher: anchor token first, else the first
+/// priority token with a positive residual.
+fn candidate_profit(
+    ledger: &DeltaLedger,
+    eoa: Address,
+    searcher: Address,
+    anchor: Address,
+    priority: &[Address],
+) -> (Address, U256) {
+    let anchor_amount = profit_amount(ledger, eoa, searcher, anchor);
+    if !anchor_amount.is_zero() {
+        return (anchor, anchor_amount);
+    }
+    priority
+        .iter()
+        .filter(|t| **t != anchor)
+        .find_map(|t| {
+            let amt = profit_amount(ledger, eoa, searcher, *t);
+            (!amt.is_zero()).then_some((*t, amt))
+        })
+        .unwrap_or((anchor, U256::ZERO))
+}
+
 /// Largest hop amount per token across resolved swap legs (for dust bps).
 fn hop_max_by_token(swaps: &[SwapFact]) -> HashMap<Address, U256> {
     let mut out: HashMap<Address, U256> = HashMap::new();
@@ -1008,6 +1048,8 @@ mod attribution_tests {
     const EXEC: Address = address!("9000000000000000000000000000000000000009");
     const POOL_C: Address = address!("3000000000000000000000000000000000000003");
     const BENEFICIARY: Address = address!("b000000000000000000000000000000000000001");
+    const MINOR_BENEFICIARY: Address = address!("b000000000000000000000000000000000000002");
+    const TIP_RECIPIENT: Address = address!("c000000000000000000000000000000000000001");
     const FUNDER: Address = address!("5000000000000000000000000000000000000005");
 
     fn arb_event(input: &BlockInput) -> (MevEvent, Vec<RejectedCandidate>) {
@@ -1132,6 +1174,73 @@ mod attribution_tests {
         assert_eq!(ev.searcher, FUNDER);
         assert_eq!(ev.profit_token, Some(USDC));
         assert_eq!(ev.profit_amount, Some(U256::from(10u64)));
+    }
+
+    /// A minor beneficiary (two transfers) is a candidate, but the executor
+    /// forwards the bulk of the profit to a single non-candidate payee. The
+    /// payee must win; attributing the minor beneficiary under-reports profit.
+    #[test]
+    fn forwarded_payee_wins_over_minor_candidate() {
+        let input = block(vec![tx_to(
+            0,
+            ATK,
+            EXEC,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, USDC, 200, 110),
+            ],
+            vec![
+                transfer(0, USDC, EXEC, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, EXEC, 200),
+                transfer(2, TOKA, EXEC, POOL_B, 200),
+                transfer(3, USDC, POOL_B, EXEC, 110),
+                transfer(4, USDC, EXEC, TIP_RECIPIENT, 8),
+                transfer(5, USDC, EXEC, MINOR_BENEFICIARY, 1),
+                transfer(6, USDC, EXEC, MINOR_BENEFICIARY, 1),
+            ],
+        )]);
+
+        let (ev, _) = arb_event(&input);
+        assert_eq!(ev.searcher, TIP_RECIPIENT);
+        assert_eq!(ev.profit_token, Some(USDC));
+        assert_eq!(ev.profit_amount, Some(U256::from(8u64)));
+        assert_eq!(ev.confidence, Confidence::Inferred);
+        assert_eq!(
+            ev.details["forwarded_from"].as_str(),
+            Some(format!("{EXEC:#x}").as_str())
+        );
+    }
+
+    /// Same shape, but the exact candidate holds more than the forwarded
+    /// payee: keep the candidate and its Exact confidence.
+    #[test]
+    fn exact_candidate_kept_when_it_holds_more_than_forwarded_payee() {
+        let input = block(vec![tx_to(
+            0,
+            ATK,
+            EXEC,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, USDC, 200, 110),
+            ],
+            vec![
+                transfer(0, USDC, EXEC, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, EXEC, 200),
+                transfer(2, TOKA, EXEC, POOL_B, 200),
+                transfer(3, USDC, POOL_B, EXEC, 110),
+                transfer(4, USDC, EXEC, TIP_RECIPIENT, 1),
+                transfer(5, USDC, EXEC, MINOR_BENEFICIARY, 5),
+                transfer(6, USDC, EXEC, MINOR_BENEFICIARY, 4),
+            ],
+        )]);
+
+        let (ev, _) = arb_event(&input);
+        assert_eq!(ev.searcher, MINOR_BENEFICIARY);
+        assert_eq!(ev.profit_token, Some(USDC));
+        assert_eq!(ev.profit_amount, Some(U256::from(9u64)));
+        assert_eq!(ev.confidence, Confidence::Exact);
     }
 }
 

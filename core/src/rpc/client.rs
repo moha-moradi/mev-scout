@@ -1611,6 +1611,22 @@ impl RpcClient {
         self.call_at(to, data, BlockId::number(block)).await
     }
 
+    /// EIP-1898 hash-pinned archive call. Never substitutes latest or a numeric block.
+    pub async fn call_at_hash(&self, to: Address, data: Bytes, hash: B256) -> anyhow::Result<Bytes> {
+        self.call_at(to, data, BlockId::hash_canonical(hash)).await
+    }
+
+    /// Read the parent of precisely this header, not of a moving block number.
+    pub async fn parent_hash_at(&self, hash: B256, number: u64) -> anyhow::Result<B256> {
+        self.retry_call(|provider| async move {
+            let block = provider.get_block_by_hash(hash).await?
+                .ok_or_else(|| anyhow::anyhow!("missing hash-pinned header"))?;
+            anyhow::ensure!(block.header.hash == hash && block.header.number == number,
+                "hash-pinned header mismatch");
+            Ok(block.header.parent_hash)
+        }, ProviderScope::Any).await
+    }
+
     /// Execute an `eth_call` at the latest block.
     ///
     /// Used for immutable metadata queries (`symbol`, `token0`, `token1`,
@@ -1808,6 +1824,7 @@ fn alloy_tx_to_tx_data(tx: &AlloyTx, index: u64) -> TxData {
 
 fn alloy_receipt_to_receipt_data(receipt: &TransactionReceipt) -> ReceiptData {
     ReceiptData {
+        block_hash: receipt.block_hash,
         tx_hash: receipt.transaction_hash,
         tx_index: receipt.transaction_index.unwrap_or(0),
         status: receipt.status(),

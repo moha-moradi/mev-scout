@@ -1,6 +1,11 @@
 //! V3 Mint/Burn and LB bin deposit/withdraw JIT facts.
 use crate::utils::{i24_from_topic, topic_address};
-use alloy::primitives::U256;
+use alloy::primitives::{keccak256, Address, B256, U256};
+use std::sync::LazyLock;
+
+pub static V3_COLLECT_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("Collect(address,address,int24,int24,uint128,uint128)")
+});
 
 use crate::data::LogData;
 use crate::explorer::types::JitFact;
@@ -29,16 +34,29 @@ pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
     let topic0 = *log.topics.first()?;
     let is_mint = topic0 == V3_MINT_TOPIC;
     let is_burn = topic0 == V3_BURN_TOPIC;
-    if !is_mint && !is_burn {
+    let is_collect = topic0 == *V3_COLLECT_TOPIC;
+    if !is_mint && !is_burn && !is_collect {
         return None;
     }
-    if log.topics.len() < 4 {
+    if log.topics.len() != 4 {
         return None;
     }
     let owner = topic_address(log.topics[1]);
     let tick_lower = i24_from_topic(&log.topics[2]);
     let tick_upper = i24_from_topic(&log.topics[3]);
 
+    // Strict canonical ABI: address padding, sign-extended int24 and uint128.
+    let valid_tick = |topic: &B256, tick: i32| {
+        let pad = if tick < 0 { 0xff } else { 0 };
+        topic[..29].iter().all(|b| *b == pad)
+    };
+    if log.topics[1][..12].iter().any(|b| *b != 0)
+        || !valid_tick(&log.topics[2], tick_lower)
+        || !valid_tick(&log.topics[3], tick_upper)
+        || tick_lower >= tick_upper || tick_lower < -887272 || tick_upper > 887272
+    {
+        return None;
+    }
     // Mint carries a leading `sender` word, Burn does not.
     let (amount_off, (a0_off, a1_off)) = if is_mint {
         (32, (64, 96))
@@ -46,10 +64,20 @@ pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
         (0, (32, 64))
     };
     let need = a1_off + 32;
-    if log.data.len() < need {
+    if log.data.len() != need {
         return None;
     }
-    let liquidity = crate::utils::u128_from_be_bytes(&log.data[amount_off + 16..amount_off + 32]);
+    if (is_mint || is_collect) && log.data[..12].iter().any(|b| *b != 0) {
+        return None;
+    }
+    if (!is_collect && log.data[amount_off..amount_off + 16].iter().any(|b| *b != 0))
+        || (is_collect && (log.data[32..48].iter().any(|b| *b != 0)
+            || log.data[64..80].iter().any(|b| *b != 0))) {
+        return None;
+    }
+    let liquidity = if is_collect { 0 } else {
+        crate::utils::u128_from_be_bytes(&log.data[amount_off + 16..amount_off + 32])
+    };
     let amount0 = U256::from_be_slice(&log.data[a0_off..a0_off + 32]);
     let amount1 = U256::from_be_slice(&log.data[a1_off..a1_off + 32]);
 
@@ -61,6 +89,9 @@ pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
         tick_lower,
         tick_upper,
         is_mint,
+        is_collect,
+        sender: is_mint.then(|| Address::from_slice(&log.data[12..32])),
+        recipient: is_collect.then(|| Address::from_slice(&log.data[12..32])),
         liquidity,
         amount0,
         amount1,
@@ -107,6 +138,9 @@ pub fn decode_lb_bins_liquidity(log: &LogData) -> Option<JitFact> {
         tick_lower: min_id,
         tick_upper: max_id,
         is_mint,
+        is_collect: false,
+        sender: Some(topic_address(log.topics[1])),
+        recipient: Some(owner),
         liquidity: ids.len() as u128,
         amount0,
         amount1,

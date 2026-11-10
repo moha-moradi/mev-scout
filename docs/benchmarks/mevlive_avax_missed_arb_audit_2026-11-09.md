@@ -3,6 +3,13 @@
 Window `99833048..=99836394`. mevlive 47 arbs, we matched 5, **missed 42**.
 Reindexed with `record_rejections=true`: every miss has an `explorer_classify` reject.
 
+> **Historical audit (2026-11-09).** All 42 are now matched — final result
+> **47/47** (2026-11-10, `after_attribution_fix`). The 23 direction-bug and 15
+> "definition gap" cases closed once the committed V3 fix set both
+> `token_in`/`token_out` sentinels; run1's binary predated that half of the fix.
+> The multi-recipient attribution fix also corrected the under-reported
+> forwarded-profit case (`0x29aba…`). Keep this as the root-cause record.
+
 ## Bottom line
 
 - **23/42 BUG**: decoded `token_in`/`token_out` opposite of ERC-20 flow to/from the pool on ≥1 hop → directed cycle missing → `unresolved_cycle`. Re-inferring direction from transfers closes the cycle.

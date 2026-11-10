@@ -65,7 +65,7 @@ impl StoreCaps {
     }
 }
 
-fn column_names(conn: &Connection, table: &str) -> anyhow::Result<HashSet<String>> {
+pub(super) fn column_names(conn: &Connection, table: &str) -> anyhow::Result<HashSet<String>> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
     let mut out = HashSet::new();

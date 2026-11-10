@@ -18,6 +18,7 @@ use serde::Serialize;
 use crate::explorer::store::{ExplorerStore, SCHEMA_HEAD};
 
 use caps::StoreCaps;
+pub use evidence::OperationEconomics;
 use reduce::{reduce, reject_ladder, ReducedPanels, RejectRow, TruncationInfo};
 
 /// Envelope API version embedded in every artifact.
@@ -175,6 +176,12 @@ pub struct CoveragePanel {
     pub ops_in_window: i64,
     pub min_block_ts: Option<i64>,
     pub max_block_ts: Option<i64>,
+    /// Number endpoints of recorded blocks in the selected time window, not sync state.
+    pub min_block_number: Option<u64>,
+    pub max_block_number: Option<u64>,
+    /// Timestamps belonging to the number endpoints (on-chain time, not runtime).
+    pub first_block_ts: Option<i64>,
+    pub last_block_ts: Option<i64>,
     pub gap_count: Option<i64>,
     pub first_gap: Option<u64>,
     pub last_gap: Option<u64>,
@@ -314,8 +321,11 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
 
     let sync = load_sync_state(&tx)?;
     let ops = load_ops_window(&tx, &caps, opts.window.since_ts, opts.window.until_ts)?;
-    let mut sorted_blocks = load_block_timestamps(&tx, opts.window.since_ts, opts.window.until_ts)?;
-    let blocks_in_window = sorted_blocks.len() as i64;
+    let block_rows = load_block_rows(&tx, opts.window.since_ts, opts.window.until_ts)?;
+    let first_block = block_rows.iter().filter_map(|(n, ts)| n.map(|n| (n, *ts))).min();
+    let last_block = block_rows.iter().filter_map(|(n, ts)| n.map(|n| (n, *ts))).max();
+    let mut sorted_blocks: Vec<i64> = block_rows.iter().map(|(_, ts)| *ts).collect();
+    let blocks_in_window = block_rows.len() as i64;
     sorted_blocks.sort_unstable();
     let min_block_ts = sorted_blocks.first().copied();
     let max_block_ts = sorted_blocks.last().copied();
@@ -387,6 +397,10 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
         ops_in_window: ops.len() as i64,
         min_block_ts,
         max_block_ts,
+        min_block_number: first_block.map(|(n, _)| n),
+        max_block_number: last_block.map(|(n, _)| n),
+        first_block_ts: first_block.map(|(_, ts)| ts),
+        last_block_ts: last_block.map(|(_, ts)| ts),
         gap_count: if gaps.enabled {
             Some(gaps.gap_count)
         } else {
@@ -629,13 +643,23 @@ fn load_ops_window(
     Ok(out)
 }
 
-fn load_block_timestamps(
+fn load_block_rows(
     conn: &rusqlite::Connection,
     since: i64,
     until: i64,
-) -> anyhow::Result<Vec<i64>> {
-    let mut stmt = conn.prepare("SELECT ts FROM blocks WHERE ts >= ?1 AND ts <= ?2")?;
-    let rows = stmt.query_map(rusqlite::params![since, until], |r| r.get::<_, i64>(0))?;
+) -> anyhow::Result<Vec<(Option<u64>, i64)>> {
+    let cols = caps::column_names(conn, "blocks")?;
+    if !cols.contains("ts") {
+        // Cannot assign rows without chain timestamps to a time window.
+        return Ok(Vec::new());
+    }
+    let number = if cols.contains("block_number") { "block_number" } else { "NULL" };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {number}, ts FROM blocks WHERE ts >= ?1 AND ts <= ?2"
+    ))?;
+    let rows = stmt.query_map(rusqlite::params![since, until], |r| {
+        Ok((r.get::<_, Option<i64>>(0)?.and_then(|n| u64::try_from(n).ok()), r.get(1)?))
+    })?;
     let mut out = Vec::new();
     for row in rows {
         out.push(row?);

@@ -259,6 +259,7 @@ pub fn prep_synthetic_cache(dir: &str, block_num: u64, tx_count: usize) -> Sqlit
             authorization_list: vec![],
         });
         receipts.push(ReceiptData {
+            block_hash: None,
             tx_hash,
             tx_index: i as u64,
             status: true,

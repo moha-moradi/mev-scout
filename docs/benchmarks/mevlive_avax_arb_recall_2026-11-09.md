@@ -1,6 +1,6 @@
 # Benchmark: mevlive vs mev-scout explorer (Avalanche arb recall)
 
-Frozen window for classifier recall work. Revisit when arb detection improves.
+Frozen window for classifier recall work. **Final result: 47/47 mevlive arbs matched (2026-11-10).** Revisit when arb detection improves.
 
 ## Scope
 
@@ -14,9 +14,65 @@ Frozen window for classifier recall work. Revisit when arb detection improves.
 | mevlive source | `GET /api/avalanche/arbitrages?per_page=100&sortBy=-created_at` (last-1h filter) |
 | Liquidations in window | 0 |
 | Our index command | `explorer index --from-block 99833048 --to-block 99836394` |
-| Artifacts | `results/mevlive_arbitrages_1h.json`, `results/compare_mevlive_1h.json`, `cache/explorer-avalanche.sqlite` |
+| Artifacts | `results/mevlive_arbitrages_1h.json`, `results/compare_after_attribution_fix.json`, `cache/explorer-avalanche.sqlite` |
 
-## Headline scores
+## Final result (2026-11-10, `after_attribution_fix`)
+
+Full V3 decoder fix (`887067c`, both token sentinels) + the three classifier fixes
+(`8361872`) + the multi-recipient attribution fix.
+
+| Metric | Value |
+|---|---|
+| Blocks indexed | **3347 / 3347** (0 failed chunks, 386.2s) |
+| mevlive arbitrages | **47** |
+| our `arb_atomic` | **108** |
+| our total ops | **167** (`arb_atomic` 108, `utility` 44, `jit` 15) |
+| hash overlap (matched) | **47 / 47 (100%)** |
+| mevlive missed by us | **0** |
+| vs run1 | **+29 matched, 0 lost** |
+| vs `after_three_fixes` | +1 our-only arb, 0 lost |
+
+### Profit accuracy (47 matched)
+
+- Profit token matches mevlive: **47 / 47**.
+- 46 priced; median relative error **0.40%**, p90 **1.04%**.
+- Totals: ours **$0.5963** vs mevlive **$0.5432**. Excluding two bundled-route
+  outliers (`0xdd292a…`, `0xe2a0a5…`), **$0.5221 vs $0.5231 (0.19% off)**.
+- One unpriced match: `0x62434b…` (USDT.e price missing; classification is Exact).
+- `0x29aba…` (the multi-recipient attribution case) now attributes the
+  `0xe0556223…` payee: 0.0026869 WAVAX, **$0.02128 vs mevlive $0.02133 (0.23%)**.
+- Our-only: 61 arbs, total **$1.0409**, max **$0.1952**, concentrated in known
+  arb bots (`0xfa606c5b…` 20, `0x476ee0…` 19, `0xe0556223…` 11,
+  `0xafd6d126…` 6). No large phantom profits; the old `$841/$530/$394`
+  one-way-flow rows remain rejected.
+
+#### Outlier and our-only PnL breakdown
+
+Gross is compared with mevlive's `usdProfit`; gas and net are our values only.
+The two bundled-route outliers account for essentially the entire aggregate gap.
+
+| Case | Structure | Our gross | mevlive gross | Delta (ours - mevlive) | Our gas | Our net | Status |
+|---|---|---:|---:|---:|---:|---:|---|
+| `0xdd292a…` | 10 swaps; bundled subcycles | **$0.04675455** | $0.011666 | **+$0.03508855** | $0.04142484 | **$0.00532971** | Largest outlier; bundled-cycle attribution needs audit |
+| `0xe2a0a5…` | 4 swaps; bundled subcycles | **$0.02750530** | $0.008493 | **+$0.01901230** | $0.02575453 | **$0.00175077** | Second outlier; same attribution-boundary ambiguity |
+| **Both outliers** | 2 txs | **$0.07425985** | ≈$0.020159 | **≈+$0.05410085** | **$0.06717937** | **$0.00708048** | The remaining 44 priced matches offset about $0.0010, leaving the +$0.0531 aggregate gap |
+| **Our-only** | **61 arbs** | **$1.04092592** | not in feed | n/a | **$0.69543560** | **$0.34549032** | Not independently adjudicated; neither confirmed nor false positives |
+
+Maximum our-only gross is **$0.19524165**. Of the 61 our-only arbs, **56 (91.8%)**
+come from four known searchers: `0xfa606c5b…` 20, `0x476ee0…` 19,
+`0xe0556223…` 11, `0xafd6d126…` 6; the remaining 5 are outside those groups.
+Both outliers are gross-positive but spend most of that profit on gas, so their
+large gross deltas are not large net deltas.
+
+### Caveat
+
+This is the frozen window used to derive the fixes; 47/47 is a recall floor, not
+independent validation. Re-run on a fresh holdout window before generalizing.
+
+> The baseline and miss audit below are historical (pre-fix). All 42 misses are
+> now matched; keep them as the root-cause record.
+
+## Baseline headline scores (pre-fix)
 
 | Metric | Count |
 |---|---|
@@ -26,15 +82,15 @@ Frozen window for classifier recall work. Revisit when arb detection improves.
 | hash overlap (matched) | **5 / 47** (~10.6% recall on mevlive set) |
 | mevlive missed by us | **42** (all their blocks were classified — classifier gap, not RPC gap) |
 
-### Did we lose?
+### Did we lose? (historical)
 
-On **count / recall against mevlive's arb feed: yes** — we only recovered 5 of their 47 hashes. That is the benchmark failure mode to fix.
+On **count / recall against mevlive's arb feed: yes** — we only recovered 5 of their 47 hashes. That was the benchmark failure mode to fix; the final result is 47/47.
 
 Caveats (not excuses):
 - Definitions differ: mevlive labels many tiny cycle arbs (~$0.005–$0.05). We also emit large `arb_atomic` rows mevlive did not list in this feed, plus `jit` / `utility`.
 - This is **not** an index failure: every missed mevlive tx sits in a `blocks_classified` block.
 
-## Matched (5) — in both
+## Matched (5) — baseline (historical)
 
 | block | mevlive usdProfit | our kind | tx_hash |
 |---|---|---|---|
@@ -44,7 +100,7 @@ Caveats (not excuses):
 | 99834524 | 0.051483 | arb_atomic | `0x478d138667a4d89a581a981fabbac8510d34e77b5dbea0f294d0ca6878d4e4ea` |
 | 99835800 | 0.005016 | arb_atomic | `0x436f467fa1339968398d71742d442f1633068713daa80e49aa9af235843591d5` |
 
-## Missed mevlive arbs (42) — they have, we do not
+## Missed mevlive arbs (42) — baseline (historical; all 42 now matched)
 
 | block | time | usdProfit | sender | contract | tx_hash |
 |---|---|---|---|---|---|
@@ -180,17 +236,27 @@ Caveats (not excuses):
 ```powershell
 mev-scout -f mev-scout.toml explorer index --from-block 99833048 --to-block 99836394
 mev-scout -f mev-scout.toml explorer --windows all --kind arb_atomic --top 50
+
+# full harness: clears the window, indexes, compares, writes results/compare_<label>.json
+python results/_reindex_compare.py run after_attribution_fix
 ```
 
-## Miss audit (done)
+Final artifacts: `results/compare_after_attribution_fix.json`,
+`results/index_after_attribution_fix.log`.
+
+## Miss audit (historical)
 
 See [`mevlive_avax_missed_arb_audit_2026-11-09.md`](./mevlive_avax_missed_arb_audit_2026-11-09.md).
 
 | bucket | n | call |
 |---|---|---|
-| V3 signed-delta direction bug (esp. mixed V2/LB+V3) | 23 | **bug** — fix `apply_signed_deltas` |
-| `net_zero_searcher` | 3 | intentional filter |
+| V3 signed-delta direction bug (esp. mixed V2/LB+V3) | 23 | **bug** — fixed `apply_signed_deltas` |
+| `net_zero_searcher` | 3 | intentional filter / forwarded profit |
 | no closed cycle even after transfer-dir repair | 15 | definition gap vs mevlive |
 | parallel-pair residual | 1 | likely same bug family |
 
-Matched 5/5 were **pure** V2 or **pure** V3 (never mixed). Missed `unresolved_cycle` were **36/39 mixed** V2ish+V3ish.
+**All 42 are now matched.** Run1 (18/47) used a binary built before commit
+`887067c` added the `token_out` sentinel half of the V3 fix, so it still missed
+the mixed routes; the complete decoder plus the classifier/attribution fixes
+closed them. The old note that matched 5/5 were pure V2 or pure V3 and missed
+`unresolved_cycle` were 36/39 mixed describes the pre-fix baseline only.

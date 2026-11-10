@@ -65,6 +65,9 @@ pub struct AccessListItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Receipt fields from `eth_getTransactionReceipt`.
 pub struct ReceiptData {
+    /// Absent in legacy/replay caches: those receipts cannot prove JIT accounting.
+    #[serde(default)]
+    pub block_hash: Option<B256>,
     pub tx_hash: B256,
     pub tx_index: u64,
     pub status: bool,

@@ -320,7 +320,7 @@ impl LiquidationDetails {
 }
 
 /// A decoded ERC-20 Transfer fact from a receipt log.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferFact {
     pub tx_index: u64,
     /// Log position within the tx's receipt (stable for re-decode).
@@ -607,7 +607,7 @@ pub struct UserOpFact {
 /// A decoded V3 concentrated-liquidity Mint/Burn fact, or an LFJ/Pharaoh
 /// Liquidity Book DepositedToBins/WithdrawnFromBins fact (bin ids mapped into
 /// `tick_lower`/`tick_upper` as the inclusive min/max bin id).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JitFact {
     pub tx_index: u64,
     pub log_index: u64,
@@ -616,6 +616,13 @@ pub struct JitFact {
     pub tick_lower: i32,
     pub tick_upper: i32,
     pub is_mint: bool,
+    /// Collect is a transfer of owed principal and fees, not a liquidity burn.
+    #[serde(default)]
+    pub is_collect: bool,
+    #[serde(default)]
+    pub sender: Option<Address>,
+    #[serde(default)]
+    pub recipient: Option<Address>,
     pub liquidity: u128,
     pub amount0: U256,
     pub amount1: U256,

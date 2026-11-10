@@ -8,7 +8,7 @@ use crate::explorer::types::MevKind;
 
 use super::caps::StoreCaps;
 use super::evidence::{parse_route, OpEvidence};
-use super::{OpRecord, WindowSpec};
+use super::{OpRecord, OperationEconomics, WindowSpec};
 
 /// Aggregated KPI grid (P3) + quality (P4).
 #[derive(Debug, Clone, Serialize, Default)]
@@ -136,6 +136,8 @@ pub struct EventRow {
     pub profit_usd: Option<f64>,
     pub net_profit_usd: Option<f64>,
     pub gas_cost_usd: Option<f64>,
+    pub flashloan_fee_usd: Option<f64>,
+    pub economics: OperationEconomics,
     pub volume_usd: Option<f64>,
     pub detector: String,
     pub excluded_from_net: bool,
@@ -153,6 +155,25 @@ pub struct StrategySeriesPoint {
     pub ops: i64,
     pub net_usd: f64,
     pub priced_ops: i64,
+}
+
+/// Matched-cohort execution economics across the full window, including known losses.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct StrategyEconomics {
+    pub slice_key: String,
+    pub ops_total: i64,
+    pub ops_eligible: i64,
+    pub ops_exact: i64,
+    pub ops_inferred: i64,
+    pub observed_losses: i64,
+    pub included_excluded_from_net: i64,
+    pub exclusion_reasons: BTreeMap<String, i64>,
+    pub gross_usd: Option<f64>,
+    pub cost_usd: Option<f64>,
+    pub net_usd: Option<f64>,
+    pub roi_pct: Option<f64>,
+    pub gross_per_10: Option<f64>,
+    pub net_per_10: Option<f64>,
 }
 
 /// Cap-friendly scatter row for Analytics (built from full ops, not truncated events).
@@ -185,7 +206,8 @@ pub struct OpIndex {
     pub amms: Vec<String>,
     pub tx: Vec<String>,
     /// `[ts, slice_id, conf, flags, actor_id, eoa_id, contract_id|null, block, tx_id,
-    ///   net|null, gross|null, gas|null, vol|null, flash|null, tag_ids, legs]`
+    ///   net|null, gross|null, gas|null, vol|null, flash|null, tag_ids, legs, id]`
+    /// Operation id is appended at row[16]; the original 16 positions are unchanged.
     /// `conf`: 0=exact, 1=inferred, 2=other.
     /// `legs`: `[[pool_id, amm_id], …]` deduped.
     pub rows: Vec<serde_json::Value>,
@@ -204,6 +226,8 @@ pub struct ReducedPanels {
     pub tokens: Vec<TokenRow>,
     pub tag_facets: Vec<FacetRow>,
     pub reason_facets: Vec<FacetRow>,
+    pub untagged_ops: i64,
+    pub strategy_economics: Vec<StrategyEconomics>,
     pub events: Vec<EventRow>,
     pub evidence: Vec<OpEvidence>,
     pub strategy_series: Vec<StrategySeriesPoint>,
@@ -254,7 +278,8 @@ pub fn reduce(
     let actors = reduce_actors(ops, labels, caps);
     let pools = reduce_pools(ops, caps);
     let tokens = reduce_tokens(ops, caps);
-    let (tag_facets, reason_facets) = reduce_facets(ops, catalogue_tags, caps);
+    let (tag_facets, reason_facets, untagged_ops) = reduce_facets(ops, catalogue_tags, caps);
+    let strategy_economics = reduce_strategy_economics(ops);
     let strategy_series = reduce_strategy_series(ops, window, bucket_secs);
     let scatter_cap = max_ops.max(2_000);
     let scatter_points = reduce_scatter_points(ops, scatter_cap);
@@ -267,34 +292,7 @@ pub fn reduce(
     let evidence: Vec<OpEvidence> = ops
         .iter()
         .take(evidence_n)
-        .map(|o| {
-            super::evidence::build_evidence(
-                &o.tx_hash,
-                o.block_number,
-                &o.kind,
-                o.subkind.as_deref(),
-                &o.confidence,
-                &o.detector,
-                &o.eoa,
-                o.contract.as_deref(),
-                o.profit_usd,
-                o.net_profit_usd,
-                o.gas_cost_usd,
-                o.volume_usd,
-                o.flashloan_fee_usd,
-                o.profit_token.as_deref(),
-                o.profit_amount.as_deref(),
-                o.excluded_from_net.unwrap_or(false),
-                o.usd_approximate.unwrap_or(false),
-                o.native_unpriced.unwrap_or(false),
-                o.multi_asset_pricing.unwrap_or(false),
-                o.pricing_clamped.unwrap_or(false),
-                o.flash_fee_unpriced.unwrap_or(false),
-                o.route_json.as_deref(),
-                o.victim_hashes.as_deref(),
-                o.details_json.as_deref(),
-            )
-        })
+        .map(super::evidence::build_evidence)
         .collect();
 
     let hit_budget = ops_total > max_ops || ops_total > max_evidence;
@@ -312,6 +310,8 @@ pub fn reduce(
         tokens,
         tag_facets,
         reason_facets,
+        untagged_ops,
+        strategy_economics,
         events,
         evidence,
         strategy_series,
@@ -337,6 +337,46 @@ pub fn slice_key(kind: &str, subkind: Option<&str>) -> String {
         Some(s) => format!("{kind}/{s}"),
         None => kind.to_string(),
     }
+}
+
+fn reduce_strategy_economics(ops: &[OpRecord]) -> Vec<StrategyEconomics> {
+    let mut groups: BTreeMap<String, (StrategyEconomics, [f64; 3])> = BTreeMap::new();
+    for op in ops {
+        let key = slice_key(&op.kind, op.subkind.as_deref());
+        let (row, sums) = groups.entry(key.clone()).or_insert_with(|| {
+            (StrategyEconomics { slice_key: key, ..Default::default() }, [0.0; 3])
+        });
+        row.ops_total += 1;
+        let economics = OperationEconomics::from_record(op);
+        if !economics.eligible {
+            *row.exclusion_reasons.entry(economics.reason.unwrap_or_else(|| "economics_unavailable".into())).or_default() += 1;
+            continue;
+        }
+        if let (Some(gross), Some(cost), Some(net)) =
+            (economics.gross_usd, economics.cost_usd, economics.net_usd)
+        {
+            row.ops_eligible += 1;
+            row.ops_exact += i64::from(op.confidence == "exact");
+            row.ops_inferred += i64::from(op.confidence == "inferred");
+            row.observed_losses += i64::from(net < 0.0);
+            row.included_excluded_from_net += i64::from(op.excluded_from_net == Some(true));
+            sums[0] += gross;
+            sums[1] += cost;
+            sums[2] += net;
+        }
+    }
+    groups.into_values().map(|(mut row, [gross, cost, net])| {
+        // Never expose partial sums or ratios if the cohort overflows f64.
+        if row.ops_eligible > 0 && [gross, cost, net].iter().all(|v| v.is_finite()) {
+            row.gross_usd = Some(gross);
+            row.cost_usd = Some(cost);
+            row.net_usd = Some(net);
+            row.roi_pct = super::evidence::cost_ratio(net, cost, 100.0);
+            row.gross_per_10 = super::evidence::cost_ratio(gross, cost, 10.0);
+            row.net_per_10 = super::evidence::cost_ratio(net, cost, 10.0);
+        }
+        row
+    }).collect()
 }
 
 fn reduce_strategy_series(
@@ -533,6 +573,7 @@ fn build_op_index(ops: &[OpRecord]) -> OpIndex {
             opt_f64_json(o.flashloan_fee_usd),
             tag_ids,
             leg_vals,
+            o.id,
         ]));
     }
 
@@ -566,8 +607,11 @@ fn details_tags(details_json: Option<&str>) -> Vec<String> {
     v.get("tags")
         .and_then(|t| t.as_array())
         .map(|arr| {
+            let mut seen = HashSet::new();
             arr.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
+                .filter_map(|x| x.as_str().filter(|s| !s.trim().is_empty()))
+                .filter(|s| seen.insert(*s))
+                .map(str::to_string)
                 .collect()
         })
         .unwrap_or_default()
@@ -1019,7 +1063,7 @@ fn reduce_facets(
     ops: &[OpRecord],
     catalogue: &HashSet<String>,
     caps: &StoreCaps,
-) -> (Vec<FacetRow>, Vec<FacetRow>) {
+) -> (Vec<FacetRow>, Vec<FacetRow>, i64) {
     fn bump(map: &mut HashMap<String, (i64, f64, f64)>, key: &str, o: &OpRecord, caps: &StoreCaps) {
         let e = map.entry(key.to_string()).or_insert((0, 0.0, 0.0));
         e.0 += 1;
@@ -1036,38 +1080,24 @@ fn reduce_facets(
     }
     let mut tags: HashMap<String, (i64, f64, f64)> = HashMap::new();
     let mut reasons: HashMap<String, (i64, f64, f64)> = HashMap::new();
+    let mut untagged_ops = 0;
     for o in ops {
-        let ev = super::evidence::build_evidence(
-            &o.tx_hash,
-            o.block_number,
-            &o.kind,
-            o.subkind.as_deref(),
-            &o.confidence,
-            &o.detector,
-            &o.eoa,
-            o.contract.as_deref(),
-            o.profit_usd,
-            o.net_profit_usd,
-            o.gas_cost_usd,
-            o.volume_usd,
-            o.flashloan_fee_usd,
-            o.profit_token.as_deref(),
-            o.profit_amount.as_deref(),
-            o.excluded_from_net.unwrap_or(false),
-            o.usd_approximate.unwrap_or(false),
-            o.native_unpriced.unwrap_or(false),
-            o.multi_asset_pricing.unwrap_or(false),
-            o.pricing_clamped.unwrap_or(false),
-            o.flash_fee_unpriced.unwrap_or(false),
-            o.route_json.as_deref(),
-            o.victim_hashes.as_deref(),
-            o.details_json.as_deref(),
-        );
-        for t in &ev.tags {
+        let op_tags = details_tags(o.details_json.as_deref());
+        if op_tags.is_empty() {
+            untagged_ops += 1;
+        }
+        for t in &op_tags {
             bump(&mut tags, t, o, caps);
         }
-        for r in &ev.reasons {
-            bump(&mut reasons, r, o, caps);
+        // Facets need only the details arrays, not routes or enriched evidence.
+        if let Some(details) = o.details_json.as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        {
+            if let Some(arr) = details.get("reasons").and_then(|v| v.as_array()) {
+                for r in arr.iter().filter_map(|v| v.as_str()) {
+                    bump(&mut reasons, r, o, caps);
+                }
+            }
         }
     }
     let to_rows = |map: HashMap<String, (i64, f64, f64)>, cat: &HashSet<String>| {
@@ -1084,7 +1114,7 @@ fn reduce_facets(
         rows.sort_by(|a, b| b.ops.cmp(&a.ops).then(a.value.cmp(&b.value)));
         rows
     };
-    (to_rows(tags, catalogue), to_rows(reasons, &HashSet::new()))
+    (to_rows(tags, catalogue), to_rows(reasons, &HashSet::new()), untagged_ops)
 }
 
 fn event_row(o: &OpRecord) -> EventRow {
@@ -1097,16 +1127,7 @@ fn event_row(o: &OpRecord) -> EventRow {
             .and_then(|b| b.as_str())
             .map(str::to_string)
     });
-    let tags = details
-        .as_ref()
-        .and_then(|v| v.get("tags"))
-        .and_then(|t| t.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_else(|| details_tags(o.details_json.as_deref()));
+    let tags = details_tags(o.details_json.as_deref());
     EventRow {
         id: o.id,
         block_number: o.block_number,
@@ -1121,6 +1142,8 @@ fn event_row(o: &OpRecord) -> EventRow {
         profit_usd: o.profit_usd,
         net_profit_usd: o.net_profit_usd,
         gas_cost_usd: o.gas_cost_usd,
+        flashloan_fee_usd: o.flashloan_fee_usd,
+        economics: OperationEconomics::from_record(o),
         volume_usd: o.volume_usd,
         detector: o.detector.clone(),
         excluded_from_net: o.excluded_from_net.unwrap_or(false),

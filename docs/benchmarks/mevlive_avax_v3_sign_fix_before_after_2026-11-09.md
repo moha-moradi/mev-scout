@@ -10,9 +10,28 @@ Window `99833048..=99836394`. mevlive arbs frozen: 47.
 | our total ops | 79 | 94 |
 
 Newly recovered vs mevlive: **15** (lost prior: 2).
-Of the 23 previously labeled `BUG_swap_direction`: recovered **12**, still missed 11.
+Of the 23 previously labeled `BUG_swap_direction`: recovered **12** in run1.
+Run1 was built at 13:24, before commit `887067c` (13:43) added the `token_out`
+sentinel half of the fix, so these are intermediate numbers, not the final fix.
 
-## Newly matched hashes
+## Final result (2026-11-10, `after_attribution_fix`)
+
+Complete decoder (`887067c`: sign + both token sentinels) + the three classifier
+fixes (`8361872`) + the multi-recipient attribution fix:
+
+| metric | value |
+|---|---|
+| matched ∩ mevlive | **47 / 47 (100%)** |
+| missed mevlive | **0** |
+| our `arb_atomic` | **108** |
+| our total ops | **167** |
+| profit token matches mevlive | **47 / 47** |
+| median profit error | **0.40%** (p90 1.04%) |
+
+See [`mevlive_avax_arb_recall_2026-11-09.md`](./mevlive_avax_arb_recall_2026-11-09.md)
+for the full accuracy breakdown and the two remaining bundled-route outliers.
+
+## Newly matched hashes (run1, historical)
 
 - `0x0303062037c786ff2bb168c47341196b54b52040f772049d687607ff261cbd11` was-BUG-direction
 - `0x03a995d539e080f50b8b4696786c1933eaa866d7fdccdce15d5d6590b3d8a2b7` was-BUG-direction
@@ -30,12 +49,18 @@ Of the 23 previously labeled `BUG_swap_direction`: recovered **12**, still misse
 - `0xe842b691ee44458e63a5a24e85debafc1512ba1c9a2dd96cbd73c69233825563` was-BUG-direction
 - `0xf4d5ec379834438135903556383ad1990654d7cfa0178228181d79425db4028f` was-BUG-direction
 
-## Run1 vs Run2 (stability)
+## Run1 vs Run2 — run2 was invalid, not instability
 
-| metric | run1 | run2 |
+run2 indexed only **1,464 of 3,347** blocks: 471 chunks failed and 1,883 blocks
+were skipped because the RPC provider was exhausted; the gapfill attempt then
+failed at the provider connection check. On the 1,464-block overlap, run2's 6
+matched hashes are **exactly** run1's 6 matches, and run2's 12 `arb_atomic`
+hashes are a subset of run1's 35. The lower totals are missing blocks, not
+classifier nondeterminism.
+
+| metric | run1 | run2 (partial) |
 |---|---|---|
-| matched | 18 | 6 |
+| blocks indexed | 3,347 | 1,464 |
+| matched | 18 | 6 (= run1's matches in the overlap) |
 | missed | 29 | 41 |
-| arb_atomic | 35 | 12 |
-
-Identical match set + kind counts: **False**
+| arb_atomic | 35 | 12 (subset of run1) |
