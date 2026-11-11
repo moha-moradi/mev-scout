@@ -1395,6 +1395,7 @@ pre.raw {
   function showOpChooser(matches) {
     $("op-empty").style.display = "";
     $("op-body").style.display = "none";
+    $("ops-layout").classList.add("detail-open");
     $("op-empty").innerHTML = '<div>Transaction ' + esc(short(state.opHash))
       + " contains " + matches.length + " operations. Choose the exact position:</div>"
       + '<div class="badge-row" style="margin-top:10px">'
@@ -1456,6 +1457,7 @@ pre.raw {
     if (!ev && !row) {
       $("op-empty").style.display = "";
       $("op-body").style.display = "none";
+      $("ops-layout").classList.remove("detail-open");
       if (state.opHash && T.evidence_emitted === 0) {
         $("op-empty").textContent = "Evidence cleared by budget — open a regenerated artifact or raise --budget-mb.";
       } else if (state.legacyHash) {
@@ -1467,6 +1469,7 @@ pre.raw {
     }
     $("op-empty").style.display = "none";
     $("op-body").style.display = "";
+    $("ops-layout").classList.add("detail-open");
     var kind = (ev && ev.kind) || (row && row.kind) || "";
     var sub = (ev && ev.subkind) || (row && row.subkind);
     var key = sliceKey(kind, sub);
