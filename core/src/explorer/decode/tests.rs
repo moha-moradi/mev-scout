@@ -8,6 +8,7 @@ use crate::chain::events::{
     TRANSFER_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC,
 };
 use crate::data::LogData;
+use crate::explorer::decode::jit::V3_COLLECT_TOPIC;
 use crate::explorer::types::{Amm, LegSource, SwapFact, TransferFact};
 use crate::pool::decoders::{
     LB_DEPOSITED_TO_BINS_TOPIC, SOLIDLY_SWAP_TOPIC, V3_BURN_TOPIC, V3_MINT_TOPIC,
@@ -209,6 +210,67 @@ fn v3_mint_and_burn_reject_truncated_data() {
         let l = log(pool, vec![*topic, owner, *tick_lo, *tick_hi], data);
         assert!(decode_v3_mint_burn(&l).is_none(), "{name}");
     }
+}
+
+#[test]
+fn v3_collect_decodes_recipient_and_zero_liquidity() {
+    // Collect(address indexed owner, address recipient, int24 indexed tickLower,
+    //         int24 indexed tickUpper, uint128 amount0, uint128 amount1)
+    // topics: [sig, owner, tickLower, tickUpper]; data: [recipient, amount0, amount1]
+    let l = log(
+        address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+        vec![
+            *V3_COLLECT_TOPIC,
+            b256!("000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88"),
+            b256!("000000000000000000000000000000000000000000000000000000000003011a"),
+            b256!("00000000000000000000000000000000000000000000000000000000000302b4"),
+        ],
+        hexdata(concat!(
+            "00000000000000000000000000000000000000000000000000000000000000aa",
+            "000000000000000000000000000000000000000000000000000000000000002a",
+            "0000000000000000000000000000000000000000000000000000000000000037",
+        )),
+    );
+    let f = decode_v3_mint_burn(&l).unwrap();
+    assert!(!f.is_mint);
+    assert!(f.is_collect);
+    assert_eq!(
+        f.owner,
+        address!("c36442b4a4522e871399cd717abdd847ab11fe88")
+    );
+    assert_eq!(
+        f.recipient,
+        Some(address!("00000000000000000000000000000000000000aa"))
+    );
+    assert_eq!(f.tick_lower, 196890);
+    assert_eq!(f.tick_upper, 197300);
+    assert_eq!(f.liquidity, 0, "Collect carries no liquidity");
+    assert_eq!(f.amount0, U256::from(42));
+    assert_eq!(f.amount1, U256::from(55));
+}
+
+#[test]
+fn v3_collect_rejects_wrong_length_and_dirty_padding() {
+    let pool = address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640");
+    let owner = b256!("0000000000000000000000000000000000000000000000000000000000000001");
+    let tick_lo = b256!("000000000000000000000000000000000000000000000000000000000003011a");
+    let tick_hi = b256!("00000000000000000000000000000000000000000000000000000000000302b4");
+    // Collect data is exactly three words: recipient, amount0, amount1.
+    for words in [2usize, 4] {
+        let data = std::iter::repeat_n(word(0), words)
+            .flatten()
+            .collect::<Vec<_>>();
+        let l = log(pool, vec![*V3_COLLECT_TOPIC, owner, tick_lo, tick_hi], data);
+        assert!(decode_v3_mint_burn(&l).is_none(), "{words} words");
+    }
+    // A dirty high half of a uint128 amount is non-canonical ABI and rejected.
+    let mut data = word(1);
+    data.extend(word(0));
+    let mut dirty = word(0);
+    dirty[0] = 1;
+    data.extend(dirty);
+    let l = log(pool, vec![*V3_COLLECT_TOPIC, owner, tick_lo, tick_hi], data);
+    assert!(decode_v3_mint_burn(&l).is_none());
 }
 
 #[test]

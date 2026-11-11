@@ -309,6 +309,9 @@ struct LiveContext<'a> {
 }
 
 impl<'a> LiveContext<'a> {
+    /// Eight distinct collaborators; grouping them into a struct would only
+    /// move the same fields one level down and hide the call-site contract.
+    #[allow(clippy::too_many_arguments)]
     async fn new(
         config: &'a Config,
         validation: ValidationResult,

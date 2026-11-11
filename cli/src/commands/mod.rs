@@ -70,15 +70,7 @@ impl CliCommand for ExplorerArgs {
                 .await
             }
             Some(ExplorerCommand::Index(a)) => {
-                cmd_backfill(
-                    config,
-                    a.hours,
-                    a.days,
-                    a.from_block,
-                    a.to_block,
-                    progress,
-                )
-                .await?;
+                cmd_backfill(config, a.hours, a.days, a.from_block, a.to_block, progress).await?;
                 Ok(())
             }
             Some(ExplorerCommand::Dashboard(a)) => {

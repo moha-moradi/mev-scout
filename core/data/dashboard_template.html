@@ -341,7 +341,8 @@ pre.raw {
       <div class="card" style="margin-bottom:14px">
         <h2>What did each $10 of cost produce?</h2>
         <div class="table-wrap metric-table"><table><thead><tr><th>Strategy</th><th>Eligible / total</th><th>Gross / $10</th><th>Net / $10</th><th>Return</th><th>Observed losses</th></tr></thead><tbody id="analytics-economics"></tbody></table></div>
-        <div class="caption">Each ratio uses the same fully priced operations for both profit and cost. Known losses are included here, including losses excluded from headline net. Hover or focus a strategy to read its detection rules.</div>
+        <div class="caption" id="analytics-roi-exclusions"></div>
+        <div class="caption">Each ratio uses the same fully priced operations for both profit and cost. Known losses are included here, including losses excluded from headline net. Hover or focus a strategy to read its detection rules. A zero-cost cohort is N/A, never an infinite return.</div>
       </div>
       <div class="grid row2">
         <div class="card"><h2>Strategy activity</h2><div class="chart chart-tall" id="chart-analytics-heat"></div></div>
@@ -1146,10 +1147,29 @@ pre.raw {
       + "Unavailable observations are not zero-profit observations.";
     $("analytics-economics").innerHTML = rows.map(function (r) {
       var reason = Object.keys(r.exclusion_reasons || {}).map(function (k) { return k.replace(/_/g, " ") + ": " + r.exclusion_reasons[k]; }).join("; ");
+      // A zero-cost cohort has no finite return; say so instead of an Infinity or
+      // a fabricated 0%, and never imply a dash is zero profit.
+      var zeroCost = r.ops_eligible > 0 && r.cost_usd === 0;
+      var na = '<span class="null">N/A (zero cost)</span>';
+      var grossCell = zeroCost ? na : usd(r.gross_per_10, true);
+      var netCell = zeroCost ? na : usd(r.net_per_10, true);
+      var returnCell = zeroCost ? na : percent(r.roi_pct);
       return '<tr><td>' + strategyBadge(r.slice_key) + '</td><td title="' + esc(reason || "All observations eligible") + '">'
-        + r.ops_eligible + " / " + r.ops_total + '</td><td>' + usd(r.gross_per_10, true) + '</td><td>' + usd(r.net_per_10, true)
-        + '</td><td class="' + (r.roi_pct < 0 ? "loss" : "gain") + '">' + percent(r.roi_pct) + '</td><td>' + r.observed_losses + '</td></tr>';
+        + r.ops_eligible + " / " + r.ops_total + '</td><td>' + grossCell + '</td><td>' + netCell
+        + '</td><td class="' + (r.roi_pct < 0 ? "loss" : "gain") + '">' + returnCell + '</td><td>' + r.observed_losses + '</td></tr>';
     }).join("") || '<tr><td colspan="6" class="empty">No operations in this window</td></tr>';
+    // Reasons live beside the chart, not only in tooltips: show the largest
+    // exclusion buckets for the whole window.
+    var excl = {};
+    rows.forEach(function (r) {
+      Object.keys(r.exclusion_reasons || {}).forEach(function (k) { excl[k] = (excl[k] || 0) + r.exclusion_reasons[k]; });
+    });
+    var exclBits = Object.keys(excl).sort(function (a, b) { return excl[b] - excl[a]; })
+      .slice(0, 5)
+      .map(function (k) { return k.replace(/_/g, " ") + ": " + excl[k]; });
+    $("analytics-roi-exclusions").textContent = exclBits.length
+      ? "Not comparable: " + exclBits.join(" · ") + "."
+      : "Every operation in this window is in the fully priced cohort.";
   }
 
   function renderAnalytics() {
@@ -1338,27 +1358,53 @@ pre.raw {
   function openOp(key, fromHash) {
     // Ids distinguish several positions closed in the same tx; a legacy
     // transaction hash still resolves when it maps to exactly one operation.
+    // With several matches we show a chooser instead of silently picking one.
     var evs = P.evidence || [];
     var ev = evs.filter(function (x) { return String(x.id) === String(key); })[0];
     if (!ev) {
       var byHash = evs.filter(function (x) { return x.tx_hash === key; });
-      if (byHash.length) ev = byHash[0];
+      if (byHash.length === 1) ev = byHash[0];
     }
-    var row = ev ? null : (P.events || []).filter(function (x) {
-      return String(x.id) === String(key) || x.tx_hash === key;
-    })[0];
+    var row = null;
+    if (!ev) {
+      row = (P.events || []).filter(function (x) { return String(x.id) === String(key); })[0];
+      if (!row) {
+        var rowsByHash = (P.events || []).filter(function (x) { return x.tx_hash === key; });
+        if (rowsByHash.length === 1) row = rowsByHash[0];
+      }
+    }
     if (ev) {
       state.opId = ev.id;
       state.opHash = ev.tx_hash;
+      state.legacyHash = null;
     } else if (row) {
       state.opId = row.id;
       state.opHash = row.tx_hash;
+      state.legacyHash = null;
     } else {
       state.opId = null;
       state.opHash = String(key);
+      // Ambiguous legacy hash: keep the hash so the detail pane can offer a
+      // deterministic operation chooser.
+      state.legacyHash = String(key);
     }
     setView("operations", fromHash === true ? false : undefined);
     renderOpDetail();
+  }
+
+  function showOpChooser(matches) {
+    $("op-empty").style.display = "";
+    $("op-body").style.display = "none";
+    $("op-empty").innerHTML = '<div>Transaction ' + esc(short(state.opHash))
+      + " contains " + matches.length + " operations. Choose the exact position:</div>"
+      + '<div class="badge-row" style="margin-top:10px">'
+      + matches.map(function (s) {
+        return '<button class="pill' + (String(s.id) === String(state.opId) ? " ok" : "")
+          + '" type="button" data-op-id="' + esc(String(s.id)) + '">'
+          + esc(sliceLabel(sliceKey(s.kind, s.subkind))) + " #" + esc(String(s.id))
+          + " · " + usd(s.net_profit_usd, true) + "</button>";
+      }).join(" ")
+      + "</div>";
   }
 
   function tokenLabel(addr, symbol, name) {
@@ -1377,14 +1423,24 @@ pre.raw {
     renderOperationsList();
     var byId = evidenceById();
     var ev = state.opId != null ? byId[String(state.opId)] : null;
-    if (!ev && state.opHash) {
+    if (!ev && state.opId == null && state.opHash) {
       // Legacy #/op/<txhash>: resolve when the hash identifies one operation.
       var matches = (P.evidence || []).filter(function (x) { return x.tx_hash === state.opHash; });
-      if (matches.length) ev = matches[0];
+      if (matches.length === 1) {
+        ev = matches[0];
+      } else if (matches.length > 1) {
+        showOpChooser(matches);
+        return;
+      }
     }
     if (!ev && state.opId == null && state.opHash) {
-      var hashRow = (P.events || []).filter(function (x) { return x.tx_hash === state.opHash; })[0];
-      if (hashRow) state.opId = hashRow.id;
+      var hashRows = (P.events || []).filter(function (x) { return x.tx_hash === state.opHash; });
+      if (hashRows.length === 1) {
+        state.opId = hashRows[0].id;
+      } else if (hashRows.length > 1) {
+        showOpChooser(hashRows);
+        return;
+      }
     }
     var row = state.opId != null
       ? (P.events || []).filter(function (e) { return String(e.id) === String(state.opId); })[0]
@@ -1392,14 +1448,18 @@ pre.raw {
     if (ev) {
       state.opId = ev.id;
       state.opHash = ev.tx_hash;
+      state.legacyHash = null;
     } else if (row) {
       state.opHash = row.tx_hash;
+      state.legacyHash = null;
     }
     if (!ev && !row) {
       $("op-empty").style.display = "";
       $("op-body").style.display = "none";
       if (state.opHash && T.evidence_emitted === 0) {
         $("op-empty").textContent = "Evidence cleared by budget — open a regenerated artifact or raise --budget-mb.";
+      } else if (state.legacyHash) {
+        $("op-empty").textContent = "No operation matches transaction " + short(state.opHash) + " in this artifact.";
       } else {
         $("op-empty").textContent = "Select an operation";
       }
@@ -1443,6 +1503,10 @@ pre.raw {
     var vol = ev ? ev.volume_usd : row.volume_usd;
     var flash = ev ? ev.flashloan_fee_usd : null;
     var acc = (ev && ev.details && ev.details.jit_accounting) || null;
+    var netted = !!(ev && ev.details && ev.details.flashloan_fee_netted_in_ledger);
+    var econ = (ev && ev.economics) || null;
+    var econComplete = !!(econ && econ.eligible && econ.gross_usd != null
+      && econ.cost_usd != null && econ.net_usd != null);
     $("op-kpis").innerHTML = [
       { l: "Net profit", v: usd(net, true) },
       { l: "Gross profit", v: usd(gross, false) },
@@ -1455,12 +1519,26 @@ pre.raw {
 
     var wf = chart("chart-op-waterfall");
     if (wf) {
+      // Reconstruct from the reconciled economics when available: a flash fee
+      // already netted into the stored residual is added back to gross and
+      // subtracted exactly once here, so the bars reconcile with net.
+      var wfGross = econComplete ? econ.gross_usd : gross;
+      var wfGas = econComplete ? econ.gas_usd : gas;
+      var wfFee = econComplete ? econ.flash_fee_usd : flash;
+      var wfNet = econComplete ? econ.net_usd : net;
       var steps = [];
-      if (gross != null) steps.push({ name: "Gross", value: gross });
-      if (gas != null) steps.push({ name: "Gas", value: -Math.abs(gas) });
-      if (flash != null) steps.push({ name: "Flash fee", value: -Math.abs(flash) });
-      else if (ev && ev.flash_fee_unpriced) steps.push({ name: "Flash fee ?", value: 0, unpriced: true });
-      if (net != null) steps.push({ name: "Net", value: net, isNet: true });
+      if (wfGross != null) steps.push({ name: "Gross", value: wfGross });
+      if (wfGas != null) steps.push({ name: "Gas", value: -Math.abs(wfGas) });
+      if (econComplete) {
+        if (wfFee != null && wfFee > 0) steps.push({ name: "Flash fee", value: -Math.abs(wfFee) });
+      } else if (!netted && wfFee != null) {
+        steps.push({ name: "Flash fee", value: -Math.abs(wfFee) });
+      }
+      // An unpriced fee is not a zero bar: the note reports incomplete cost.
+      if (wfNet != null) steps.push({ name: "Net", value: wfNet, isNet: true });
+      var wfFlowed = steps.reduce(function (sum, s) { return s.isNet ? sum : sum + s.value; }, 0);
+      var wfMismatch = wfNet != null && steps.some(function (s) { return s.isNet; })
+        && Math.abs(wfFlowed - wfNet) > 1e-6;
       // ECharts waterfall via helper totals
       var help = [];
       var run = 0;
@@ -1485,7 +1563,7 @@ pre.raw {
           formatter: function (p) {
             if (p.seriesName === "assist") return "";
             var s = steps[p.dataIndex];
-            return s.name + ": " + usd(s.isNet ? s.value : (s.name === "Gross" ? s.value : s.value), true);
+            return s.name + ": " + usd(s.value, true);
           }
         },
         grid: { left: 50, right: 20, top: 20, bottom: 40 },
@@ -1496,8 +1574,7 @@ pre.raw {
           {
             name: "pnl", type: "bar", stack: "wf",
             data: steps.map(function (s, i) {
-              var positive = s.isNet || s.name === "Gross";
-              return { value: vals[i], itemStyle: { color: positive ? "#34d399" : "#f87171" } };
+              return { value: vals[i], itemStyle: { color: s.value >= 0 ? "#34d399" : "#f87171" } };
             })
           }
         ]
@@ -1506,8 +1583,12 @@ pre.raw {
     // Waterfall reconciliation note: the netted flash fee must not be taken
     // twice, and an unknown cost is incomplete — never a fabricated zero bar.
     var wfNote = $("op-waterfall-note");
-    if (ev && ev.details && ev.details.flashloan_fee_netted_in_ledger) {
+    if (wfMismatch) {
+      wfNote.textContent = "Incomplete cost evidence: the bars do not reconcile with net, so no zero-cost bar is fabricated.";
+    } else if (netted) {
       wfNote.textContent = "Flash-loan fee is already netted in the ledger residual; the waterfall does not subtract it again.";
+    } else if (!econComplete && ev && ev.flash_fee_unpriced) {
+      wfNote.textContent = "Flash fee is unpriced: cost is incomplete and the fee is omitted, not shown as a zero bar.";
     } else if (acc && acc.valuation && acc.valuation.pricing_complete === false) {
       wfNote.textContent = "Incomplete pricing: gross/net stay empty instead of a partial sum. Cost bars reflect recorded receipt gas only.";
     } else if (!priced) {
@@ -1525,6 +1606,8 @@ pre.raw {
       ["Block", (ev && ev.block_number) || (row && row.block_number) || "—"],
       ["Detector", (ev && ev.detector) || (row && row.detector) || "—"],
       ["Confidence", conf || "—"],
+      ["Searcher EOA", (ev && ev.eoa) || "—"],
+      ["Contract", (ev && ev.contract) || "—"],
       ["PnL basis", (ev && ev.pnl_basis) || (row && row.pnl_basis) || "—"],
       ["Pricing", (ev && ev.usd_approximate) ? "Approximate USD" : (priced ? "Priced" : "Unpriced")],
       ["Route", route.length + " hops · " + Object.keys(pools).length + " pools · " + Object.keys(amms).length + " AMM"]
@@ -1563,6 +1646,16 @@ pre.raw {
     } else {
       var html = "";
       var nonReg = false;
+      var firstLeg = route[0];
+      var lastLeg = route[route.length - 1];
+      var firstIn = firstLeg.amount_in_human || firstLeg.amount_in;
+      var lastOut = lastLeg.amount_out_human || lastLeg.amount_out;
+      // Show the first leg's input explicitly; the old loop started only at
+      // leg 1 and silently dropped it.
+      html += '<div class="route-edge"><span class="caption">Input</span> '
+        + tokenLabel(firstLeg.token_in, firstLeg.token_in_symbol, firstLeg.token_in_name)
+        + (firstIn ? '<span class="amt">' + esc(firstIn) + "</span>" : "")
+        + "</div>";
       route.forEach(function (leg, i) {
         if (i) {
           var ain = leg.amount_in_human || leg.amount_in;
@@ -1582,26 +1675,117 @@ pre.raw {
           + ammIcon(amm) + "<b>" + esc(amm) + "</b></div><div title=\"" + esc(leg.pool || "") + "\">"
           + esc(short(leg.pool || "")) + "</div></div>";
       });
+      // ...and the last leg's output, which the loop also omitted.
+      html += '<div class="route-edge"><span class="caption">Output</span> '
+        + tokenLabel(lastLeg.token_out, lastLeg.token_out_symbol, lastLeg.token_out_name)
+        + (lastOut ? '<span class="amt">' + esc(lastOut) + "</span>" : "")
+        + "</div>";
       $("op-route").innerHTML = html;
       $("op-route-cap").textContent = nonReg
         ? "Observed AMM labels · proximity/non-registry token source on at least one leg"
         : "Observed AMM · symbol/name/address + humanized amounts when decimals known";
     }
 
+    // Timeline uses only recorded LP events or observed route legs. Internal
+    // steps and implied intra-tx timings are never invented.
+    var tl = [];
+    if (acc && acc.version && Array.isArray(acc.timeline)) {
+      acc.timeline.forEach(function (t) {
+        tl.push("<li><strong>" + esc(t.kind) + "</strong>"
+          + '<span class="caption">Block ' + esc(String(t.block_number)) + " · "
+          + esc(dateTime(t.ts)) + " · tx " + esc(short(t.tx_hash || "")) + "</span>"
+          + "<div>amount0 " + esc(t.amount0 || "—") + " · amount1 " + esc(t.amount1 || "—") + "</div></li>");
+      });
+    }
+    if (!tl.length && route.length) {
+      var tlBlock = (ev && ev.block_number) || (row && row.block_number) || "—";
+      var tlTs = (ev && ev.ts) || (row && row.ts);
+      route.forEach(function (leg, i) {
+        tl.push("<li><strong>Leg " + (i + 1) + ": " + esc(leg.amm || "observed AMM") + "</strong>"
+          + '<span class="caption">Block ' + esc(String(tlBlock)) + " · " + esc(dateTime(tlTs)) + "</span>"
+          + '<div title="' + esc(leg.pool || "") + '">' + esc(short(leg.pool || "")) + " · "
+          + tokenLabel(leg.token_in, leg.token_in_symbol, leg.token_in_name) + " → "
+          + tokenLabel(leg.token_out, leg.token_out_symbol, leg.token_out_name) + "</div></li>");
+      });
+    }
+    $("op-timeline").innerHTML = tl.length ? tl.join("")
+      : '<li><strong>No observed event order</strong><span class="caption">'
+        + "Only recorded mint/burn/collect events or route legs are shown; internal steps and inferred timings are not invented.</span></li>";
+
     var tags = (ev && ev.tags) || [];
-    var reasons = (ev && ev.reasons) || [];
-    var all = tags.concat(reasons);
-    $("op-tags").innerHTML = all.length ? all.map(function (t) {
+    $("op-tags").innerHTML = tags.length ? tags.map(function (t) {
       var cls = t === "VOLUME_PARTIAL" ? "pill warn" : "pill ok";
       return '<span class="' + cls + '">' + esc(t) + "</span>";
-    }).join(" ") : '<span class="null">No tags</span>';
+    }).join(" ") : '<span class="null">No strategy tags recorded</span>';
+    var reasons = (ev && ev.reasons) || [];
+    var limits = [];
+    if (ev) {
+      [
+        [ev.usd_approximate, "usd_approximate", "USD is approximate; not a balance"],
+        [ev.native_unpriced, "native_unpriced", "native gas/value has no quote"],
+        [ev.multi_asset_pricing, "multi_asset_pricing", "multiple assets priced approximately"],
+        [ev.pricing_clamped, "pricing_clamped", "a price was clamped"],
+        [ev.flash_fee_unpriced, "flash_fee_unpriced", "flash fee is unknown; cost is incomplete"]
+      ].forEach(function (f) {
+        if (f[0]) limits.push({ code: f[1], title: f[2] });
+      });
+      var issues = ev.details && ev.details.pricing_issues;
+      if (Array.isArray(issues)) {
+        issues.forEach(function (x) {
+          if (x != null && String(x) !== "") limits.push({ code: String(x), title: "pricing limitation" });
+        });
+      }
+      if (ev.economics && !ev.economics.eligible && ev.economics.reason) {
+        limits.push({ code: ev.economics.reason, title: "excluded from ROI" });
+      }
+      var feeEst = ev.details && ev.details.fees_estimated;
+      if (feeEst && !(acc && acc.version)) {
+        limits.push({
+          code: "fees_estimated",
+          title: "legacy in-range volume estimate: unallocated, not realised profit, excluded from ROI"
+        });
+      }
+    }
+    $("op-reasons").innerHTML = (reasons.length || limits.length)
+      ? reasons.map(function (t) {
+        return '<span class="pill warn" title="detection reason">' + esc(t) + "</span>";
+      }).concat(limits.map(function (l) {
+        return '<span class="pill" title="' + esc(l.title) + '">' + esc(l.code) + "</span>";
+      })).join(" ")
+      : '<span class="null">No detection reasons or limitations recorded</span>';
     var victims = (ev && ev.victim_hashes) || [];
-    $("op-victims").textContent = victims.length
-      ? ("Victims: " + victims.map(short).join(", "))
-      : "No victim hashes";
+    var parties = [];
+    if (ev && ev.eoa) parties.push("searcher " + short(ev.eoa));
+    if (ev && ev.contract) parties.push("contract " + short(ev.contract));
+    $("op-victims").textContent = (parties.length ? "Related parties: " + parties.join(" · ") + ". " : "")
+      + (victims.length
+        ? ("Victim evidence: " + victims.map(short).join(", "))
+        : "No victim evidence recorded (absence is not proof no victim existed).");
+    $("op-strategy-guide").innerHTML = strategyBadge(key);
     var accEl = $("op-accounting");
+    var econHtml = "";
+    if (ev && econ) {
+      econHtml = '<div class="card" style="margin-top:14px"><h2>Execution economics</h2>';
+      if (econ.eligible) {
+        econHtml += '<table class="facts">'
+          + "<tr><td>Gross (before recorded cost)</td><td>" + usd(econ.gross_usd, true) + "</td></tr>"
+          + "<tr><td>Gas</td><td>" + usd(econ.gas_usd, true) + "</td></tr>"
+          + "<tr><td>Flash fee" + (econ.flash_fee_netted
+            ? ' <span class="caption">(netted in ledger; added back to gross, subtracted once)</span>' : "")
+          + "</td><td>" + usd(econ.flash_fee_usd, true) + "</td></tr>"
+          + "<tr><td>Net</td><td>" + usd(econ.net_usd, true) + "</td></tr>"
+          + "<tr><td>Return on recorded cost</td><td>" + percent(econ.roi_pct)
+          + ' <span class="caption">historical, not a forecast</span></td></tr></table>'
+          + '<div class="caption">Numerator and denominator use the same fully priced cohort; known losses stay in.</div>';
+      } else {
+        econHtml += '<div class="accounting-note"><b>Not in the return-on-cost cohort</b> · '
+          + esc(econ.reason || "economics incomplete")
+          + ". Display USD is unchanged; no ratio or zero cost is fabricated.</div>";
+      }
+      econHtml += "</div>";
+    }
     if (!acc || !acc.version) {
-      accEl.innerHTML = "";
+      accEl.innerHTML = econHtml;
     } else {
       var verified = acc.status === "verified";
       var raw = function (v) {
@@ -1651,7 +1835,7 @@ pre.raw {
         + '<div class="table-wrap"><table><thead><tr><th>Event</th><th>Block</th><th>UTC</th><th>Tx</th><th>Amount 0</th><th>Amount 1</th></tr></thead><tbody>'
         + (timeline || '<tr><td colspan="6">No LP events</td></tr>') + "</tbody></table></div>"
         + '<div class="caption">Gross counts received value minus deposited value at their own hours; principal price changes are part of the position result. Paid LP fees are shown separately. USD is approximate; missing quotes keep gross/net NULL.</div>'
-        + "</div>";
+        + "</div>" + econHtml;
     }
     $("op-raw").textContent = JSON.stringify((ev && ev.details) || {}, null, 2);
 
@@ -1827,10 +2011,25 @@ pre.raw {
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") hideStrategyHelp();
   });
+  $("op-back").addEventListener("click", function () {
+    state.opId = null;
+    state.opHash = null;
+    state.legacyHash = null;
+    setView("operations");
+  });
   $("op-copy").addEventListener("click", function () {
+    var status = $("op-copy-status");
     var key = state.opId != null ? String(state.opId) : (state.opHash || "");
     var url = location.href.split("#")[0] + "#/operation/" + key;
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(function () {
+        status.textContent = "Link copied: #/operation/" + key;
+      }, function () {
+        status.textContent = "Could not copy automatically. Copy this URL: " + url;
+      });
+    } else {
+      status.textContent = "Clipboard unavailable. Copy this URL: " + url;
+    }
   });
   window.addEventListener("hashchange", parseHash);
   // pushState entries are restored with popstate, not hashchange.

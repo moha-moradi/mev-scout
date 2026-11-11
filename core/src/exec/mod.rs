@@ -58,19 +58,6 @@ impl ExecMode {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_rejects_testnet() {
-        assert!(ExecMode::parse("testnet").is_none());
-        assert_eq!(ExecMode::parse("revm"), Some(ExecMode::Revm));
-        assert_eq!(ExecMode::parse("anvil"), Some(ExecMode::Anvil));
-        assert_eq!(ExecMode::parse("none"), Some(ExecMode::None));
-    }
-}
-
 impl std::fmt::Display for ExecMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -85,4 +72,17 @@ pub fn searcher_address(key: Option<&str>) -> anyhow::Result<Address> {
     let signer = PrivateKeySigner::from_str(raw)
         .map_err(|e| anyhow::anyhow!("invalid paper.exec_key: {e}"))?;
     Ok(signer.address())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_rejects_testnet() {
+        assert!(ExecMode::parse("testnet").is_none());
+        assert_eq!(ExecMode::parse("revm"), Some(ExecMode::Revm));
+        assert_eq!(ExecMode::parse("anvil"), Some(ExecMode::Anvil));
+        assert_eq!(ExecMode::parse("none"), Some(ExecMode::None));
+    }
 }

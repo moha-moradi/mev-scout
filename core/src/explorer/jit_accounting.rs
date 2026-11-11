@@ -852,6 +852,8 @@ mod accounting_tests {
     const OWNER: Address = address!("1111111111111111111111111111111111111111");
     const ROUTER: Address = address!("2222222222222222222222222222222222222222");
     const POOL: Address = address!("3333333333333333333333333333333333333333");
+    /// `(block, tx_index, log_index)` for an opening/closing position edge.
+    type PosRef = (u64, u64, u64);
     // Avalanche allowlisted tokens: USDC.e and USDT.e.
     const USD0: Address = address!("B97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E");
     const USD1: Address = address!("9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7");
@@ -974,7 +976,7 @@ mod accounting_tests {
         }
     }
 
-    fn happy_blocks() -> (Vec<LpBlock>, (u64, u64, u64), (u64, u64, u64)) {
+    fn happy_blocks() -> (Vec<LpBlock>, PosRef, PosRef) {
         let mint_tx = B256::repeat_byte(0x31);
         let close_tx = B256::repeat_byte(0x32);
         let open = block(
@@ -1121,6 +1123,148 @@ mod accounting_tests {
             .reasons
             .iter()
             .any(|r| r == "no_in_lifetime_tick_evidence"));
+    }
+
+    /// Only swaps strictly between the opening Mint and closing Burn, on the
+    /// JIT pool, and inside the half-open tick range prove the position ever
+    /// saw traffic. Endpoints and after-close swaps must not count.
+    #[test]
+    fn only_strictly_in_lifetime_in_range_swaps_count_as_evidence() {
+        let cases: &[(usize, u64, u64, u64, i32, &str)] = &[
+            (1, 11, 0, 1, 0, "strictly inside"),
+            (1, 11, 0, 1, 100, "upper tick endpoint"),
+            (0, 10, 1, 5, 0, "opening endpoint"),
+            (2, 12, 3, 2, 0, "closing endpoint"),
+            (2, 12, 3, 3, 0, "after closing"),
+        ];
+        for (block_pos, block_no, tx_index, log_index, tick, name) in cases {
+            let (mut history, opening, closing) = happy_blocks();
+            history[1].swaps.clear();
+            history[*block_pos].swaps.push(TickEvidence {
+                tx_index: *tx_index,
+                log_index: *log_index,
+                pool: POOL,
+                tick: Some(*tick),
+            });
+            let mut a = base();
+            with_baselines(&mut a, &history);
+            reconcile(&mut a, &history, opening, closing, 1_000);
+            assert_eq!(*block_no, history[*block_pos].block_number, "{name}");
+            if *name == "strictly inside" {
+                assert_eq!(a.status, "verified", "{name}: reasons={:?}", a.reasons);
+            } else {
+                assert_eq!(a.status, "unavailable", "{name}");
+                assert!(
+                    a.reasons
+                        .iter()
+                        .any(|r| r == "no_in_lifetime_tick_evidence"),
+                    "{name}: reasons={:?}",
+                    a.reasons
+                );
+            }
+        }
+    }
+
+    /// A Mint, Burn and Collect in one transaction is still a settled cycle:
+    /// receipt order `mint < burn < collect` is enough, and gas is counted once.
+    #[test]
+    fn same_transaction_cycle_reconciles() {
+        let hash = B256::repeat_byte(0x41);
+        let open = block(
+            20,
+            0x20,
+            Some(B256::repeat_byte(0x1f)),
+            1_000,
+            vec![tx(
+                hash,
+                2,
+                vec![
+                    fact(true, false, 2, 1, 50, 1_000, 2_000),
+                    fact(false, false, 2, 3, 50, 1_000, 2_000),
+                    fact(false, true, 2, 5, 0, 1_100, 2_200),
+                ],
+                vec![
+                    transfer(2, 0, USD0, OWNER, POOL, 1_000),
+                    transfer(2, 0, USD1, OWNER, POOL, 2_000),
+                    transfer(2, 4, USD0, POOL, OWNER, 1_100),
+                    transfer(2, 4, USD1, POOL, OWNER, 2_200),
+                ],
+                Some(gas(hash, 1_000, 100)),
+            )],
+        );
+        let mut history = vec![open];
+        history[0].swaps.push(TickEvidence {
+            tx_index: 2,
+            log_index: 2,
+            pool: POOL,
+            tick: Some(0),
+        });
+        let mut a = base();
+        with_baselines(&mut a, &history);
+        reconcile(&mut a, &history, (20, 2, 1), (20, 2, 3), 1_000);
+        assert_eq!(a.status, "verified", "reasons={:?}", a.reasons);
+        assert_eq!(a.fee_amount0.as_deref(), Some("100"));
+        assert_eq!(a.fee_amount1.as_deref(), Some("200"));
+        assert_eq!(a.gas.len(), 1, "one receipt, one gas entry");
+    }
+
+    /// Fees come only from this position's own Collect. Another LP's activity
+    /// in the same pool must not change the JIT's reconciled fee or gas.
+    #[test]
+    fn competitor_lp_activity_does_not_inflate_fees() {
+        let (mut history, opening, closing) = happy_blocks();
+        let mut competitor = fact(true, false, 2, 1, 40, 9_999, 9_999);
+        competitor.owner = ROUTER;
+        history[1].txs.push(tx(
+            B256::repeat_byte(0x51),
+            2,
+            vec![competitor],
+            vec![],
+            None,
+        ));
+        let mut a = base();
+        with_baselines(&mut a, &history);
+        reconcile(&mut a, &history, opening, closing, 1_000);
+        assert_eq!(a.status, "verified", "reasons={:?}", a.reasons);
+        assert_eq!(a.fee_amount0.as_deref(), Some("100"));
+        assert_eq!(a.fee_amount1.as_deref(), Some("200"));
+        assert_eq!(a.gas.len(), 2, "competitor gas is not attributed");
+    }
+
+    /// A real loss on both tokens stays `verified` and reports negative
+    /// cashflows instead of being zeroed or dropped.
+    #[test]
+    fn two_token_loss_is_reconciled_not_hidden() {
+        let (mut history, opening, closing) = happy_blocks();
+        history[2].txs[0].facts[0].amount0 = U256::from(500);
+        history[2].txs[0].facts[0].amount1 = U256::from(1_000);
+        history[2].txs[0].facts[1].amount0 = U256::from(600);
+        history[2].txs[0].facts[1].amount1 = U256::from(1_100);
+        history[2].txs[0].transfers[0].amount = U256::from(600);
+        history[2].txs[0].transfers[1].amount = U256::from(1_100);
+        let mut a = base();
+        with_baselines(&mut a, &history);
+        reconcile(&mut a, &history, opening, closing, 1_000);
+        assert_eq!(a.status, "verified", "reasons={:?}", a.reasons);
+        assert_eq!(a.cashflow_amount0.as_deref(), Some("-400"));
+        assert_eq!(a.cashflow_amount1.as_deref(), Some("-900"));
+        assert_eq!(a.fee_amount0.as_deref(), Some("100"));
+        assert_eq!(a.fee_amount1.as_deref(), Some("100"));
+    }
+
+    /// Missing archive proof (a baseline) is unavailable, never assumed empty.
+    #[test]
+    fn missing_archive_baseline_is_unavailable() {
+        let (history, opening, closing) = happy_blocks();
+        let mut a = base();
+        with_baselines(&mut a, &history);
+        a.baselines.pop();
+        reconcile(&mut a, &history, opening, closing, 1_000);
+        assert_eq!(a.status, "unavailable");
+        assert!(a
+            .reasons
+            .iter()
+            .any(|r| r == "archive_baseline_or_settlement_unavailable"));
     }
 
     fn verified_for_pricing() -> JitAccounting {

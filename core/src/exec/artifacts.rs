@@ -47,7 +47,7 @@ fn decode_hex(raw: &str) -> anyhow::Result<Bytes> {
         .strip_prefix("0x")
         .or_else(|| compact.strip_prefix("0X"))
         .unwrap_or(compact.as_str());
-    if compact.len() % 2 != 0 {
+    if !compact.len().is_multiple_of(2) {
         anyhow::bail!("executor artifact hex has an odd length");
     }
     let bytes = hex::decode(compact).map_err(|e| anyhow::anyhow!("executor artifact hex: {e}"))?;

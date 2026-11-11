@@ -1960,6 +1960,10 @@ mod tests {
         let op = store.ops_in_range(902, 902, &[], None).unwrap().remove(0);
         assert_eq!(op.profit_usd, None, "missing quotes clear stale profit");
         assert_eq!(op.net_profit_usd, None);
+        assert_eq!(
+            op.gas_cost_usd, None,
+            "missing native quote must clear stale gas instead of keeping it"
+        );
 
         let hour = ts / 3600;
         store

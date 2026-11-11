@@ -33,13 +33,15 @@ pub(super) struct JitEventPosition {
 
 /// JIT pairing: same pool, same owner, same tick range, Mint before Burn.
 ///
-/// pairs an in-block Mint+Burn *or* a prior-block open position
+/// Pairs an in-block Mint+Burn *or* a prior-block open position
 /// (loaded from `jit_open_positions`) with an in-block exact-liquidity Burn.
-/// A Burn strictly after the Mint's tx closes a position, and each Burn closes
-/// at most one position (a `find` without consumption let one Burn satisfy
-/// several identical Mints — duplicate P&L on one tx_index).
+/// A Burn after the Mint in receipt order closes a position — same-transaction
+/// cycles are supported when the Burn log follows the Mint log. Each Burn
+/// closes at most one position (a `find` without consumption let one Burn
+/// satisfy several identical Mints — duplicate P&L on one tx_index).
 /// A candidate is only emitted when the block contains an in-window swap in
-/// that pool whose tick lies inside the range (tick-overlap validation).
+/// that pool whose tick lies inside the half-open range `[lower, upper)`, as
+/// V3 liquidity is defined (tick-overlap validation).
 pub(super) fn classify_jit(input: &BlockInput, drops: &mut DropSink) -> Vec<MevEvent> {
     let mints: Vec<JitFact> = input
         .txs
@@ -57,7 +59,8 @@ pub(super) fn classify_jit(input: &BlockInput, drops: &mut DropSink) -> Vec<MevE
         .txs
         .iter()
         .flat_map(|t| t.jit.iter().map(move |j| (t.tx_index, j)))
-        .filter(|(_, j)| !j.is_mint)
+        // Collect transfers owed principal/fees; it is not a liquidity burn.
+        .filter(|(_, j)| !j.is_mint && !j.is_collect)
         .collect();
 
     let mut out = Vec::new();
@@ -65,10 +68,12 @@ pub(super) fn classify_jit(input: &BlockInput, drops: &mut DropSink) -> Vec<MevE
     // well as tx because a single tx can carry several JIT burns.
     let mut used_burns: std::collections::HashSet<(u64, u64)> = Default::default();
 
-    // Same-block Mint → Burn (Burn strictly after the Mint's tx).
+    // Same-block Mint → Burn in receipt order. Comparing the (tx, receipt-log)
+    // pair, not tx alone, admits a Mint and Burn in the same transaction while
+    // still rejecting a Burn whose log precedes the Mint.
     for mint in &mints {
         let burn = burns.iter().find(|(burn_tx, b)| {
-            *burn_tx > mint.tx_index
+            (*burn_tx, b.log_index) > (mint.tx_index, mint.log_index)
                 && !used_burns.contains(&(*burn_tx, b.log_index))
                 && b.pool == mint.pool
                 && b.owner == mint.owner
@@ -170,6 +175,7 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
         bin_amm,
     } = pos;
     // V3: require an in-range tick. LB: any same-pool swap (Swap has no tick).
+    // V3 ranges are half-open: the upper tick is not part of the position.
     let in_range = |s: &SwapFact| {
         if s.pool != pool {
             return false;
@@ -177,7 +183,7 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
         if bin_amm {
             return true;
         }
-        s.tick.is_some_and(|k| k >= tick_lower && k <= tick_upper)
+        s.tick.is_some_and(|k| k >= tick_lower && k < tick_upper)
     };
     if !input.txs.iter().flat_map(|t| &t.swaps).any(in_range) {
         return None;
@@ -317,6 +323,96 @@ mod pairing_tests {
                 .map(|e| (&e.details["burn_tx_index"], e.tx_index))
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// Mint and Burn in the same transaction: the Burn log follows the Mint
+    /// log, so this is a valid JIT cycle. The old tx-only ordering check
+    /// rejected every same-transaction cycle.
+    #[test]
+    fn same_tx_mint_then_burn_in_log_order_pairs() {
+        let mut mint = jit(0, true);
+        mint.log_index = 2;
+        let mut burn = jit(0, false);
+        burn.log_index = 5;
+        let mut t0 = tx(0, ATK, true, in_range_swaps(), vec![]);
+        t0.jit = vec![mint, burn];
+        let input = block(vec![t0]);
+
+        let mut drops = super::super::drops::DropSink::new(input.block);
+        let events = classify_jit(&input, &mut drops);
+        assert_eq!(events.len(), 1, "same-tx Mint→Burn must pair");
+        assert_eq!(events[0].tx_index, 0);
+        assert_eq!(events[0].details["burn_tx_index"], 0);
+        assert_eq!(events[0].details["opening_log_index"], 2);
+        assert_eq!(events[0].details["burn_log_index"], 5);
+    }
+
+    /// Same transaction, but the Burn log precedes the Mint log: it cannot
+    /// close a position that does not exist yet.
+    #[test]
+    fn same_tx_burn_before_mint_does_not_pair() {
+        let mut burn = jit(0, false);
+        burn.log_index = 1;
+        let mut mint = jit(0, true);
+        mint.log_index = 6;
+        let mut t0 = tx(0, ATK, true, in_range_swaps(), vec![]);
+        t0.jit = vec![burn, mint];
+        let input = block(vec![t0]);
+
+        let mut drops = super::super::drops::DropSink::new(input.block);
+        assert!(classify_jit(&input, &mut drops).is_empty());
+    }
+
+    /// A V3 Collect is not a Burn. Even a collect fact carrying a matching
+    /// liquidity figure must not close the position.
+    #[test]
+    fn collect_fact_does_not_close_position() {
+        let mut mint_tx = tx(0, ATK, true, in_range_swaps(), vec![]);
+        mint_tx.jit.push(jit(0, true));
+        let mut collect = jit(1, false);
+        collect.is_collect = true;
+        collect.liquidity = 1_000;
+        let mut collect_tx = tx(1, ATK, true, vec![], vec![]);
+        collect_tx.jit.push(collect);
+        let input = block(vec![mint_tx, collect_tx]);
+
+        let mut drops = super::super::drops::DropSink::new(input.block);
+        assert!(
+            classify_jit(&input, &mut drops).is_empty(),
+            "Collect must not be treated as a Burn"
+        );
+    }
+
+    /// V3 ranges are half-open. A swap exactly at the upper tick is still
+    /// outside the position and must not validate the JIT event.
+    #[test]
+    fn upper_tick_endpoint_is_not_in_range() {
+        let swaps = vec![swap_at_tick(POOL_A, USDC, TOKA, 1_000, 1_100, 100)];
+        let mut mint_tx = tx(0, ATK, true, vec![], vec![]);
+        mint_tx.jit.push(jit(0, true));
+        let mut burn_tx = tx(1, ATK, true, swaps, vec![]);
+        burn_tx.jit.push(jit(1, false));
+        let input = block(vec![mint_tx, burn_tx]);
+
+        let mut drops = super::super::drops::DropSink::new(input.block);
+        assert!(
+            classify_jit(&input, &mut drops).is_empty(),
+            "upper tick is exclusive"
+        );
+    }
+
+    /// The lower tick is the first in-range tick.
+    #[test]
+    fn lower_tick_endpoint_is_in_range() {
+        let swaps = vec![swap_at_tick(POOL_A, USDC, TOKA, 1_000, 1_100, -100)];
+        let mut mint_tx = tx(0, ATK, true, vec![], vec![]);
+        mint_tx.jit.push(jit(0, true));
+        let mut burn_tx = tx(1, ATK, true, swaps, vec![]);
+        burn_tx.jit.push(jit(1, false));
+        let input = block(vec![mint_tx, burn_tx]);
+
+        let mut drops = super::super::drops::DropSink::new(input.block);
+        assert_eq!(classify_jit(&input, &mut drops).len(), 1);
     }
 
     /// Two identical Mints (tx1, tx2) and one Burn (tx3): the Burn can close

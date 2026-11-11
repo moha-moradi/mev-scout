@@ -1032,6 +1032,83 @@ mod tests {
     }
 
     #[test]
+    fn coverage_empty_db_has_no_endpoints() {
+        let dir = std::env::temp_dir().join(format!(
+            "mev_dash_empty_{}_{}",
+            std::process::id(),
+            now_secs()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("explorer-avalanche.sqlite");
+        {
+            let store = ExplorerStore::open(&path).expect("create");
+            store.set_sync_state(43114, 100, 100).expect("sync");
+            let _ = store;
+        }
+        let snap = build(&BuildOptions {
+            db_path: path,
+            window: WindowSpec::all(),
+            ..BuildOptions::default()
+        })
+        .expect("build");
+        assert_eq!(snap.coverage.head, Some(100));
+        assert_eq!(snap.coverage.blocks_in_window, 0);
+        assert_eq!(snap.coverage.ops_in_window, 0);
+        assert_eq!(snap.coverage.min_block_number, None);
+        assert_eq!(snap.coverage.max_block_number, None);
+        assert_eq!(snap.coverage.min_block_ts, None);
+        assert_eq!(snap.coverage.max_block_ts, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Recorded blocks with no MEV rows are still coverage: the panel reports
+    /// the block endpoints and timestamps while ops stay zero.
+    #[test]
+    fn coverage_reports_block_endpoints_for_mev_free_blocks() {
+        let dir = std::env::temp_dir().join(format!(
+            "mev_dash_cover_{}_{}",
+            std::process::id(),
+            now_secs()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("explorer-avalanche.sqlite");
+        {
+            let store = ExplorerStore::open(&path).expect("create");
+            store.set_sync_state(43114, 50, 50).expect("sync");
+            for (number, ts) in [(40u64, 1_000i64), (42, 1_200), (45, 1_500)] {
+                store
+                    .connection()
+                    .execute(
+                        "INSERT INTO blocks(block_number, block_hash, ts, indexed_at)
+                         VALUES(?1, ?2, ?3, ?3)",
+                        rusqlite::params![number as i64, format!("0xbk{number}"), ts],
+                    )
+                    .expect("block");
+            }
+            let _ = store;
+        }
+        let snap = build(&BuildOptions {
+            db_path: path,
+            window: WindowSpec {
+                label: "cover".into(),
+                since_ts: 1_000,
+                until_ts: 1_500,
+            },
+            ..BuildOptions::default()
+        })
+        .expect("build");
+        assert_eq!(snap.coverage.blocks_in_window, 3);
+        assert_eq!(snap.coverage.ops_in_window, 0);
+        assert_eq!(snap.coverage.min_block_number, Some(40));
+        assert_eq!(snap.coverage.max_block_number, Some(45));
+        assert_eq!(snap.coverage.first_block_ts, Some(1_000));
+        assert_eq!(snap.coverage.last_block_ts, Some(1_500));
+        assert_eq!(snap.coverage.min_block_ts, Some(1_000));
+        assert_eq!(snap.coverage.max_block_ts, Some(1_500));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn reducer_reconciles_with_report_overview_and_by_kind() {
         let dir = std::env::temp_dir().join(format!(
             "mev_dash_recon_{}_{}",

@@ -6,6 +6,18 @@ use std::path::PathBuf;
 use mev_scout_core::explorer::dashboard::{build, render_html, BuildOptions, WindowSpec};
 use mev_scout_core::explorer::store::ExplorerStore;
 
+/// `(kind, subkind, confidence, gross, net, excluded, details, route)`.
+type SeedRow<'a> = (
+    &'a str,
+    Option<&'a str>,
+    &'a str,
+    Option<f64>,
+    Option<f64>,
+    bool,
+    &'a str,
+    &'a str,
+);
+
 fn temp_db(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("mev_dash_filt_{tag}_{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -33,7 +45,7 @@ fn seed_rich(path: &PathBuf) {
 
     // Mid-bucket ts so first-partial-bucket flooring matters for strategy_series.
     let mid = since + 123;
-    let rows: Vec<(&str, Option<&str>, &str, Option<f64>, Option<f64>, bool, &str, &str)> = vec![
+    let rows: Vec<SeedRow> = vec![
         (
             "arb_atomic",
             None,
@@ -76,7 +88,8 @@ fn seed_rich(path: &PathBuf) {
         ),
     ];
 
-    for (i, (kind, sub, conf, gross, net, excl, details, route_json)) in rows.into_iter().enumerate()
+    for (i, (kind, sub, conf, gross, net, excl, details, route_json)) in
+        rows.into_iter().enumerate()
     {
         let tx = format!("0x{i:064x}");
         conn.execute(

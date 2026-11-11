@@ -1113,7 +1113,12 @@ fn reduce_facets(
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
         {
             if let Some(arr) = details.get("reasons").and_then(|v| v.as_array()) {
-                for r in arr.iter().filter_map(|v| v.as_str()) {
+                let mut seen = HashSet::new();
+                for r in arr
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .filter(|s| seen.insert(*s))
+                {
                     bump(&mut reasons, r, o, caps);
                 }
             }
@@ -1219,6 +1224,7 @@ mod tests {
     use crate::explorer::dashboard::caps::StoreCaps;
     use crate::explorer::dashboard::{OpRecord, WindowSpec};
 
+    #[allow(clippy::too_many_arguments)]
     fn op(
         id: i64,
         ts: u64,
@@ -1644,5 +1650,133 @@ mod tests {
         assert_eq!(flash.ops, 2, "duplicate tag in one op counts once");
         assert_eq!(trimmed.events.len(), 1);
         assert_eq!(trimmed.evidence.len(), 0);
+    }
+
+    /// Distinct tags on one operation are separate facets; a repeated tag and
+    /// a repeated reason are each counted once, and tags never leak into the
+    /// reason facet (or vice versa).
+    #[test]
+    fn overlapping_tags_and_reasons_count_once_per_operation() {
+        let ops = vec![
+            op(
+                1,
+                10,
+                "arb_atomic",
+                None,
+                "exact",
+                Some(1.0),
+                Some(1.0),
+                Some(0.1),
+                "0xa",
+                None,
+                Some(
+                    r#"{"tags":["flash_arb","multi_hop","flash_arb"],
+                        "reasons":["price_move_low","price_move_low"]}"#,
+                ),
+                None,
+            ),
+            op(
+                2,
+                20,
+                "arb_atomic",
+                None,
+                "exact",
+                Some(2.0),
+                Some(2.0),
+                Some(0.1),
+                "0xb",
+                None,
+                Some(r#"{"tags":["multi_hop"],"reasons":["price_move_low"]}"#),
+                None,
+            ),
+        ];
+        let window = WindowSpec {
+            label: "t".into(),
+            since_ts: 0,
+            until_ts: 3_600,
+        };
+        let panels = reduce(
+            &ops,
+            &caps(),
+            &window,
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+            100,
+            100,
+        );
+        let facet = |rows: &[FacetRow], value: &str| {
+            rows.iter()
+                .find(|r| r.value == value)
+                .map(|r| r.ops)
+                .unwrap_or(0)
+        };
+        assert_eq!(facet(&panels.tag_facets, "flash_arb"), 1);
+        assert_eq!(facet(&panels.tag_facets, "multi_hop"), 2);
+        assert_eq!(panels.tag_facets.len(), 2, "no reason leaked into tags");
+        assert_eq!(facet(&panels.reason_facets, "price_move_low"), 2);
+        assert_eq!(panels.reason_facets.len(), 1, "no tag leaked into reasons");
+        assert_eq!(panels.untagged_ops, 0);
+    }
+
+    #[test]
+    fn empty_ops_reduce_to_zeroed_panels() {
+        let window = WindowSpec {
+            label: "empty".into(),
+            since_ts: 0,
+            until_ts: 3_600,
+        };
+        let panels = reduce(
+            &[],
+            &caps(),
+            &window,
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+            100,
+            100,
+        );
+        assert_eq!(panels.kpi.ops, 0);
+        assert_eq!(panels.kpi.net_usd, 0.0);
+        assert!(panels.tag_facets.is_empty());
+        assert!(panels.reason_facets.is_empty());
+        assert!(panels.strategy_economics.is_empty());
+        assert!(panels.events.is_empty());
+        assert!(panels.evidence.is_empty());
+        assert_eq!(panels.untagged_ops, 0);
+        assert!(panels
+            .series
+            .iter()
+            .all(|p| p.ops == 0 && p.blocks_indexed == 0));
+    }
+
+    /// A flash fee already netted into the stored residual is added back to
+    /// gross and counted once in cost; `net` is not charged twice.
+    #[test]
+    fn strategy_economics_reconstructs_netted_flash_fee() {
+        let mut o = op(
+            1,
+            10,
+            "arb_atomic",
+            None,
+            "exact",
+            Some(8.0),
+            // Profit is already net of the 1.0 flash fee but gross of gas.
+            Some(9.0),
+            Some(1.0),
+            "0xa",
+            None,
+            Some(r#"{"flashloan_fee_netted_in_ledger":true,"flash_premium":1000000000000000000}"#),
+            None,
+        );
+        o.flashloan_fee_usd = Some(1.0);
+        let rows = reduce_strategy_economics(&[o]);
+        let row = &rows[0];
+        assert_eq!(row.ops_total, 1);
+        assert_eq!(row.ops_eligible, 1);
+        assert!((row.gross_usd.unwrap() - 10.0).abs() < 1e-9);
+        assert!((row.cost_usd.unwrap() - 2.0).abs() < 1e-9);
+        assert!((row.net_usd.unwrap() - 8.0).abs() < 1e-9);
+        assert!((row.roi_pct.unwrap() - 400.0).abs() < 1e-9);
     }
 }
