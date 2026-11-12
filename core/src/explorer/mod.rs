@@ -15,14 +15,11 @@
 //! Classification passes (in `classify`), applied per block in priority order:
 //! liquidations, UniV2 `skim()` capture (`Skim`), atomic-arbitrage cycles
 //! (`ArbAtomic`, Exact only), keeper / claim-and-sell / ERC-4337 bundler
-//! (`Utility`, with `subkind`), three-leg sandwiches (`Sandwich`), frontruns
-//! (`Frontrun`), backruns (`Backrun`), and narrowly-intersected JIT liquidity
-//! (`Jit`). Kinds are mutually exclusive by priority (`Sandwich` > `Frontrun` >
-//! `Backrun` > `JitArb` > `Liquidation` > `Jit` > `Skim` > `ArbAtomic` >
-//! `Utility`).
+//! (`Utility`, with `subkind`), backruns (`Backrun`), and narrowly-intersected
+//! JIT liquidity (`Jit`). Kinds are mutually exclusive by priority (`Backrun` >
+//! `Liquidation` > `Jit` > `Skim` > `ArbAtomic` > `Utility`).
 //! Costs are netted per op: gas (wei × effective price → USD via native price)
-//! and any flash-loan fee (USD via borrowed token price); a sandwich whose net
-//! is non-positive is dropped at persist time (profitability gate).
+//! and any flash-loan fee (USD via borrowed token price).
 //! The atomic-arb pass requires a closed multi-pool swap cycle with flow
 //! ownership collapsing to a single searcher candidate and a closed ledger
 //! (no open inventory spend); otherwise the tx is skipped.
@@ -59,4 +56,4 @@ pub use classify::{
 pub use pricing::TokenUsd;
 pub use reject::{RejectReason, RejectedCandidate};
 pub use results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};
-pub use types::{BundleLegRole, Confidence, LiquidationDetails, MevBundle, MevEvent, MevKind};
+pub use types::{Confidence, LiquidationDetails, MevEvent, MevKind};

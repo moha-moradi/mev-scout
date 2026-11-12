@@ -168,8 +168,8 @@ impl ExplorerStore {
             jit_journal,
         } = facts;
         let now = crate::utils::epoch_secs() as i64;
-        // All business logic (PnL annotation, sandwich gate, volume,
-        // flash-fee conversion, native residual, confidence) lives in
+        // All business logic (PnL annotation, volume, flash-fee conversion,
+        // native residual, confidence) lives in
         // `pnl::annotate_event_with_volume`; the transaction below only binds
         // and inserts the already-annotated rows.
         // One pass over the block's swaps: each event reads its tx's total, and
@@ -369,7 +369,15 @@ impl ExplorerStore {
         // would turn the next block's JIT detection into noise.
         if let Some(journal) = jit_journal {
             super::jit_positions::write_jit_block(&tx, journal.block)?;
-            super::jit_positions::apply_jit_lifecycle(&tx, journal.block)?;
+            if journal.rebuild {
+                // Retry/backfill: the old lifecycle may already have been
+                // applied, and later blocks may sit in the table. Replaying
+                // the retained ordered journals is additive-safe and removes
+                // any state that this block did not imply.
+                super::jit_positions::replay_jit_positions(&tx)?;
+            } else {
+                super::jit_positions::apply_jit_lifecycle(&tx, journal.block)?;
+            }
             let cutoff = block_number.saturating_sub(journal.window_blocks) as i64;
             tx.execute(
                 "DELETE FROM jit_open_positions WHERE opened_block < ?1",

@@ -1,4 +1,4 @@
-//! Shared swap-leg helpers for sandwich / causal classify passes.
+//! Shared swap-leg helpers for the causal backrun pass.
 use std::collections::HashMap;
 
 use alloy::primitives::{Address, B256, U256};
@@ -11,7 +11,6 @@ use crate::explorer::profit::{
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct SwapLeg {
-    pub(super) tx_index: u64,
     pub(super) tx_hash: B256,
     pub(super) token_in: Address,
     pub(super) token_out: Address,
@@ -19,21 +18,13 @@ pub(super) struct SwapLeg {
     pub(super) amount_out: U256,
 }
 
-/// One attacker's sandwich walk over a pool: front-run opens, victims
-/// (third-party same-direction swaps in block order), and the closing back-run.
-#[derive(Debug, Default)]
-pub(super) struct SandwichWalk {
-    /// Third-party same-direction swaps seen while the position was open.
-    pub(super) victims: Vec<SwapLeg>,
-}
-
 /// Max tx-index distance that still counts as "adjacent" for the causal
-/// backrun/frontrun passes: a pair farther apart than this is not considered
-/// causally linked. A window of 8 txs spans the activity between the two legs
+/// backrun pass: a pair farther apart than this is not considered causally
+/// linked. A window of 8 txs spans the activity between the two legs
 /// without bridging unrelated traffic.
 ///
 /// Heuristic, not yet calibrated against a pinned real seed (Phase 3 re-hunt
-/// 2026-10-24: 0 `frontrun`/`backrun`/`skim` ops in 95681722..=95682322 and
+/// 2026-10-24: 0 `backrun`/`skim` ops in 95681722..=95682322 and
 /// 98415954..=98416254). Kept as a named constant rather than an inline magic
 /// number; the window boundary behavior is pinned by the causal golden set ship
 /// gate (`core/tests/explorer_golden.rs`) and the offline FP check
@@ -43,17 +34,16 @@ pub(crate) const CAUSAL_WINDOW_TXS: u64 = 8;
 
 /// Minimum relative price advantage (percentage points) a causal leg must
 /// show to be counted as *material* rather than float / gas-ordering noise.
-/// Backruns require the closer to execute at least this much better than the
-/// pre-move reference; frontruns require the third-party victim to execute at
-/// least this much worse than the mover. `0.5` means 0.5%.
+/// A backrun requires the closer to execute at least this much better than the
+/// pre-move reference. `0.5` means 0.5%.
 ///
 /// Heuristic, not yet calibrated against a pinned real seed (Phase 3 re-hunt
 /// 2026-10-24: 0 ops). Kept as a named constant rather than an inline magic
 /// number; the threshold boundary behavior is pinned by the causal golden set
 /// ship gate (`core/tests/explorer_golden.rs`) and the offline FP check
-/// (`core/tests/causal_fp_corpus.rs`). Revisit once a real `frontrun`/`backrun`
-/// corpus seed is available (see
-/// `docs/explorer_module_improvements_b59a6f27.plan.md`, Phase 4).
+/// (`core/tests/causal_fp_corpus.rs`). Revisit once a real `backrun` corpus seed
+/// is available (see `docs/explorer_module_improvements_b59a6f27.plan.md`,
+/// Phase 4).
 pub(crate) const CAUSAL_PRICE_MIN_PCT: f64 = 0.5;
 
 /// True when `a` and `b` swap the same token pair in the same direction.
@@ -93,17 +83,8 @@ pub(super) fn price_better_by(b: &SwapLeg, r: &SwapLeg, min_pct: f64) -> bool {
     }
 }
 
-/// True when `v`'s execution price is measurably worse than `f`'s (both same
-/// direction): the observable victim-execution degradation.
-pub(super) fn price_worse_by(v: &SwapLeg, f: &SwapLeg, min_pct: f64) -> bool {
-    match (exec_price(v), exec_price(f)) {
-        (Some(pv), Some(pf)) if pf > 0.0 => (pf - pv) / pf * 100.0 > min_pct,
-        _ => false,
-    }
-}
-
 /// Flatten every successful tx's direction-resolved swaps in block order,
-/// grouped per pool. Used by the causal backrun/frontrun passes.
+/// grouped per pool. Used by the causal backrun pass.
 pub(super) fn pool_legs(input: &BlockInput) -> HashMap<Address, Vec<(u64, Address, SwapLeg)>> {
     let mut by_pool: HashMap<Address, Vec<(u64, Address, SwapLeg)>> = HashMap::new();
     for tx in &input.txs {
@@ -118,7 +99,6 @@ pub(super) fn pool_legs(input: &BlockInput) -> HashMap<Address, Vec<(u64, Addres
                 tx.tx_index,
                 tx.from,
                 SwapLeg {
-                    tx_index: tx.tx_index,
                     tx_hash: tx.tx_hash,
                     token_in: s.token_in,
                     token_out: s.token_out,

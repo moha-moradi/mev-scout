@@ -40,8 +40,8 @@ const MEV_OP_COLUMNS: &str =
     "id, block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence, canonical_id, profit_token, profit_amount, profit_usd, gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd, route_json, victim_hashes, details_json, detector, created_at, subkind";
 
 /// Loss-gated net-USD aggregate: sums `net_profit_usd` only for ops not flagged
-/// `excluded_from_net` (sandwich ops loss-gated at persist keep their row but are
-/// dropped from every net sum and `top_ops`).
+/// `excluded_from_net` (rows flagged at persist keep their row but are dropped
+/// from every net sum and `top_ops`).
 const NET_USD_AGG: &str =
     "COALESCE(SUM(CASE WHEN excluded_from_net = 0 THEN net_profit_usd ELSE 0 END), 0)";
 
@@ -302,8 +302,8 @@ impl ExplorerStore {
     /// Reconstruct the `MevOpportunity` list recorded for a run id
     /// (SQLite-backed `report`). Rows whose strategy string cannot be parsed
     /// are skipped with a warning. Fields not persisted in the `opportunities`
-    /// table (raw/slippage profit variants, JIT tick bounds, sandwich
-    /// victim/backrun indices) come back as defaults.
+    /// table (raw/slippage profit variants, JIT tick bounds) come back as
+    /// defaults.
     pub fn opportunities_by_run(&self, run_id: &str) -> anyhow::Result<Vec<MevOpportunity>> {
         let mut stmt = self.conn.prepare(
             "SELECT block_number, tx_index, strategy, pool_a, pool_b,
@@ -633,8 +633,8 @@ mod filter_tests {
 
     #[test]
     fn filter_clause_takes_enums_not_strings() {
-        let s = report_filter_clause(Some(MevKind::Sandwich), Some(Confidence::Exact));
-        assert!(s.contains("kind = 'sandwich'"));
+        let s = report_filter_clause(Some(MevKind::Backrun), Some(Confidence::Exact));
+        assert!(s.contains("kind = 'backrun'"));
         assert!(s.contains("confidence = 'exact'"));
     }
 

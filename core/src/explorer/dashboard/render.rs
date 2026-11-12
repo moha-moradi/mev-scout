@@ -44,6 +44,7 @@ mod tests {
             "view-health",
             "chart-overview-pulse",
             "chart-overview-mix",
+            "chart-overview-competitors",
         ] {
             assert!(TEMPLATE.contains(&format!("id=\"{id}\"")), "missing #{id}");
         }
@@ -58,7 +59,8 @@ mod tests {
         assert!(!TEMPLATE.contains("Network overview"));
         assert!(TEMPLATE.contains("op_index") || TEMPLATE.contains("indexComplete"));
         assert!(TEMPLATE.contains("chainIcon") || TEMPLATE.contains("chain-ico"));
-        assert!(TEMPLATE.contains("Live operations"));
+        assert!(!TEMPLATE.contains("id=\"overview-ops\""));
+        assert!(!TEMPLATE.contains("Live operations"));
         assert!(TEMPLATE.contains("amount_in_human") || TEMPLATE.contains("token_in_symbol"));
         assert!(!TEMPLATE.contains("fonts.googleapis"));
         assert!(!TEMPLATE.contains("cdn.jsdelivr"));

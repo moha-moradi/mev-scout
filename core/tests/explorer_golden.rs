@@ -1,7 +1,8 @@
 //! Phase 6 golden-block end-to-end fixture.
 //!
-//! One synthetically-built block (one atomic-arb tx, one three-tx sandwich,
-//! one JIT Mint→Burn) runs the full realized-MEV path — `classify_block` →
+//! One synthetically-built block (one atomic-arb tx, one three-tx sandwich
+//! shape that must emit nothing, one JIT Mint→Burn) runs the full realized-MEV
+//! path — `classify_block` →
 //! `ExplorerStore::insert_block_facts` — and asserts the exact event kinds,
 //! profit token/amount, gas, and the persisted `mev_ops` rows with their
 //! canonical IDs. No external RPC required.
@@ -124,7 +125,8 @@ fn golden_input() -> BlockInput {
         vec![],
     );
 
-    // tx1–tx3 — classic three-EOA sandwich on POOL_S (USDC 6-dec raw units).
+    // tx1–tx3 — sandwich-shape negative fixture on POOL_S (USDC 6-dec raw
+    // units): no transfers, no closed cycle, so nothing is emitted.
     let front = tx_input(
         1,
         SAND,
@@ -212,12 +214,12 @@ fn golden_input() -> BlockInput {
 }
 
 #[test]
-fn golden_block_classifies_arb_sandwich_jit() {
+fn golden_block_classifies_arb_jit() {
     let events = classify_block(&golden_input());
-    // Exactly the three golden events — the sandwich front/back/victim txs
-    // carry no ledger transfers, so no parity-arb noise is emitted.
+    // Exactly the two golden events — the sandwich-shape front/back/victim
+    // txs carry no ledger transfers and no closed cycle, so they emit nothing.
     let kinds: Vec<MevKind> = events.iter().map(|e| e.kind).collect();
-    assert_eq!(events.len(), 3, "got {kinds:?}");
+    assert_eq!(events.len(), 2, "got {kinds:?}");
 
     let arb = events
         .iter()
@@ -230,25 +232,6 @@ fn golden_block_classifies_arb_sandwich_jit() {
     assert_eq!(
         arb.gas_cost_wei,
         U256::from(GAS_USED * (GAS_GWEI as u64) * 1_000_000_000)
-    );
-
-    let sandwich = events
-        .iter()
-        .find(|e| e.kind == MevKind::Sandwich)
-        .expect("golden sandwich missing");
-    assert_eq!(sandwich.searcher, SAND);
-    assert_eq!(sandwich.profit_token, Some(USDC));
-    // back-run out (195_000_000) − front-run in (100_000_000).
-    assert_eq!(sandwich.profit_amount, Some(U256::from(95_000_000)));
-    // A19: sandwich P&L is a gross amount diff (gross_amount_diff), not a
-    // ledger residual, so it no longer claims Exact.
-    assert_eq!(sandwich.confidence, Confidence::Inferred);
-    assert_eq!(sandwich.tx_index, 1, "sandwich anchors on the front-run tx");
-    assert_eq!(sandwich.victim_hashes, vec![B256::repeat_byte(2)]);
-    // front + back gas summed.
-    assert_eq!(
-        sandwich.gas_cost_wei,
-        U256::from(GAS_USED * (GAS_GWEI as u64) * 1_000_000_000 * 2)
     );
 
     let jit_ev = events
@@ -340,10 +323,10 @@ fn golden_block_persists_mev_ops_rows() {
             jit_journal: None,
         })
         .unwrap();
-    assert_eq!(n, 3);
+    assert_eq!(n, 2);
 
     let rows = store.ops_in_range(BLOCK, BLOCK, &[], None).unwrap();
-    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.len(), 2);
 
     let usdc_str = format!("{USDC:#x}");
     let row_by_kind = |kind: &str| {
@@ -364,22 +347,6 @@ fn golden_block_persists_mev_ops_rows() {
         .starts_with("ArbAtomic|"));
     assert!(arb.profit_usd.unwrap() > 0.0);
     assert!(arb.gas_cost_usd.unwrap() > 0.0);
-
-    let sandwich = row_by_kind("sandwich");
-    // A19: gross-amount-diff basis → inferred.
-    assert_eq!(sandwich.confidence, "inferred");
-    assert_eq!(sandwich.tx_index, Some(1));
-    assert_eq!(sandwich.profit_amount.as_deref(), Some("95000000"));
-    assert!(sandwich
-        .canonical_id
-        .as_deref()
-        .unwrap()
-        .starts_with("Sandwich|"));
-    assert!(
-        sandwich.net_profit_usd.unwrap() > 0.0,
-        "sandwich survives the profitability gate"
-    );
-    assert!(sandwich.victim_hashes.as_deref().unwrap().contains("0x02"));
 
     let jit = row_by_kind("jit");
     // A19: fee-estimate (F) basis → inferred.

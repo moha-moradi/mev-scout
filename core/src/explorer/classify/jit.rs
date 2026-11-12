@@ -1,4 +1,4 @@
-//! JIT / JitArb classify passes.
+//! JIT classify pass.
 use std::collections::HashMap;
 
 use alloy::primitives::{Address, B256, U256};
@@ -282,7 +282,7 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
 /// hashes are available in the same loop as decoding).
 pub(crate) fn stamp_jit_tx_hashes(events: &mut [MevEvent], tx_hashes: &HashMap<u64, B256>) {
     for ev in events.iter_mut() {
-        if matches!(ev.kind, MevKind::Jit | MevKind::JitArb) && ev.tx_hash == B256::ZERO {
+        if ev.kind == MevKind::Jit && ev.tx_hash == B256::ZERO {
             if let Some(h) = tx_hashes.get(&ev.tx_index) {
                 ev.tx_hash = *h;
             }

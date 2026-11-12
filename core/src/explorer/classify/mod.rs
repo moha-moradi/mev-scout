@@ -1,8 +1,7 @@
 //! Per-block realized-MEV classifier.
 //!
 //! Input: one settled block (header + ordered txs with receipts, tx senders)
-//! decoded into swap/transfer/liquidation/JIT facts. Output: `Vec<MevEvent>`
-//! plus sandwich bundles folded into events (victim hashes + leg details).
+//! decoded into swap/transfer/liquidation/JIT facts. Output: `Vec<MevEvent>`.
 //!
 //! Pass order (first match wins, disjoint):
 //! 1. Liquidation pass — exact event match on configured lending pools.
@@ -10,10 +9,8 @@
 //! 3. Swap attribution — per-tx per-address net token deltas.
 //! 4. Atomic arb pass — ≥2 swaps in one tx + closed cycle + positive net
 //!    delta of a single profit token.
-//! 5. Sandwich pass — same sender, same pool, opposite directions, with a
-//!    third-party swap between front-run and back-run (tx-index ordered).
-//! 6. JIT pass — V3 Mint+Burn same position same block; jit_arb when the
-//!    same tx also closed an arb cycle.
+//! 5. JIT pass — V3 Mint+Burn same position same block.
+//! 6. Backrun pass — causal harvest of a prior price move.
 //! 7. `Utility` covers exact-fingerprint operational executions (keeper,
 //!    airdrop claim-and-sell, ERC-4337 bundler). No residual-inference pass
 //!    exists; a future one gets its own kind, never this bucket.
@@ -44,14 +41,12 @@ mod legs;
 pub(crate) use jit::POOL_FEE_BPS;
 pub(crate) use legs::{CAUSAL_PRICE_MIN_PCT, CAUSAL_WINDOW_TXS};
 mod liquidation;
-mod sandwich;
 mod skim;
 
 use arb::classify_arbs;
-use causal::{classify_backruns, classify_frontruns};
+use causal::classify_backruns;
 use jit::classify_jit;
 use liquidation::{classify_liquidations, LiqBlockCtx};
-use sandwich::classify_sandwiches;
 use skim::classify_skims;
 
 pub(crate) use arb::flow_attributable;
@@ -190,8 +185,8 @@ impl IntoIterator for ClassifyOutput {
     }
 }
 
-/// Classify one block. Sandwich bundle details are folded into `details_json`
-/// per event. Dropped near-miss arb cycles land in [`ClassifyOutput::rejects`].
+/// Classify one block. Dropped near-miss arb cycles land in
+/// [`ClassifyOutput::rejects`].
 pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     let mut events: Vec<MevEvent> = Vec::new();
     let mut rejects: Vec<crate::explorer::RejectedCandidate> = Vec::new();
@@ -253,106 +248,51 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
 
     // ── 5b. JIT block-wide pairing ──────────────────────────────────────
     let mut jit_events = classify_jit(input, &mut drops);
-    // jit_arb when a JIT tx also produced an arb in this block. The standalone
-    // ArbAtomic is suppressed so USD/P&L never double-counts the same flow.
-    //
-
-    // ⚠️ LOAD-BEARING: this is a kind *upgrade*, not a standalone pass, and it is
-    // independent of the live detectors. The `Strategy::JitArb` variant and the
-    // `JitArbDetector` were removed from the execution path because that
-    // detector had no honest P&L model — but this branch must survive.
-    // Dropping either half corrupts
-    // every USD/P&L figure the explorer emits: keeping `JitArb` without the
-    // `retain` below double-counts the flow as `Jit` *and* `ArbAtomic`.
-    let arb_txs: std::collections::HashSet<u64> = events
+    // A JIT position and an arb cycle can share a transaction. Exactly one
+    // P&L-bearing kind may survive per tx so USD never double-counts the same
+    // flow; the ArbAtomic (ledger residual, Exact) wins and the overlapping
+    // JIT event is dropped. JIT-only positions are untouched.
+    let arb_txs: HashSet<u64> = events
         .iter()
         .filter(|e| e.kind == MevKind::ArbAtomic)
         .map(|e| e.tx_index)
         .collect();
-    let arb_by_tx: HashMap<u64, &MevEvent> = events
-        .iter()
-        .filter(|e| e.kind == MevKind::ArbAtomic)
-        .map(|e| (e.tx_index, e))
-        .collect();
-    let mut jit_arb_txs: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    for ev in jit_events.iter_mut() {
-        if arb_txs.contains(&ev.tx_index) {
-            ev.kind = MevKind::JitArb;
-            ev.details["components"] = serde_json::json!(["JIT", "Arb"]);
-            // Suppressing the standalone ArbAtomic must not erase the arb
-            // evidence: keep its ledger, route and pools here so the combined
-            // operation stays inspectable even though its profit is unknown.
-            if let Some(arb) = arb_by_tx.get(&ev.tx_index) {
-                ev.details["arb_evidence"] = serde_json::json!({
-                    "tx_hash": format!("{:#x}", arb.tx_hash),
-                    "pools": arb.pools.iter().map(|p| format!("{p:#x}")).collect::<Vec<_>>(),
-                    "profit_tokens": arb.profit_tokens.iter()
-                        .map(|(t, a)| serde_json::json!({"token": format!("{t:#x}"), "amount": a.to_string()}))
-                        .collect::<Vec<_>>(),
-                    "profit_usd": arb.profit_usd,
-                    "details": arb.details.clone(),
-                });
-                if ev.details.get("route").is_none() {
-                    if let Some(route) = arb.details.get("route") {
-                        ev.details["route"] = route.clone();
-                    }
-                }
-            }
-            jit_arb_txs.insert(ev.tx_index);
-        }
-    }
-    if !jit_arb_txs.is_empty() {
-        events.retain(|e| !(e.kind == MevKind::ArbAtomic && jit_arb_txs.contains(&e.tx_index)));
-    }
+    let component_txs = |ev: &MevEvent| -> Vec<u64> {
+        let opening = ev
+            .details
+            .get("opening_tx_index")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(ev.tx_index);
+        let closing = ev
+            .details
+            .get("burn_tx_index")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(ev.tx_index);
+        let mut v = vec![opening, closing];
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    jit_events.retain(|ev| !component_txs(ev).iter().any(|t| arb_txs.contains(t)));
     events.append(&mut jit_events);
 
-    // ── 4b. Sandwich classification: front-run → victim → back-run ─────
-    let mut sandwiches = classify_sandwiches(input, &mut drops);
-
-    // ── 3c. Causal backrun / frontrun ─────────────────────────
-    // Sandwich-consumed fronts/backs are excluded (kind priority): a sandwich
-    // anchors on its front-run tx and closes on the back-run tx; neither may
-    // be re-claimed as a standalone frontrun/backrun.
-    let mut consumed: HashSet<u64> = HashSet::new();
-    for s in &sandwiches {
-        consumed.insert(s.tx_index);
-        if let Some(b) = s.details.get("backrun_tx_index").and_then(|v| v.as_u64()) {
-            consumed.insert(b);
-        }
-    }
-    let mut frontruns = classify_frontruns(input, &consumed, &mut drops);
-    let frontrun_consumed: HashSet<u64> = frontruns.iter().map(|e| e.tx_index).collect();
-    let mut back_consumed = consumed;
-    back_consumed.extend(frontrun_consumed);
-    let mut backruns = classify_backruns(input, &back_consumed, &mut drops);
+    // ── 3c. Causal backrun ─────────────────────────────────────────────
+    let mut backruns = classify_backruns(input, &mut drops);
     // TxClaims is the authority for "one tx index, one P&L-bearing kind".
-    // Passes still over-emit; sandwich back-run txs and frontrun close txs
-    // are claimed even when the event itself is anchored on the other leg,
-    // so an ArbAtomic on that leg cannot survive. `consumed` above stays as
-    // an input prune. The Jit→JitArb upgrade above stays too: it is a kind
-    // change, not a second event.
+    // Passes still over-emit; a claimed tx index keeps only its highest-
+    // precedence kind.
     let mut claims = claims::TxClaims::default();
-    for ev in events
-        .iter()
-        .chain(frontruns.iter())
-        .chain(backruns.iter())
-        .chain(sandwiches.iter())
-    {
+    for ev in events.iter().chain(backruns.iter()) {
         claims.claim(ev.tx_index, ev.kind);
     }
-    for s in &sandwiches {
-        if let Some(b) = s.details.get("backrun_tx_index").and_then(|v| v.as_u64()) {
-            claims.claim(b, MevKind::Sandwich);
+    // A same-block JIT anchors on Mint; its Burn receipt is part of the same
+    // operation and must not survive as a separate P&L-bearing kind.
+    for e in events.iter().filter(|e| e.kind == MevKind::Jit) {
+        if let Some(burn) = e.details.get("burn_tx_index").and_then(|v| v.as_u64()) {
+            claims.claim(burn, e.kind);
         }
     }
-    for e in &frontruns {
-        if let Some(c) = e.details.get("close_tx_index").and_then(|v| v.as_u64()) {
-            claims.claim(c, MevKind::Frontrun);
-        }
-    }
-    events.append(&mut frontruns);
     events.append(&mut backruns);
-    events.append(&mut sandwiches);
     events.retain(|e| claims.is_claimed(e.tx_index) && claims.winner(e.tx_index) == Some(e.kind));
 
     events.sort_by(|a, b| {
@@ -395,23 +335,17 @@ pub(crate) fn normalize_confidence(events: &mut [MevEvent]) {
 
 /// Kind priority for [`claims::TxClaims`] (lower = higher priority).
 ///
-/// Sandwich > Frontrun > Backrun > JitArb > Liquidation > Jit > Skim >
-/// ArbAtomic > Utility. Encodes the A15 census decisions: the indexed
-/// corpus had zero co-labeled `(block, tx_index)` pairs, so demoting
-/// `ArbAtomic` under the three explicitly anchored kinds is a no-op on that
-/// data and must not move goldens. A real collision keeps the explicit
-/// anchor (liquidation / mint-burn / pair outflow) and drops the inferred cycle.
+/// Backrun > Liquidation > Jit > Skim > ArbAtomic > Utility. A real collision
+/// keeps the explicitly anchored kind (liquidation / mint-burn / pair outflow)
+/// and drops the inferred cycle.
 pub fn kind_precedence(k: MevKind) -> u8 {
     match k {
-        MevKind::Sandwich => 0,
-        MevKind::Frontrun => 1,
-        MevKind::Backrun => 2,
-        MevKind::JitArb => 3,
-        MevKind::Liquidation => 4,
-        MevKind::Jit => 5,
-        MevKind::Skim => 6,
-        MevKind::ArbAtomic => 7,
-        MevKind::Utility => 8,
+        MevKind::Backrun => 0,
+        MevKind::Liquidation => 1,
+        MevKind::Jit => 2,
+        MevKind::Skim => 3,
+        MevKind::ArbAtomic => 4,
+        MevKind::Utility => 5,
     }
 }
 
@@ -1308,7 +1242,7 @@ mod tests {
     const MARKET: Address = address!("8000000000000000000000000000000000000008");
 
     #[test]
-    fn causal_backrun_and_frontrun_cases() {
+    fn causal_backrun_cases() {
         // (include pre-move reference, mover, USDC sold into the move, expect a backrun)
         let backruns = [
             (
@@ -1401,70 +1335,6 @@ mod tests {
                 .any(|e| e.kind == MevKind::ArbAtomic && e.tx_index == back_idx));
             assert_eq!(ev.victim_hashes, vec![B256::repeat_byte(move_idx as u8)]);
         }
-
-        // Victim output on the same pool: 150 is degraded vs the front-run's
-        // 200; 200 is the same price and must not be a frontrun.
-        for (name, victim_out, expect) in [
-            ("cross-pool close after a degraded victim", 150u64, true),
-            ("no measurable degradation", 200, false),
-        ] {
-            let f = tx(
-                0,
-                ATK,
-                true,
-                vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-                vec![
-                    transfer(0, USDC, ATK, POOL_A, 100),
-                    transfer(1, TOKA, POOL_A, ATK, 200),
-                ],
-            );
-            let v = tx(
-                1,
-                VICTIM,
-                true,
-                vec![swap(POOL_A, USDC, TOKA, 100, victim_out)],
-                vec![
-                    transfer(0, USDC, VICTIM, POOL_A, 100),
-                    transfer(1, TOKA, POOL_A, VICTIM, victim_out),
-                ],
-            );
-            let c = tx(
-                2,
-                ATK,
-                true,
-                vec![swap(POOL_B, TOKA, USDC, 200, 250)],
-                vec![
-                    transfer(0, TOKA, ATK, POOL_B, 200),
-                    transfer(1, USDC, POOL_B, ATK, 250),
-                ],
-            );
-            let events = classify_block(&block(vec![f, v, c]));
-            let found = kinds(&events).contains(&MevKind::Frontrun);
-            assert_eq!(found, expect, "{name}");
-            if !expect {
-                continue;
-            }
-            let ev = event_of(&events, MevKind::Frontrun);
-            assert_eq!(ev.searcher, ATK);
-            assert_eq!(ev.confidence, Confidence::Inferred);
-            assert_eq!(ev.tx_index, 0);
-            assert_eq!(ev.profit_token, Some(USDC));
-            assert_eq!(ev.profit_amount, Some(U256::from(150)));
-            assert_eq!(ev.victim_hashes, vec![B256::repeat_byte(1)]);
-            let reasons: Vec<&str> = ev.details["reasons"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|x| x.as_str().unwrap())
-                .collect();
-            assert!(reasons.contains(&"STATE_DELTA_MATCH"));
-            assert!(reasons.contains(&"VICTIM_EXECUTION_DEGRADED"));
-            assert!(reasons.contains(&"PROFIT_VERIFIED"));
-            assert_eq!(ev.details["tier"], serde_json::json!("inferred"));
-            assert_eq!(ev.details["victim_tx_index"], serde_json::json!(1));
-            assert_eq!(ev.details["close_tx_index"], serde_json::json!(2));
-            assert!(!kinds(&events).contains(&MevKind::Sandwich));
-        }
     }
 
     #[test]
@@ -1513,179 +1383,6 @@ mod tests {
             kinds(&events).contains(&MevKind::Backrun),
             "same-token size gate should accept, got {events:?}"
         );
-    }
-
-    #[test]
-    fn frontrun_multi_hop_close_uses_anchor_ledger() {
-        const TOKB: Address = address!("700000000000000000000000000000000000000b");
-        const POOL_C: Address = address!("300000000000000000000000000000000000000c");
-        let f = tx(
-            0,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        let v = tx(
-            1,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 150)],
-            vec![
-                transfer(0, USDC, VICTIM, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, VICTIM, 150),
-            ],
-        );
-        let c = tx(
-            2,
-            ATK,
-            true,
-            vec![
-                swap(POOL_B, TOKA, TOKB, 200, 50),
-                swap(POOL_C, TOKB, USDC, 50, 160),
-            ],
-            vec![
-                transfer(0, TOKA, ATK, POOL_B, 200),
-                transfer(1, TOKB, POOL_B, ATK, 50),
-                transfer(2, TOKB, ATK, POOL_C, 50),
-                transfer(3, USDC, POOL_C, ATK, 160),
-            ],
-        );
-        let events = classify_block(&block(vec![f, v, c]));
-        let ev = event_of(&events, MevKind::Frontrun);
-        assert_eq!(ev.profit_token, Some(USDC));
-        assert_eq!(ev.profit_amount, Some(U256::from(60)));
-        assert!(!kinds(&events).contains(&MevKind::ArbAtomic));
-    }
-
-    #[test]
-    fn frontrun_material_inventory_spend_is_rejected() {
-        const TOKB: Address = address!("700000000000000000000000000000000000000b");
-        let f = tx(
-            0,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        let v = tx(
-            1,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 150)],
-            vec![
-                transfer(0, USDC, VICTIM, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, VICTIM, 150),
-            ],
-        );
-        // Close spends pre-existing TOKB (not produced by the front).
-        let c = tx(
-            2,
-            ATK,
-            true,
-            vec![swap(POOL_B, TOKB, USDC, 500, 250)],
-            vec![
-                transfer(0, TOKB, ATK, POOL_B, 500),
-                transfer(1, USDC, POOL_B, ATK, 250),
-            ],
-        );
-        let events = classify_block(&block(vec![f, v, c]));
-        assert!(
-            !kinds(&events).contains(&MevKind::Frontrun),
-            "material inventory spend must not be frontrun, got {events:?}"
-        );
-    }
-
-    #[test]
-    fn frontrun_records_close_tx_and_leaves_no_arb_on_close() {
-        let f = tx(
-            0,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        let v = tx(
-            1,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 150)],
-            vec![
-                transfer(0, USDC, VICTIM, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, VICTIM, 150),
-            ],
-        );
-        let c = tx(
-            2,
-            ATK,
-            true,
-            vec![swap(POOL_B, TOKA, USDC, 200, 250)],
-            vec![
-                transfer(0, TOKA, ATK, POOL_B, 200),
-                transfer(1, USDC, POOL_B, ATK, 250),
-            ],
-        );
-        let events = classify_block(&block(vec![f, v, c]));
-        let ev = event_of(&events, MevKind::Frontrun);
-        assert_eq!(ev.details["close_tx_index"], serde_json::json!(2));
-        assert_eq!(ev.profit_amount, Some(U256::from(150)));
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.kind == MevKind::ArbAtomic && e.tx_index == 2),
-            "close tx must not keep ArbAtomic, got {events:?}"
-        );
-    }
-
-    #[test]
-    fn sandwich_consumed_legs_not_reclaimed_by_phase3() {
-        // The classic three-EOA sandwich: front (tx0), victim (tx1), back
-        // (tx2) on one pool. Sandwich owns the anchors (kind priority); the
-        // causal passes must not re-emit frontrun/backrun over the same legs.
-        let t0 = tx(
-            0,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        let t1 = tx(
-            1,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 200, 350)],
-            vec![
-                transfer(0, USDC, VICTIM, POOL_A, 200),
-                transfer(1, TOKA, POOL_A, VICTIM, 350),
-            ],
-        );
-        let t2 = tx(
-            2,
-            ATK,
-            true,
-            vec![swap(POOL_A, TOKA, USDC, 350, 195)],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 350),
-                transfer(1, USDC, POOL_A, ATK, 195),
-            ],
-        );
-        let input = block(vec![t0, t1, t2]);
-        let kinds = kinds(&classify_block(&input));
-        assert!(kinds.contains(&MevKind::Sandwich));
-        assert!(!kinds.contains(&MevKind::Frontrun));
-        assert!(!kinds.contains(&MevKind::Backrun));
     }
 
     #[test]
@@ -1925,154 +1622,6 @@ mod tests {
     }
 
     #[test]
-    fn sandwich_contract_mediated_legs_tagged() {
-        let router = address!("9000000000000000000000000000000000000009");
-        let front = swap(POOL_A, USDC, TOKA, 100, 200);
-        let victim = swap(POOL_A, USDC, TOKA, 200, 350);
-        let back = swap(POOL_A, TOKA, USDC, 350, 195);
-        let mut t0 = tx(
-            0,
-            ATK,
-            true,
-            vec![front],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        t0.to = Some(router);
-        let t1 = tx(
-            1,
-            VICTIM,
-            true,
-            vec![victim],
-            vec![
-                transfer(0, USDC, VICTIM, POOL_A, 200),
-                transfer(1, TOKA, POOL_A, VICTIM, 350),
-            ],
-        );
-        let mut t2 = tx(
-            2,
-            ATK,
-            true,
-            vec![back],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 350),
-                transfer(1, USDC, POOL_A, ATK, 195),
-            ],
-        );
-        t2.to = Some(router);
-        let ev = classify_kind(&block(vec![t0, t1, t2]), MevKind::Sandwich);
-        assert_eq!(ev.contract, Some(router));
-        assert_eq!(
-            ev.details["evidence"]["contract_mediated"],
-            serde_json::json!(true)
-        );
-        let reasons: Vec<&str> = ev.details["reasons"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert!(reasons.contains(&"CONTRACT_MEDIATED"));
-    }
-
-    #[test]
-    fn plain_two_leg_exchange_is_not_sandwich() {
-        // Attacker buys then sells with no third-party victim in between:
-        // a normal round-trip, not a sandwich.
-        let t0 = tx(
-            0,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        let t1 = tx(
-            1,
-            ATK,
-            true,
-            vec![swap(POOL_A, TOKA, USDC, 200, 95)],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 200),
-                transfer(1, USDC, POOL_A, ATK, 95),
-            ],
-        );
-        let input = block(vec![t0, t1]);
-        assert!(!kinds(&classify_block(&input)).contains(&MevKind::Sandwich));
-    }
-
-    #[test]
-    fn victim_before_front_is_not_sandwich() {
-        // The victim swap precedes the attacker's front-run: the attacker did
-        // not open a position yet, so this is not a sandwich.
-        let t0 = tx(
-            0,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 200, 350)],
-            vec![
-                transfer(0, USDC, VICTIM, POOL_A, 200),
-                transfer(1, TOKA, POOL_A, VICTIM, 350),
-            ],
-        );
-        let t1 = tx(
-            1,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        let t2 = tx(
-            2,
-            ATK,
-            true,
-            vec![swap(POOL_A, TOKA, USDC, 200, 195)],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 200),
-                transfer(1, USDC, POOL_A, ATK, 195),
-            ],
-        );
-        let input = block(vec![t0, t1, t2]);
-        assert!(!kinds(&classify_block(&input)).contains(&MevKind::Sandwich));
-    }
-
-    #[test]
-    fn jit_arb_upgraded_when_mint_tx_also_arbs() {
-        // tx0 has a JIT mint AND an atomic-arb cycle.
-        let swaps = vec![
-            swap_at_tick(POOL_A, USDC, TOKA, 100, 200, 0),
-            swap(POOL_B, TOKA, USDC, 200, 110),
-        ];
-        let transfers = vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-            transfer(2, TOKA, ATK, POOL_B, 200),
-            transfer(3, USDC, POOL_B, ATK, 110),
-        ];
-        let mint = JitFact {
-            log_index: 9,
-            ..jit(0, true)
-        };
-        let burn = jit(1, false);
-        let mut t0 = tx(0, ATK, true, swaps, transfers);
-        t0.jit = vec![mint];
-        let mut t1 = tx(1, VICTIM, true, vec![], vec![]);
-        t1.jit = vec![burn];
-        let input = block(vec![t0, t1]);
-        let events = classify_block(&input);
-        assert!(kinds(&events).contains(&MevKind::JitArb));
-        let ev = event_of(&events, MevKind::JitArb);
-        assert_eq!(ev.tx_index, 0);
-    }
-
-    #[test]
     fn empty_block_yields_no_events() {
         let input = block(vec![tx(0, ATK, true, vec![], vec![])]);
         assert!(classify_block(&input).is_empty());
@@ -2259,54 +1808,52 @@ mod tests {
     fn pnl_kind(k: MevKind) -> bool {
         matches!(
             k,
-            MevKind::Sandwich
-                | MevKind::Frontrun
-                | MevKind::Backrun
-                | MevKind::ArbAtomic
-                | MevKind::JitArb
-                | MevKind::Jit
-                | MevKind::Liquidation
-                | MevKind::Skim
+            MevKind::Backrun | MevKind::ArbAtomic | MevKind::Jit | MevKind::Liquidation | MevKind::Skim
         )
     }
 
     #[test]
     fn pnl_kinds_at_most_one_per_tx_index() {
-        // Sandwich + arb + jit_arb fixtures: each tx_index may carry at most
-        // one P&L-bearing kind (Unknown tag-only fingerprints are exempt).
-        let sandwich = block(vec![
+        // A causal-backrun block and a JIT-with-arb block: each tx index may
+        // carry at most one P&L-bearing kind (tag-only Unknown is exempt).
+        let backrun = block(vec![
             tx(
                 0,
-                ATK,
+                VICTIM,
                 true,
-                vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+                vec![swap(POOL_A, TOKA, USDC, 100, 110)],
                 vec![
-                    transfer(0, USDC, ATK, POOL_A, 100),
-                    transfer(1, TOKA, POOL_A, ATK, 200),
+                    transfer(0, TOKA, VICTIM, POOL_A, 100),
+                    transfer(1, USDC, POOL_A, VICTIM, 110),
                 ],
             ),
             tx(
                 1,
-                VICTIM,
+                MARKET,
                 true,
-                vec![swap(POOL_A, USDC, TOKA, 200, 350)],
+                vec![swap(POOL_A, USDC, TOKA, 100, 100)],
                 vec![
-                    transfer(0, USDC, VICTIM, POOL_A, 200),
-                    transfer(1, TOKA, POOL_A, VICTIM, 350),
+                    transfer(0, USDC, MARKET, POOL_A, 100),
+                    transfer(1, TOKA, POOL_A, MARKET, 100),
                 ],
             ),
             tx(
                 2,
                 ATK,
                 true,
-                vec![swap(POOL_A, TOKA, USDC, 350, 195)],
                 vec![
-                    transfer(0, TOKA, ATK, POOL_A, 350),
-                    transfer(1, USDC, POOL_A, ATK, 195),
+                    swap(POOL_A, TOKA, USDC, 100, 120),
+                    swap(POOL_B, USDC, TOKA, 120, 130),
+                ],
+                vec![
+                    transfer(0, TOKA, ATK, POOL_A, 100),
+                    transfer(1, USDC, POOL_A, ATK, 120),
+                    transfer(2, USDC, ATK, POOL_B, 120),
+                    transfer(3, TOKA, POOL_B, ATK, 130),
                 ],
             ),
         ]);
-        let jit_arb = {
+        let jit_with_arb = {
             let swaps = vec![
                 swap_at_tick(POOL_A, USDC, TOKA, 100, 200, 0),
                 swap(POOL_B, TOKA, USDC, 200, 110),
@@ -2328,7 +1875,7 @@ mod tests {
             t1.jit = vec![burn];
             block(vec![t0, t1])
         };
-        for input in [&sandwich, &jit_arb] {
+        for input in [&backrun, &jit_with_arb] {
             let events = classify_block(input);
             let mut seen: HashSet<u64> = HashSet::new();
             for e in events.iter() {
@@ -2347,75 +1894,41 @@ mod tests {
                 );
             }
         }
-        assert_eq!(kind_precedence(MevKind::Sandwich), 0);
-        assert!(kind_precedence(MevKind::Sandwich) < kind_precedence(MevKind::Frontrun));
-        assert!(kind_precedence(MevKind::Frontrun) < kind_precedence(MevKind::Backrun));
-        assert!(kind_precedence(MevKind::Backrun) < kind_precedence(MevKind::ArbAtomic));
-        assert!(kind_precedence(MevKind::JitArb) < kind_precedence(MevKind::Jit));
+        assert_eq!(kind_precedence(MevKind::Backrun), 0);
+        assert!(kind_precedence(MevKind::Backrun) < kind_precedence(MevKind::Liquidation));
+        assert!(kind_precedence(MevKind::Liquidation) < kind_precedence(MevKind::Jit));
+        assert!(kind_precedence(MevKind::Jit) < kind_precedence(MevKind::Skim));
+        assert!(kind_precedence(MevKind::Skim) < kind_precedence(MevKind::ArbAtomic));
+        assert!(kind_precedence(MevKind::ArbAtomic) < kind_precedence(MevKind::Utility));
     }
 
+    /// A JIT position sharing a tx with an arb keeps the ArbAtomic and drops
+    /// the JIT event: one P&L-bearing kind per flow, no double count.
     #[test]
-    fn sandwich_front_supersedes_arb_on_same_tx() {
-        // tx0 is the sandwich front-run (TOKA→USDC on POOL_A) *and* closes a
-        // 2-pool cycle (USDC→TOKA on POOL_B), so the arb pass emits ArbAtomic
-        // on the same tx_index as the Sandwich anchor. Kind precedence
-        // (Sandwich > ArbAtomic) must drop the arb event: P&L is attributed
-        // once, to the Sandwich.
-        let t0 = tx(
-            0,
-            ATK,
-            true,
-            vec![
-                swap(POOL_A, TOKA, USDC, 200, 250),
-                swap(POOL_B, USDC, TOKA, 250, 260),
-            ],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 200),
-                transfer(1, USDC, POOL_A, ATK, 250),
-                transfer(2, USDC, ATK, POOL_B, 250),
-                transfer(3, TOKA, POOL_B, ATK, 260),
-            ],
-        );
-        let t1 = tx(
-            1,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, TOKA, USDC, 100, 110)],
-            vec![
-                transfer(0, TOKA, VICTIM, POOL_A, 100),
-                transfer(1, USDC, POOL_A, VICTIM, 110),
-            ],
-        );
-        let t2 = tx(
-            2,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 105)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 105),
-            ],
-        );
-        let events = classify_block(&block(vec![t0, t1, t2]));
-        assert!(
-            events
-                .iter()
-                .any(|e| e.kind == MevKind::Sandwich && e.tx_index == 0),
-            "fixture must produce the sandwich anchor on tx0, got {events:?}"
-        );
-
-        let mut by_tx: HashMap<u64, Vec<MevKind>> = HashMap::new();
-        for e in events.iter() {
-            by_tx.entry(e.tx_index).or_default().push(e.kind);
-        }
-        for (tx, kinds) in by_tx {
-            let has_sandwich = kinds.contains(&MevKind::Sandwich);
-            let has_arb = kinds.contains(&MevKind::ArbAtomic) || kinds.contains(&MevKind::Utility);
-            assert!(
-                !(has_sandwich && has_arb),
-                "tx {tx} carries both Sandwich and Arb/Unknown: {kinds:?}"
-            );
-        }
+    fn jit_sharing_a_tx_with_arb_keeps_only_the_arb() {
+        let swaps = vec![
+            swap_at_tick(POOL_A, USDC, TOKA, 100, 200, 0),
+            swap(POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+            transfer(2, TOKA, ATK, POOL_B, 200),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ];
+        let mint = JitFact {
+            log_index: 9,
+            ..jit(0, true)
+        };
+        let burn = jit(1, false);
+        let mut t0 = tx(0, ATK, true, swaps, transfers);
+        t0.jit = vec![mint];
+        let mut t1 = tx(1, VICTIM, true, vec![], vec![]);
+        t1.jit = vec![burn];
+        let events = classify_block(&block(vec![t0, t1]));
+        let ks = kinds(&events);
+        assert!(ks.contains(&MevKind::ArbAtomic), "got {ks:?}");
+        assert!(!ks.contains(&MevKind::Jit), "JIT must not double count: {ks:?}");
     }
 }
 
@@ -2522,7 +2035,7 @@ mod confidence_basis_tests {
 }
 
 /// A20: every candidate a classify pass drops must emit a `RejectedCandidate`
-/// whose reason carries the *decision*, so "0 frontrun / backrun / skim over
+/// whose reason carries the *decision*, so "0 backrun / skim over
 /// N blocks" is answerable from data instead of being a guess.
 ///
 /// One test per instrumented pass asserts the exact reason string (and the
@@ -2821,129 +2334,6 @@ mod a20_reject_reasons {
     }
 
     #[test]
-    fn frontrun_reports_empty_victim_set_and_unclosed_position() {
-        // A mover with no third-party same-direction swap after it: nothing was
-        // frontrun. Aggregate row (no anchor existed).
-        let mover = block(vec![tx(
-            0,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        )]);
-        let out = classify_block(&mover);
-        assert!(
-            has(
-                &out,
-                "victim_set_empty",
-                None,
-                "no_third_party_same_direction_leg"
-            ),
-            "an empty victim set must be recorded, got {:?}",
-            dump(&out)
-        );
-
-        // Degraded third-party victim (the anchor) but the position is never
-        // closed by the mover's sender: a frontrun-shaped candidate that fails
-        // the close gate.
-        let f = tx(
-            0,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        let v = tx(
-            1,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 150)],
-            vec![
-                transfer(0, USDC, VICTIM, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, VICTIM, 150),
-            ],
-        );
-        let out = classify_block(&block(vec![f, v]));
-        assert!(
-            has(&out, "cycle_not_closed", Some(0), "no_profitable_close_leg"),
-            "a victim-anchored frontrun with no close must say so, got {:?}",
-            dump(&out)
-        );
-    }
-
-    #[test]
-    fn sandwich_reports_its_leg_walk_rejections() {
-        // Attacker opens and closes on one pool with no third-party swap in
-        // between: a round trip, rejected because the victim set is empty.
-        let t0 = tx(
-            0,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        let t1 = tx(
-            1,
-            ATK,
-            true,
-            vec![swap(POOL_A, TOKA, USDC, 200, 95)],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 200),
-                transfer(1, USDC, POOL_A, ATK, 95),
-            ],
-        );
-        let out = classify_block(&block(vec![t0, t1]));
-        assert!(
-            has(
-                &out,
-                "victim_set_empty",
-                Some(0),
-                "closed_without_third_party_victim"
-            ),
-            "a front/back pair with no victim must be recorded, got {:?}",
-            dump(&out)
-        );
-
-        // Victims did pile up between the front and a same-direction attacker
-        // swap that never reverses: no back-run leg, so no sandwich.
-        let front = tx(
-            0,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        let victim = tx(
-            1,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 200, 380)],
-            vec![
-                transfer(0, USDC, VICTIM, POOL_A, 200),
-                transfer(1, TOKA, POOL_A, VICTIM, 380),
-            ],
-        );
-        let out = classify_block(&block(vec![front, victim]));
-        assert!(
-            has(&out, "cycle_not_closed", Some(0), "no_closing_back_run_leg"),
-            "an opened position that never reverses must be recorded, got {:?}",
-            dump(&out)
-        );
-    }
-
-    #[test]
     fn skim_reports_pool_set_rejections() {
         // An undecoded-pair outflow whose pool has V2 venue evidence (it emits
         // Sync) but is absent from the registry: the skim pass cannot look at
@@ -3079,7 +2469,6 @@ mod a20_reject_reasons {
             ("legs.rs", include_str!("legs.rs")),
             ("causal.rs", include_str!("causal.rs")),
             ("skim.rs", include_str!("skim.rs")),
-            ("sandwich.rs", include_str!("sandwich.rs")),
             ("jit.rs", include_str!("jit.rs")),
             ("liquidation.rs", include_str!("liquidation.rs")),
             ("mod.rs", include_str!("mod.rs")),

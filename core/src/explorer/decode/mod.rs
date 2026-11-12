@@ -29,7 +29,7 @@ mod transfer;
 #[cfg(test)]
 mod tests;
 
-pub use aggregator::{brand_for_router, decode_aggregator_signal, dedup_aggregator_facts};
+pub use aggregator::{decode_aggregator_signal, dedup_aggregator_facts};
 // Topic pins are consumed by `chain::events` tests and decode unit tests.
 #[allow(unused_imports)]
 pub use aggregator::{

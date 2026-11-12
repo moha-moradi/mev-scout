@@ -41,16 +41,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sandwich_beats_arb_regardless_of_claim_order() {
+    fn backrun_beats_arb_regardless_of_claim_order() {
         let mut a = TxClaims::default();
-        assert!(a.claim(1, MevKind::Sandwich));
+        assert!(a.claim(1, MevKind::Backrun));
         assert!(!a.claim(1, MevKind::ArbAtomic));
-        assert_eq!(a.winner(1), Some(MevKind::Sandwich));
+        assert_eq!(a.winner(1), Some(MevKind::Backrun));
 
         let mut b = TxClaims::default();
         assert!(b.claim(1, MevKind::ArbAtomic));
-        assert!(b.claim(1, MevKind::Sandwich));
-        assert_eq!(b.winner(1), Some(MevKind::Sandwich));
+        assert!(b.claim(1, MevKind::Backrun));
+        assert_eq!(b.winner(1), Some(MevKind::Backrun));
     }
 
     #[test]
@@ -64,18 +64,5 @@ mod tests {
             );
             assert_eq!(claims.winner(4), Some(kind));
         }
-    }
-
-    /// JitArb is an upgrade of Jit on a tx that also closed a cycle. The arb
-    /// must not win that three-way, or the flow is counted twice.
-    #[test]
-    fn jit_arb_upgrade_beats_jit_and_arb() {
-        let mut claims = TxClaims::default();
-        claims.claim(2, MevKind::Jit);
-        claims.claim(2, MevKind::ArbAtomic);
-        assert!(claims.claim(2, MevKind::JitArb));
-        assert_eq!(claims.winner(2), Some(MevKind::JitArb));
-        assert!(claims.is_claimed(2));
-        assert!(!claims.is_claimed(9));
     }
 }

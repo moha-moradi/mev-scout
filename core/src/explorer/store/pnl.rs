@@ -59,9 +59,10 @@ pub struct PersistedOp {
 }
 
 /// Apply every persist-time business rule for one event and return the row to
-/// bind: PnL annotation (liquidation or residual pricing), the A10 sandwich
-/// loss gate, volume, flash-fee conversion, native-residual pricing (A16) and
-/// the A19 `pnl_basis`/confidence handling.
+/// bind: PnL annotation (liquidation or residual pricing), volume, flash-fee
+/// conversion, native-residual pricing (A16) and the A19 `pnl_basis`/confidence
+/// handling. The `excluded_from_net` column is always 0 now (the A10 sandwich
+/// loss gate retired with the strategy); the column stays for schema stability.
 ///
 /// Pure: the caller supplies the block-level price inputs, the event's
 /// precomputed volume and whether any of its legs were unpriced (one swap scan
@@ -84,7 +85,7 @@ pub fn annotate_event_with_volume(
     // Settled V3 JIT reaches profit only through its reconciled valuation; the
     // classifier's old in-range fee estimate is never a profit basis. Missing
     // pricing leaves the totals NULL instead of a zero.
-    let jit_accounting = matches!(ev.kind, MevKind::Jit | MevKind::JitArb)
+    let jit_accounting = (ev.kind == MevKind::Jit)
         .then(|| crate::explorer::jit_accounting::JitAccounting::from_details(&ev.details))
         .flatten();
     let profit_usd = if let Some(accounting) = &jit_accounting {
@@ -264,17 +265,9 @@ pub fn annotate_event_with_volume(
         (Some(g), Some(gg)) => Some(g - gg - fee_for_net),
         _ => None,
     };
-    // Sandwich profitability gate: a sandwich whose extractable profit does
-    // not cover combined front+back gas (plus the flash-loan fee, unless the
-    // classifier already netted it into the ledger) is not a realized-MEV op
-    // worth netting — but it is persisted anyway with `excluded_from_net = 1`
-    // so the forensics stay queryable and op counts stay truthful; every *net*
-    // aggregation skips the row. Gross, volume and fee sums still include it:
-    // the extraction really happened, only the provable loss is hidden from
-    // net sums. Unowned-net (missing price) events are kept unflagged — the
-    // gate never guesses.
-    let excluded_from_net =
-        (ev.kind == MevKind::Sandwich && matches!(net, Some(n) if n <= 0.0)) as i64;
+    // No kind is loss-gated at persist any more: the sandwich gate retired
+    // with the strategy. The column stays (schema stability) and is always 0.
+    let excluded_from_net: i64 = 0;
     // Volume is the sum of *priced* legs only. When any leg had no quote the
     // reported volume is a floor, not the real notional, so say so instead of
     // silently folding unpriced legs in as zero (mirrors A9's fee mechanism).
@@ -815,50 +808,6 @@ mod tests {
             .contains("VOLUME_PARTIAL"));
     }
 
-    /// A10: the sandwich gate flags — never drops — a sandwich whose net is
-    /// known and non-positive. Positive-net sandwiches, other kinds, and
-    /// sandwiches whose net could not be priced stay unflagged (the gate never
-    /// guesses).
-    #[test]
-    fn sandwich_loss_gate_flags_only_known_non_positive_net() {
-        let tok = address!("4444000000000000000000000000000000000004");
-        let mut prices = HashMap::new();
-        prices.insert(tok, token_usd(0.5, 6));
-
-        // Zero extractable profit cannot cover the gas: net < 0.
-        let mut lossy = sample_event(120);
-        lossy.kind = MevKind::Sandwich;
-        lossy.profit_amount = Some(U256::ZERO);
-
-        let mut winner = sample_event(121);
-        winner.kind = MevKind::Sandwich;
-
-        let mut other_kind = sample_event(122);
-        other_kind.profit_amount = Some(U256::ZERO);
-
-        // No profit figure at all: net is None, so the gate cannot judge.
-        let mut unpriced = sample_event(123);
-        unpriced.kind = MevKind::Sandwich;
-        unpriced.profit_token = None;
-        unpriced.profit_amount = None;
-
-        let op = annotate_event(&lossy, &[], &prices, Some(0.75), 0);
-        assert!(op.net_profit_usd.expect("net is priced") < 0.0);
-        assert_eq!(op.excluded_from_net, 1);
-
-        let op = annotate_event(&winner, &[], &prices, Some(0.75), 0);
-        assert!(op.net_profit_usd.expect("net is priced") > 0.0);
-        assert_eq!(op.excluded_from_net, 0);
-
-        let op = annotate_event(&other_kind, &[], &prices, Some(0.75), 0);
-        assert!(op.net_profit_usd.expect("net is priced") < 0.0);
-        assert_eq!(op.excluded_from_net, 0, "only sandwiches are loss-gated");
-
-        let op = annotate_event(&unpriced, &[], &prices, Some(0.75), 0);
-        assert!(op.net_profit_usd.is_none());
-        assert_eq!(op.excluded_from_net, 0, "the gate never guesses");
-    }
-
     /// A13/A14: a non-zero flash fee is converted only with a usable quote. An
     /// unmeasurable fee stays NULL and is flagged — unless the ledger already
     /// absorbed it, in which case flagging would claim a gap that does not
@@ -951,7 +900,7 @@ mod tests {
 
         let mut gross = sample_event(600);
         gross.confidence = Confidence::Inferred;
-        gross.details["pnl_basis"] = serde_json::json!("gross_amount_diff");
+        gross.details["pnl_basis"] = serde_json::json!("F");
 
         let mut ledger = sample_event(601);
         ledger.details["pnl_basis"] = serde_json::json!("R");
@@ -962,7 +911,7 @@ mod tests {
             .details_json
             .as_deref()
             .unwrap_or("")
-            .contains("\"pnl_basis\":\"gross_amount_diff\""));
+            .contains("\"pnl_basis\":\"F\""));
 
         let ledger_op = annotate_event(&ledger, &[], &prices, Some(0.75), 0);
         assert_eq!(ledger_op.confidence, "exact");

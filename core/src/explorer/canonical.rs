@@ -6,8 +6,6 @@
 //! builds the realized-side counterpart from the *observed* flow facts:
 //! - arb: kind + sorted pool set + endpoint tokens (route direction varies
 //!   between searchers and simulation, so the pool *set* is canonical, not order)
-//! - sandwich: kind + pool + victim/backrun tx indices (matches the
-//!   opportunity-side `Sandwich|pool|victim::N|backrun::M` form)
 //! - liquidation: borrower+liquidator pair rather than asset pair
 //! - jit: pool + tick range
 //!
@@ -21,21 +19,6 @@ use crate::explorer::types::{MevEvent, MevKind};
 /// Compute the explorer-side canonical ID for a classified realized op.
 pub fn explorer_canonical_id(ev: &MevEvent) -> String {
     match ev.kind {
-        MevKind::Sandwich => {
-            format!(
-                "Sandwich|{:#x}|victim:{:?}|backrun:{:?}",
-                first_pool(&ev.pools),
-                ev.victim_hashes.len(),
-                detail_or_null(ev, "backrun_tx_index")
-            )
-        }
-        MevKind::Frontrun => {
-            format!(
-                "Frontrun|{:#x}|victim_tx:{}",
-                first_pool(&ev.pools),
-                detail_or_null(ev, "victim_tx_index")
-            )
-        }
         MevKind::Backrun => {
             format!(
                 "Backrun|{:#x}|source_tx:{}",
@@ -54,7 +37,7 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
                 ev.searcher,
             )
         }
-        MevKind::Jit | MevKind::JitArb => {
+        MevKind::Jit => {
             let (lo, hi) = (
                 ev.details
                     .get("tick_lower")
@@ -84,8 +67,23 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
                 .and_then(|v| v.as_u64())
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| "-".into());
+            // Receipt-local log indices repeat across transactions in one
+            // block. Include the opening transaction identity when known so a
+            // reopen in another transaction cannot collide.
+            let opening_tx = ev
+                .details
+                .get("opening_tx_hash")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or_else(|| {
+                    ev.details
+                        .get("opening_tx_index")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| format!("tx:{n}"))
+                })
+                .unwrap_or_else(|| "-".into());
             format!(
-                "Jit|{:#x}|{:#x}|{}|{}|open:{opening}:{opening_log}",
+                "Jit|{:#x}|{:#x}|{}|{}|open:{opening}:{opening_log}:{opening_tx}",
                 first_pool(&ev.pools),
                 owner,
                 lo,
@@ -160,13 +158,22 @@ mod tests {
     }
 
     #[test]
-    fn sandwich_canonical_matches_opportunity_shape() {
+    fn jit_identity_separates_same_log_positions_in_different_txs() {
         let pool = address!("3000000000000000000000000000000000000000");
-        let e = ev(MevKind::Sandwich, vec![pool]);
-        let id = explorer_canonical_id(&e);
-        assert_eq!(
-            id,
-            "Sandwich|0x3000000000000000000000000000000000000000|victim:0|backrun:Null"
-        );
+        let owner = address!("4000000000000000000000000000000000000000");
+        let make = |opening_tx: u64| {
+            let mut e = ev(MevKind::Jit, vec![pool]);
+            e.details = serde_json::json!({
+                "owner": format!("{owner:#x}"),
+                "tick_lower": -10,
+                "tick_upper": 10,
+                "opened_block": 5,
+                "opening_log_index": 2,
+                "opening_tx_index": opening_tx,
+            });
+            explorer_canonical_id(&e)
+        };
+        assert_eq!(make(3), make(3));
+        assert_ne!(make(3), make(4), "receipt-local log index alone collides");
     }
 }

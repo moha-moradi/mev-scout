@@ -1,8 +1,7 @@
 //! Core data contracts for the realized-MEV explorer.
 //!
 //! `MevEvent` is one classified operation anchored to a single transaction
-//! (arb, liquidation, JIT, unknown); `MevBundle` groups multi-transaction
-//! operations (sandwich front-run + victim(s) + back-run).
+//! (arb, liquidation, JIT, backrun, skim, utility).
 use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
@@ -11,19 +10,12 @@ use serde::{Deserialize, Serialize};
 pub enum MevKind {
     /// Single tx whose token-flow graph closes a cycle ending in the start token.
     ArbAtomic,
-    /// Same sender opens + closes a position around a victim swap on one pool.
-    Sandwich,
-    /// Searcher swap(s) execute before a victim swap they profit from (chain
-    /// reordering / mempool awareness), recorded per pool + victim anchor.
-    Frontrun,
     /// Searcher swap(s) execute after a prior tx whose price move they harvest.
     Backrun,
     /// Known liquidation event on a configured lending pool.
     Liquidation,
     /// Concentrated-liquidity Mint+Burn around swaps in one block (fee capture).
     Jit,
-    /// JIT combined with a same-tx/block arb.
-    JitArb,
     /// UniV2-style `skim`: pair outbound Transfers with no Swap/Mint/Burn/Sync.
     Skim,
     /// Exact-fingerprint operational execution: keeper, airdrop claim-and-sell,
@@ -35,11 +27,8 @@ impl MevKind {
     /// Every emittable kind, in canonical order. Single source of truth for
     /// coverage tests and CLI error messages.
     pub const ALL: &[MevKind] = &[
-        MevKind::Sandwich,
-        MevKind::Frontrun,
         MevKind::Backrun,
         MevKind::ArbAtomic,
-        MevKind::JitArb,
         MevKind::Jit,
         MevKind::Liquidation,
         MevKind::Skim,
@@ -49,26 +38,23 @@ impl MevKind {
     pub fn as_str(self) -> &'static str {
         match self {
             MevKind::ArbAtomic => "arb_atomic",
-            MevKind::Sandwich => "sandwich",
-            MevKind::Frontrun => "frontrun",
             MevKind::Backrun => "backrun",
             MevKind::Liquidation => "liquidation",
             MevKind::Jit => "jit",
-            MevKind::JitArb => "jit_arb",
             MevKind::Skim => "skim",
             MevKind::Utility => "utility",
         }
     }
 
+    /// Parse a stored kind label. Retired labels (`sandwich`, `frontrun`,
+    /// `jit_arb`) resolve to `None`: rows written before the removal keep their
+    /// own string and are read verbatim, never re-labelled.
     pub fn parse(s: &str) -> Option<MevKind> {
         match s {
             "arb_atomic" => Some(MevKind::ArbAtomic),
-            "sandwich" => Some(MevKind::Sandwich),
-            "frontrun" => Some(MevKind::Frontrun),
             "backrun" => Some(MevKind::Backrun),
             "liquidation" => Some(MevKind::Liquidation),
             "jit" => Some(MevKind::Jit),
-            "jit_arb" => Some(MevKind::JitArb),
             "skim" => Some(MevKind::Skim),
             // `unknown` is the pre-B11 label. Rows are rewritten to `utility`
             // on open; the alias keeps old CLI flags and corpus strings valid.
@@ -157,8 +143,7 @@ impl std::str::FromStr for Confidence {
 pub struct MevEvent {
     pub block: u64,
     pub ts: u64,
-    /// Anchor transaction index. For sandwiches this is the front-run index
-    /// (bundle anchor); full leg indices live in `MevBundle`/details.
+    /// Anchor transaction index of the operation.
     pub tx_index: u64,
     pub tx_hash: B256,
     pub kind: MevKind,
@@ -185,9 +170,9 @@ pub struct MevEvent {
     /// Token the flash-loan fee is denominated in (units of `flashloan_fee_wei`).
     pub flashloan_fee_token: Option<Address>,
     pub confidence: Confidence,
-    /// Victim tx hashes (sandwiches).
+    /// Victim tx hashes (causal backrun).
     pub victim_hashes: Vec<B256>,
-    /// Victim swap size in the pool's traded token (sandwiches), raw units.
+    /// Victim swap size in the pool's traded token (causal backrun), raw units.
     pub victim_swap_size: Option<U256>,
     /// Kind-specific structured details (liq assets, JIT tick range, notes).
     pub details: serde_json::Value,
@@ -229,61 +214,6 @@ impl MevEvent {
             details: serde_json::json!({}),
         }
     }
-}
-
-/// A multi-transaction realized operation (sandwich bundle).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MevBundle {
-    pub kind: MevKind,
-    pub attacker: Address,
-    /// (tx_index, tx_hash, role) legs in block order.
-    pub legs: Vec<BundleLeg>,
-}
-
-/// Role of a leg inside a sandwich / causal bundle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BundleLegRole {
-    FrontRun,
-    Victim,
-    BackRun,
-}
-
-impl BundleLegRole {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::FrontRun => "front_run",
-            Self::Victim => "victim",
-            Self::BackRun => "back_run",
-        }
-    }
-}
-
-impl std::fmt::Display for BundleLegRole {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl std::str::FromStr for BundleLegRole {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "front_run" => Ok(Self::FrontRun),
-            "victim" => Ok(Self::Victim),
-            "back_run" => Ok(Self::BackRun),
-            other => Err(format!("unknown bundle leg role '{other}'")),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BundleLeg {
-    pub tx_index: u64,
-    pub tx_hash: B256,
-    pub role: BundleLegRole,
-    pub pool: Address,
 }
 
 /// Typed liquidation economics used at persist time (avoids stringly JSON digs).
@@ -354,7 +284,7 @@ pub enum Amm {
 }
 
 /// Side-channel aggregator intent (survives swap-edge dedup; never enters
-/// arb cycle walks or sandwich `SwapLeg`s).
+/// arb cycle walks or causal `SwapLeg`s).
 #[derive(Debug, Clone)]
 pub struct AggregatorSignal {
     pub brand: &'static str,
@@ -495,15 +425,12 @@ pub struct BuyCollateralFact {
 /// Stored on every classified instance as `details.pnl_basis`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PnlBasis {
-    /// Realized in-tx net token deltas (arb, sandwich, skim, flash-arb).
+    /// Realized in-tx net token deltas (arb, skim, flash-arb).
     R,
     /// Oracle-valued (liquidations, auction takes, discount captures).
     O,
     /// Explicit fee/reward event fields (keeper, flash premium, JIT tip).
     F,
-    /// Gross amount difference not netted through the ledger (sandwich
-    /// `back.amount_out − front.amount_in`): never `Exact`.
-    GrossAmountDiff,
     /// The tx's own gas cost booked as "profit" (ERC-4337 bundler path):
     /// never `Exact`.
     GasCostAsProfit,
@@ -515,7 +442,6 @@ impl PnlBasis {
             PnlBasis::R => "R",
             PnlBasis::O => "O",
             PnlBasis::F => "F",
-            PnlBasis::GrossAmountDiff => "gross_amount_diff",
             PnlBasis::GasCostAsProfit => "gas_cost_as_profit",
         }
     }
@@ -675,12 +601,7 @@ mod kind_contract_tests {
     #[test]
     fn only_the_ledger_residual_basis_is_exact_capable() {
         assert!(PnlBasis::R.is_ledger_residual());
-        for basis in [
-            PnlBasis::O,
-            PnlBasis::F,
-            PnlBasis::GrossAmountDiff,
-            PnlBasis::GasCostAsProfit,
-        ] {
+        for basis in [PnlBasis::O, PnlBasis::F, PnlBasis::GasCostAsProfit] {
             assert!(!basis.is_ledger_residual(), "{:?}", basis);
         }
     }

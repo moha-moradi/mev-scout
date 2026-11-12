@@ -60,12 +60,11 @@ pub(super) fn classify_atomic_arbs(
         // leg is *absent* from the Transfer stream (provider callback internal
         // repayments); when the repay Transfer to the provider is present the
         // ledger already nets it, so subtracting again would erase real profit.
-        let mut flashloan_fee_wei: Option<U256> = None;
-        let mut flashloan_fee_token: Option<Address> = None;
-        // Largest fee among loans the ledger actually netted. The event's
-        // recorded fee is the max across *all* loans, so only an equal value
-        // proves the recorded fee is already inside the residual.
-        let mut max_netted_fee: Option<U256> = None;
+        let mut fees: Vec<(Address, U256)> = Vec::new();
+        // Fees the ledger netted itself (repay leg absent). Repaid transfers
+        // are already subtracted by the ledger; this set only decides whether
+        // the recorded total can be marked as already netted.
+        let mut netted_fee_total: Option<(Address, U256)> = None;
         for fl in &tx.flashloans {
             if fl.token.is_zero() || fl.amount.is_zero() {
                 continue;
@@ -100,15 +99,39 @@ pub(super) fn classify_atomic_arbs(
                     fl.recipient
                 };
                 net_flash_loan(&mut ledger, owner, fl.token, fl.amount, fee);
-                if !fee.is_zero() && max_netted_fee.is_none_or(|f| fee > f) {
-                    max_netted_fee = Some(fee);
+                if !fee.is_zero() {
+                    netted_fee_total = match netted_fee_total {
+                        None => Some((fl.token, fee)),
+                        Some((token, sum)) if token == fl.token => {
+                            sum.checked_add(fee).map(|n| (token, n))
+                        }
+                        Some(_) => None,
+                    };
                 }
             }
-            if !fee.is_zero() && flashloan_fee_wei.is_none_or(|f| fee > f) {
-                flashloan_fee_wei = Some(fee);
-                flashloan_fee_token = Some(fl.token);
+            if !fee.is_zero() {
+                fees.push((fl.token, fee));
             }
         }
+        // One fee token and a finite sum can be recorded as the complete
+        // financing cost. Mixed tokens or overflow stay explicitly unknown;
+        // the dashboard then refuses to put the operation in the ROI cohort.
+        let fee_complete = fees
+            .first()
+            .map(|(token, _)| fees.iter().all(|(t, _)| t == token))
+            .unwrap_or(true);
+        let (flashloan_fee_wei, flashloan_fee_token) = if fee_complete {
+            let token = fees.first().map(|(t, _)| *t);
+            let total = fees
+                .iter()
+                .try_fold(U256::ZERO, |acc, (_, fee)| acc.checked_add(*fee));
+            match (token, total) {
+                (Some(t), Some(total)) if !total.is_zero() => (Some(total), Some(t)),
+                _ => (None, None),
+            }
+        } else {
+            (None, None)
+        };
 
         // Participant scope: sender + receiver-side contracts (searcher
         // attribution: "EOA sender (or its deployed contract)") + addresses
@@ -352,10 +375,23 @@ pub(super) fn classify_atomic_arbs(
         if tags.contains(&"savax_rate_arb") {
             details["tag_modes"] = serde_json::json!({ "savax_rate_arb": "exact" });
         }
-        // The recorded fee is already inside the residual iff its loan was
-        // netted above (repay leg absent). Persist must not subtract it again.
-        if flashloan_fee_wei.is_some() && flashloan_fee_wei == max_netted_fee {
-            details["flashloan_fee_netted_in_ledger"] = serde_json::json!(true);
+        details["flashloan_fee_complete"] = serde_json::json!(fee_complete);
+        if !fee_complete {
+            details["flashloan_fees"] = serde_json::json!(fees
+                .iter()
+                .map(|(t, f)| serde_json::json!({
+                    "token": format!("{t:#x}"),
+                    "fee_wei": f.to_string(),
+                }))
+                .collect::<Vec<_>>());
+        }
+        // The recorded fee is already inside the residual only when every
+        // nonzero fee was netted by the ledger. Persist must not subtract it
+        // again in that case.
+        if let (Some(total), Some((token, netted))) = (flashloan_fee_wei, netted_fee_total) {
+            if flashloan_fee_token == Some(token) && total == netted {
+                details["flashloan_fee_netted_in_ledger"] = serde_json::json!(true);
+            }
         }
         if let Some(from_addr) = forwarded_from {
             details["forwarded_from"] = serde_json::json!(format!("{from_addr:#x}"));
@@ -1309,6 +1345,71 @@ mod repay_tests {
             arb.and_then(|e| e.profit_amount),
             Some(U256::from(200u64)),
             "principal must not be netted twice; residual is +200"
+        );
+    }
+
+    /// Two netted loans in the same token must record their sum, not just the
+    /// larger fee. Both principals/fees are already inside the ledger residual.
+    #[test]
+    fn multiple_flash_fees_are_summed_when_complete() {
+        let mut t = tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 1000, 1100),
+                swap(POOL_B, TOKA, USDC, 1100, 1200),
+            ],
+            vec![
+                transfer(0, USDC, PROVIDER, ATK, 500),
+                transfer(1, USDC, PROVIDER, ATK, 500),
+                transfer(2, USDC, ATK, POOL_A, 1000),
+                transfer(3, TOKA, POOL_A, ATK, 1100),
+                transfer(4, TOKA, ATK, POOL_B, 1100),
+                transfer(5, USDC, POOL_B, ATK, 1200),
+            ],
+        );
+        t.flashloans.push(FlashLoanFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "aave_v3",
+            initiator: ATK,
+            token: USDC,
+            amount: U256::from(500u64),
+            fee: Some(U256::from(5u64)),
+            recipient: ATK,
+            provider: PROVIDER,
+        });
+        t.flashloans.push(FlashLoanFact {
+            tx_index: 0,
+            log_index: 1,
+            protocol: "aave_v3",
+            initiator: ATK,
+            token: USDC,
+            amount: U256::from(500u64),
+            fee: Some(U256::from(7u64)),
+            recipient: ATK,
+            provider: PROVIDER,
+        });
+        let out = classify_block(&block(vec![t]));
+        let arb = out
+            .events
+            .iter()
+            .find(|e| e.kind == MevKind::ArbAtomic)
+            .expect("arb present");
+        assert_eq!(arb.flashloan_fee_wei, Some(U256::from(12u64)));
+        assert_eq!(arb.flashloan_fee_token, Some(USDC));
+        assert_eq!(
+            arb.details
+                .get("flashloan_fee_complete")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            arb.details
+                .get("flashloan_fee_netted_in_ledger")
+                .and_then(|v| v.as_bool()),
+            Some(true)
         );
     }
 

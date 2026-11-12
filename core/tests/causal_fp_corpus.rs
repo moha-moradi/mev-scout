@@ -1,10 +1,10 @@
-//! Phase 4 offline FP check for the causal (backrun / frontrun) passes.
+//! Phase 4 offline FP check for the causal (backrun) pass.
 //!
 //! The explorer seed cache (`cache/explorer-avalanche.sqlite`) is a fixed,
 //! hand-hunted set of real Avalanche blocks (Phase 3 re-hunt 2026-10-24: 0
-//! `frontrun`/`backrun`/`skim` ops in both the 95681722..=95682322 and
+//! `backrun`/`skim` ops in both the 95681722..=95682322 and
 //! 98415954..=98416254 windows). Ground truth for this data: **zero real
-//! causal ops**. Therefore every `Backrun`/`Frontrun` claim the *current*
+//! causal ops**. Therefore every `Backrun` claim the *current
 //! causal classifier emits on it is, by construction, a false positive.
 //!
 //! This test reconstructs each swap-dense block (>= 2 swaps — the minimum a
@@ -382,7 +382,7 @@ fn causal_classifier_offline_fp_gate() {
         let input = block_input(*block, &blocks[block]);
         let classified = classify_block(&input);
         for e in &classified.events {
-            if matches!(e.kind, MevKind::Backrun | MevKind::Frontrun) {
+            if e.kind == MevKind::Backrun {
                 fp_events.push((*block, e.tx_index, e.kind, e.searcher));
             }
         }
@@ -391,7 +391,7 @@ fn causal_classifier_offline_fp_gate() {
     let fp_count = fp_events.len();
     eprintln!(
         "causal_fp_corpus: {} blocks total, {} swap-dense (>= {} swaps), \
-         {} causal claims (Backrun/Frontrun)",
+         {} causal claims (Backrun)",
         blocks.len(),
         dense.len(),
         MIN_SWAPS_PER_BLOCK,
@@ -403,7 +403,7 @@ fn causal_classifier_offline_fp_gate() {
 
     assert_eq!(
         fp_count, CAUSAL_FP_GATE,
-        "causal FP gate: observed {fp_count} Backrun/Frontrun claims on zero-real-op \
+        "causal FP gate: observed {fp_count} Backrun claims on zero-real-op \
          seed data; gate = {CAUSAL_FP_GATE}"
     );
 }

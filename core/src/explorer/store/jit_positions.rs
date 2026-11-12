@@ -22,33 +22,42 @@ impl ExplorerStore {
     /// hold `0.0` rows written before writes were guarded, so such a row is
     /// treated as missing and callers re-fetch.
     pub fn price_at(&self, token: Address, hour: u64) -> anyhow::Result<Option<(f64, String)>> {
+        Ok(self
+            .price_quote_at(token, hour)?
+            .map(|(usd, source, _)| (usd, source)))
+    }
+
+    /// Exact-hour quote, then the newest usable quote at or before `hour`
+    /// within 24h. Never reads a future observation: that would let a later
+    /// price rewrite a historical cashflow. Returns the observed hour too.
+    pub fn price_quote_at(
+        &self,
+        token: Address,
+        hour: u64,
+    ) -> anyhow::Result<Option<(f64, String, u64)>> {
         let tok = format!("{:#x}", token);
-        let exact: Option<(f64, String)> = self
-            .conn
-            .query_row(
-                "SELECT usd, source FROM prices WHERE token = ?1 AND hour = ?2",
-                rusqlite::params![tok, hour as i64],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .map(Some)
-            .unwrap_or(None)
-            .filter(|(usd, _)| is_usable_quote(*usd));
-        if exact.is_some() {
-            return Ok(exact);
+        let row = |sql: &str| -> anyhow::Result<Option<(f64, String, u64)>> {
+            let v = self
+                .conn
+                .query_row(sql, rusqlite::params![tok, hour as i64], |r| {
+                    Ok((
+                        r.get::<_, f64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)? as u64,
+                    ))
+                })
+                .map(Some)
+                .unwrap_or(None)
+                .filter(|(usd, _, _)| is_usable_quote(*usd));
+            Ok(v)
+        };
+        if let Some(v) = row("SELECT usd, source, hour FROM prices WHERE token = ?1 AND hour = ?2")?
+        {
+            return Ok(Some(v));
         }
-        let v = self
-            .conn
-            .query_row(
-                "SELECT usd, source FROM prices
-                 WHERE token = ?1 AND hour <= ?2 AND hour > ?2 - 24
-                 ORDER BY hour DESC LIMIT 1",
-                rusqlite::params![tok, hour as i64],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .map(Some)
-            .unwrap_or(None)
-            .filter(|(usd, _)| is_usable_quote(*usd));
-        Ok(v)
+        row("SELECT usd, source, hour FROM prices
+             WHERE token = ?1 AND hour < ?2 AND hour > ?2 - 24
+             ORDER BY hour DESC LIMIT 1")
     }
 
     /// Exact-hour quotes for many tokens, then the newest usable quote within
@@ -57,7 +66,7 @@ impl ExplorerStore {
         &self,
         tokens: &[Address],
         hour: u64,
-    ) -> anyhow::Result<HashMap<Address, (f64, String)>> {
+    ) -> anyhow::Result<HashMap<Address, (f64, String, u64)>> {
         let mut out = HashMap::new();
         if tokens.is_empty() {
             return Ok(out);
@@ -82,7 +91,7 @@ impl ExplorerStore {
         keys: &[(Address, String)],
         hour: u64,
         exact: bool,
-        out: &mut HashMap<Address, (f64, String)>,
+        out: &mut HashMap<Address, (f64, String, u64)>,
     ) -> anyhow::Result<()> {
         const CHUNK: usize = 400;
         let by_token: HashMap<&str, Address> = keys.iter().map(|(a, s)| (s.as_str(), *a)).collect();
@@ -96,16 +105,16 @@ impl ExplorerStore {
                 .join(",");
             let sql = if exact {
                 format!(
-                    "SELECT token, usd, source FROM prices
+                    "SELECT token, usd, source, hour FROM prices
                      WHERE hour = ?1 AND token IN ({placeholders})"
                 )
             } else {
                 format!(
-                    "SELECT p.token, p.usd, p.source FROM prices p
-                     WHERE p.hour <= ?1 AND p.hour > ?1 - 24 AND p.token IN ({placeholders})
+                    "SELECT p.token, p.usd, p.source, p.hour FROM prices p
+                     WHERE p.hour < ?1 AND p.hour > ?1 - 24 AND p.token IN ({placeholders})
                        AND p.hour = (
                          SELECT MAX(hour) FROM prices
-                         WHERE token = p.token AND hour <= ?1 AND hour > ?1 - 24)"
+                         WHERE token = p.token AND hour < ?1 AND hour > ?1 - 24)"
                 )
             };
             let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() + 1);
@@ -120,15 +129,16 @@ impl ExplorerStore {
                     r.get::<_, String>(0)?,
                     r.get::<_, f64>(1)?,
                     r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)? as u64,
                 ))
             })?;
             for row in rows {
-                let (token_s, usd, source) = row?;
+                let (token_s, usd, source, observed) = row?;
                 if !is_usable_quote(usd) {
                     continue;
                 }
                 if let Some(addr) = by_token.get(token_s.as_str()) {
-                    out.insert(*addr, (usd, source));
+                    out.insert(*addr, (usd, source, observed));
                 }
             }
         }
@@ -166,16 +176,10 @@ impl ExplorerStore {
     /// realized verdict when a trace native delta is unavailable.
     ///
     /// `ts` is epoch seconds and is divided down to an hour bucket before
-    /// matching, because `prices.hour` stores hour buckets, not seconds. Only
-    /// rows within ±24h of that bucket are considered; a timestamp with no
-    /// nearby observation yields `None` rather than a stale price.
-    ///
-    /// Convention caveat: token prices are keyed by *block* hour
-    /// (`ingest.rs` `pricing::hour_bucket(block ts)`), while native prices are
-    /// keyed by *fetch-time* hour (every `native_price_cached` call site passes
-    /// `crate::utils::epoch_secs()`). Those two conventions differ, and this
-    /// lookup does not resolve the mismatch; see the deferred historical
-    /// native-pricing work.
+    /// matching, because `prices.hour` stores hour buckets, not seconds. The
+    /// exact bucket wins; otherwise only observations at or before it within
+    /// 24h are considered. A future quote is never used, so repricing a
+    /// historical block cannot borrow a later price.
     pub fn native_price_near(&self, ts: u64) -> anyhow::Result<Option<f64>> {
         let bucket = ts / 3600;
         let mut stmt = self.conn.prepare(
@@ -183,12 +187,15 @@ impl ExplorerStore {
              WHERE token IN (
                '0x0000000000000000000000000000000000000000',
                '0x0')
-               AND hour BETWEEN ?1 - 24 AND ?1 + 24
-             ORDER BY ABS(hour - ?1) ASC LIMIT 1",
+               AND hour <= ?1 AND hour > ?1 - 24
+             ORDER BY hour DESC LIMIT 1",
         )?;
         let mut rows = stmt.query([bucket as i64])?;
         Ok(match rows.next()? {
-            Some(row) => Some(row.get::<_, f64>(0)?),
+            Some(row) => {
+                let usd: f64 = row.get(0)?;
+                is_usable_quote(usd).then_some(usd)
+            }
             None => None,
         })
     }
@@ -336,6 +343,45 @@ impl ExplorerStore {
         write_jit_block(&self.conn, block)
     }
 
+    /// True when this block already has an LP journal row.
+    pub fn jit_block_exists(&self, block: u64) -> anyhow::Result<bool> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM jit_blocks WHERE block_number = ?1",
+            [block as i64],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+    /// Reconstruct open positions as of `block` by replaying retained journals
+    /// only. Used for backfill/retry so state from later blocks cannot leak
+    /// backwards. A journal gap yields no positions: an unknown history must
+    /// not be replaced by the current materialized table.
+    pub fn open_positions_as_of(
+        &self,
+        block: u64,
+        min_block: u64,
+    ) -> anyhow::Result<Vec<OpenPosition>> {
+        if block <= min_block {
+            return Ok(Vec::new());
+        }
+        let journals = self.jit_blocks_range(min_block, block - 1)?;
+        let expected = block - min_block;
+        if journals.len() as u64 != expected
+            || journals
+                .iter()
+                .enumerate()
+                .any(|(i, b)| b.block_number != min_block + i as u64)
+        {
+            tracing::warn!(
+                block,
+                min_block,
+                found = journals.len(),
+                "JIT journal gap; refusing future position state for backfill"
+            );
+            return Ok(Vec::new());
+        }
+        Ok(replay_open_positions(&journals))
+    }
     /// Ordered journal rows `from_block..=to_block`, ascending. A corrupt row
     /// fails the read instead of being skipped: missing evidence must not look
     /// like an empty block when reconciling a position cycle.
@@ -376,6 +422,60 @@ impl ExplorerStore {
     pub fn rebuild_jit_positions(&self) -> anyhow::Result<()> {
         replay_jit_positions(&self.conn)
     }
+}
+
+/// In-memory replay of ordered journals for an as-of read. Mirrors
+/// [`apply_jit_lifecycle`] without touching the materialized table.
+fn replay_open_positions(journals: &[LpBlock]) -> Vec<OpenPosition> {
+    let mut open: HashMap<(Address, Address, i32, i32), (u64, u128)> = HashMap::new();
+    for block in journals {
+        let mut txs: Vec<_> = block.txs.iter().collect();
+        txs.sort_by_key(|t| t.tx_index);
+        for tx in txs {
+            let mut facts: Vec<_> = tx.facts.iter().collect();
+            facts.sort_by_key(|f| f.log_index);
+            for f in facts {
+                let key = (f.pool, f.owner, f.tick_lower, f.tick_upper);
+                if f.is_mint {
+                    let (opened, liquidity) =
+                        open.get(&key).copied().unwrap_or((block.block_number, 0));
+                    let Some(sum) = liquidity.checked_add(f.liquidity) else {
+                        open.remove(&key);
+                        continue;
+                    };
+                    if sum == 0 {
+                        open.remove(&key);
+                    } else {
+                        open.insert(key, (opened.min(block.block_number), sum));
+                    }
+                } else if !f.is_collect {
+                    if let Some((opened, liquidity)) = open.get(&key).copied() {
+                        if f.liquidity >= liquidity {
+                            open.remove(&key);
+                        } else {
+                            open.insert(key, (opened, liquidity - f.liquidity));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut out: Vec<OpenPosition> = open
+        .into_iter()
+        .filter(|(_, (_, liquidity))| *liquidity > 0)
+        .map(
+            |((pool, owner, tick_lower, tick_upper), (opened_block, liquidity))| OpenPosition {
+                pool,
+                owner,
+                tick_lower,
+                tick_upper,
+                opened_block,
+                liquidity,
+            },
+        )
+        .collect();
+    out.sort_by_key(|p| (p.opened_block, p.pool, p.owner, p.tick_lower, p.tick_upper));
+    out
 }
 
 /// Delete the materialized position table and replay every retained journal
@@ -552,6 +652,7 @@ mod tests {
                 to: None,
                 facts,
                 transfers: vec![],
+                swaps: vec![],
                 gas: None,
                 other_activity: false,
             }],
@@ -643,9 +744,12 @@ mod tests {
             Some(10.0),
             "must pick the hour bucket containing ts, not the latest row"
         );
-        // ts nearest hour_b
+        // A later observation is not a historical price.
         let got = store.native_price_near(199 * 3600 + 3500).unwrap();
-        assert_eq!(got, Some(99.0));
+        assert_eq!(got, None, "future quotes must never be used");
+        store.put_price(Address::ZERO, 198, 5.0, "test").unwrap();
+        let got = store.native_price_near(199 * 3600 + 3500).unwrap();
+        assert_eq!(got, Some(5.0), "the newest observation at/before ts wins");
     }
 
     #[test]

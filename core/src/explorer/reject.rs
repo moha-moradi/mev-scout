@@ -51,8 +51,6 @@ pub enum RejectReason {
     CausalWindowTooWide,
     /// Causal gate: an in-window counterparty failed the price-advantage floor.
     CausalPriceMoveBelowFloor,
-    /// Frontrun/sandwich: no third-party same-direction victim.
-    VictimSetEmpty,
     /// Skim: a pair outflow has V2 venue evidence but the pool is not in the
     /// v2-like registry. Aggregated per block.
     SkimPoolNotV2Like,
@@ -85,7 +83,6 @@ impl RejectReason {
             RejectReason::NoCounterpartyLeg => "no_counterparty_leg",
             RejectReason::CausalWindowTooWide => "causal_window_too_wide",
             RejectReason::CausalPriceMoveBelowFloor => "causal_price_move_below_floor",
-            RejectReason::VictimSetEmpty => "victim_set_empty",
             RejectReason::SkimPoolNotV2Like => "skim_pool_not_v2_like",
             RejectReason::SkimLooksLikeSwap => "skim_looks_like_swap",
             RejectReason::JitPairingUnmatched => "jit_pairing_unmatched",

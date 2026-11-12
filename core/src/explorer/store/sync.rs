@@ -38,6 +38,15 @@ impl ExplorerStore {
         )?;
         Ok(n > 0)
     }
+    /// Highest block already checkpointed as classified.
+    pub fn latest_classified_block(&self) -> anyhow::Result<Option<u64>> {
+        let v: Option<i64> = self
+            .conn
+            .query_row("SELECT MAX(block) FROM blocks_classified", [], |r| r.get(0))
+            .map(Some)
+            .unwrap_or(None);
+        Ok(v.and_then(|n| u64::try_from(n).ok()))
+    }
     /// Record a classified-block checkpoint.
     pub fn mark_block_classified(&self, block: u64, event_count: usize) -> anyhow::Result<()> {
         self.conn.execute(

@@ -1201,7 +1201,6 @@ pub fn reject_ladder(counts: &HashMap<String, i64>) -> Vec<RejectRow> {
         RejectReason::NoCounterpartyLeg,
         RejectReason::CausalWindowTooWide,
         RejectReason::CausalPriceMoveBelowFloor,
-        RejectReason::VictimSetEmpty,
         RejectReason::SkimPoolNotV2Like,
         RejectReason::SkimLooksLikeSwap,
         RejectReason::JitPairingUnmatched,
@@ -1411,7 +1410,7 @@ mod tests {
         let ops = vec![op(
             7,
             50,
-            "sandwich",
+            "backrun",
             None,
             "exact",
             Some(1.0),

@@ -169,6 +169,9 @@ pub struct JitJournalInput<'a> {
     pub block: &'a crate::explorer::jit_accounting::LpBlock,
     /// Open-position retention window, in blocks.
     pub window_blocks: u64,
+    /// Rebuild the materialized state from retained journals instead of
+    /// applying this block additively. Required for retries and backfill.
+    pub rebuild: bool,
 }
 
 /// Everything a single indexed block contributes to the store.
@@ -258,9 +261,10 @@ pub struct ReportQuality {
     /// Ops whose details carry the `FLASH_FEE_UNPRICED` reason: a non-zero
     /// flash-loan fee with no usable quote, not already netted into the ledger.
     pub ops_flash_fee_unpriced: i64,
-    /// Sandwich ops loss-gated at persist (priced net `<= 0`): the row is kept
-    /// — counts and gross stay truthful — but every *net* sum and `top_ops`
-    /// exclude it.
+    /// Rows persisted with `excluded_from_net = 1`. The sandwich loss-gate
+    /// retired with the kind; this is retained for stored rows written by
+    /// older pipelines (counts and gross stay truthful, net sums and `top_ops`
+    /// still exclude the flagged row).
     pub ops_excluded_from_net: i64,
 }
 
@@ -688,82 +692,6 @@ mod tests {
     }
 
     #[test]
-    fn sandwich_loss_gate_persists_lossy_rows_with_flag() {
-        let store = ExplorerStore::open_in_memory().unwrap();
-        let mut prices = std::collections::HashMap::new();
-        prices.insert(
-            address!("4444000000000000000000000000000000000004"),
-            token_usd(0.5, 6),
-        );
-        // Zero extractable profit cannot cover front+back gas → net < 0. The
-        // sandwich is kept with `excluded_from_net = 1` (forensics survive,
-        // counts stay truthful) instead of being dropped.
-        let mut loss = sample_event(130);
-        loss.kind = MevKind::Sandwich;
-        loss.profit_amount = Some(U256::ZERO);
-        loss.details = serde_json::json!({ "reason": "test" });
-        let n = seed_block(
-            &store,
-            SeedBlockParams {
-                block_number: 130,
-                block_hash: &b256!(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaae"
-                ),
-                ts: 1_700_000_300,
-                tx_count: 5,
-                swaps: &[],
-                events: &[loss],
-                token_prices: &prices,
-            },
-        );
-        assert_eq!(n, 1, "the lossy sandwich is persisted, not dropped");
-        let ops = store.ops_in_range(130, 130, &[], None).unwrap();
-        assert_eq!(ops.len(), 1);
-        assert!(ops[0].net_profit_usd.unwrap() < 0.0);
-        let flagged: i64 = store
-            .conn
-            .query_row(
-                "SELECT excluded_from_net FROM mev_ops WHERE block_number = 130",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(flagged, 1, "the lossy sandwich carries the flag");
-        // ...and the block is still marked classified (1 persisted op).
-        assert!(store.block_classified(130).unwrap());
-
-        // A profitable sandwich (1.0 USD profit > ~0.00008 USD gas) is kept
-        // unflagged: the gate fires only on priced net <= 0.
-        let mut win = sample_event(131);
-        win.kind = MevKind::Sandwich;
-        let n = seed_block(
-            &store,
-            SeedBlockParams {
-                block_number: 131,
-                block_hash: &b256!(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf"
-                ),
-                ts: 1_700_000_400,
-                tx_count: 5,
-                swaps: &[],
-                events: &[win],
-                token_prices: &prices,
-            },
-        );
-        assert_eq!(n, 1);
-        assert_eq!(store.ops_in_range(131, 131, &[], None).unwrap().len(), 1);
-        let unflagged: i64 = store
-            .conn
-            .query_row(
-                "SELECT excluded_from_net FROM mev_ops WHERE block_number = 131",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(unflagged, 0, "a profitable sandwich is not flagged");
-    }
-
-    #[test]
     fn top_senders_kind_filter_matches_only_that_kind() {
         let store = ExplorerStore::open_in_memory().unwrap();
         let mut prices = std::collections::HashMap::new();
@@ -771,9 +699,9 @@ mod tests {
             address!("4444000000000000000000000000000000000004"),
             token_usd(0.5, 6),
         );
-        let mut sand_evt = sample_event(120);
-        sand_evt.ts = 1_700_000_101;
-        sand_evt.kind = MevKind::Sandwich;
+        let mut back_evt = sample_event(120);
+        back_evt.ts = 1_700_000_101;
+        back_evt.kind = MevKind::Backrun;
         let mut arb_evt = sample_event(121);
         arb_evt.ts = 1_700_000_200;
         arb_evt.kind = MevKind::ArbAtomic;
@@ -787,7 +715,7 @@ mod tests {
                 ts: 1_700_000_100,
                 tx_count: 5,
                 swaps: &[],
-                events: &[sand_evt],
+                events: &[back_evt],
                 token_prices: &prices,
             },
         );
@@ -813,10 +741,10 @@ mod tests {
             .unwrap();
         assert!(!senders.is_empty());
 
-        let senders_sand = store
-            .top_senders_filtered(1_699_999_000, 5, Some(MevKind::Sandwich), None)
+        let senders_back = store
+            .top_senders_filtered(1_699_999_000, 5, Some(MevKind::Backrun), None)
             .unwrap();
-        assert!(!senders_sand.is_empty());
+        assert!(!senders_back.is_empty());
 
         let misc = store
             .top_senders_filtered(1_699_999_000, 5, Some(MevKind::Liquidation), None)
@@ -855,17 +783,17 @@ mod tests {
         let mut arb = sample_event(510);
         arb.ts = day_a;
         arb.tx_index = 3;
-        let mut sand = sample_event(511);
-        sand.ts = day_b;
-        sand.tx_index = 4;
-        sand.kind = MevKind::Sandwich;
+        let mut back = sample_event(511);
+        back.ts = day_b;
+        back.tx_index = 4;
+        back.kind = MevKind::Backrun;
         let mut swp_a = swap_leg(3, 0, usdc, 5_000_000);
         swp_a.pool = arb.pools[0];
         let mut swp_b = swap_leg(4, 0, usdc, 10_000_000);
-        swp_b.pool = sand.pools[0];
+        swp_b.pool = back.pools[0];
         for (block, ev, swaps, ts) in [
             (510u64, &arb, &[swp_a.clone()][..], day_a),
-            (511, &sand, &[swp_b.clone()][..], day_b),
+            (511, &back, &[swp_b.clone()][..], day_b),
         ] {
             seed_block(
                 &store,
@@ -914,12 +842,12 @@ mod tests {
         assert_eq!(store.blocks_in_window(day_b).unwrap(), 1);
 
         let ov_k = store
-            .report_window_overview(0, Some(MevKind::Sandwich), None)
+            .report_window_overview(0, Some(MevKind::Backrun), None)
             .unwrap();
         assert_eq!(ov_k.ops, 1);
         assert_eq!(
             store
-                .report_by_kind(0, Some(MevKind::Sandwich), None)
+                .report_by_kind(0, Some(MevKind::Backrun), None)
                 .unwrap()
                 .len(),
             1
@@ -1237,137 +1165,6 @@ mod tests {
                 profit_usd - gas_usd
             );
         }
-    }
-
-    /// A loss-gated sandwich (priced net `<= 0`) is persisted with
-    /// `excluded_from_net = 1` instead of dropped: op counts and gross stay
-    /// inclusive, every *net* sum and `top_ops` skip it, and the report
-    /// exposes the count. `net == 0.0` exactly is gated too (the gate is
-    /// `<= 0.0`).
-    #[test]
-    fn loss_gated_sandwich_is_counted_but_excluded_from_net() {
-        let store = ExplorerStore::open_in_memory().unwrap();
-        let mut prices = std::collections::HashMap::new();
-        prices.insert(
-            address!("4444000000000000000000000000000000000004"),
-            token_usd(0.5, 6),
-        );
-
-        // Sandwich: $0.5 gross against $0.75 gas → net = −$0.25.
-        let mut loss = sample_event(800);
-        loss.kind = MevKind::Sandwich;
-        loss.tx_index = 1;
-        loss.tx_hash = b256!("8000000000000000000000000000000000000000000000000000000000000001");
-        // 1 native @ $0.75.
-        loss.gas_cost_wei = U256::from(1_000_000_000_000_000_000u64);
-        // Ordinary profitable arb in the same block: $0.5 gross, ~$0.000075 gas.
-        let mut arb = sample_event(800);
-        arb.tx_index = 2;
-        arb.tx_hash = b256!("8000000000000000000000000000000000000000000000000000000000000002");
-
-        let n = seed_block(
-            &store,
-            SeedBlockParams {
-                block_number: 800,
-                block_hash: &B256::repeat_byte(0x80),
-                ts: 1_700_000_000,
-                tx_count: 5,
-                swaps: &[],
-                events: &[loss, arb],
-                token_prices: &prices,
-            },
-        );
-        // Counts stay truthful: both rows persisted, so the block counted 2.
-        assert_eq!(n, 2);
-
-        let gas_usd = 100_000_000_000_000f64 / 1e18 * 0.75;
-        let arb_net = 0.5 - gas_usd;
-
-        let ov = store.report_window_overview(0, None, None).unwrap();
-        assert_eq!(ov.ops, 2);
-        assert!(
-            (ov.net_usd - arb_net).abs() < 1e-9,
-            "net must be the arb's only, got {}",
-            ov.net_usd
-        );
-        assert!(
-            (ov.gross_usd - 1.0).abs() < 1e-9,
-            "gross includes both, got {}",
-            ov.gross_usd
-        );
-        assert_eq!(ov.quality.ops_excluded_from_net, 1);
-
-        // The flag itself is persisted on the sandwich row only.
-        let (flagged, flagged_net): (i64, f64) = store
-            .conn
-            .query_row(
-                "SELECT excluded_from_net, net_profit_usd FROM mev_ops
-             WHERE kind = 'sandwich' AND block_number = 800",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(flagged, 1);
-        assert!((flagged_net - (-0.25)).abs() < 1e-9, "got {flagged_net}");
-
-        // `top_ops` is "top by net": the loss-gated sandwich stays out.
-        let top = store.top_ops(0, 10, None, None).unwrap();
-        assert_eq!(top.len(), 1);
-        assert_eq!(top[0].kind, "arb_atomic");
-
-        // The competitor leaderboard nets only the arb too.
-        let comps = store.top_competitors_filtered(0, 10, None, None).unwrap();
-        assert_eq!(comps.len(), 1);
-        assert!(
-            (comps[0].net_usd - arb_net).abs() < 1e-9,
-            "got {}",
-            comps[0].net_usd
-        );
-
-        // A sandwich with `net == 0.0` exactly is treated as excluded.
-        let mut zero = sample_event(801);
-        zero.kind = MevKind::Sandwich;
-        zero.tx_index = 1;
-        zero.tx_hash = b256!("8000000000000000000000000000000000000000000000000000000000000011");
-        zero.profit_amount = Some(U256::ZERO); // priced → profit_usd = Some(0.0)
-        zero.gas_cost_wei = U256::ZERO; // gas_usd = Some(0.0) → net = Some(0.0)
-        let n = seed_block(
-            &store,
-            SeedBlockParams {
-                block_number: 801,
-                block_hash: &B256::repeat_byte(0x81),
-                ts: 1_700_000_100,
-                tx_count: 5,
-                swaps: &[],
-                events: &[zero],
-                token_prices: &prices,
-            },
-        );
-        assert_eq!(n, 1);
-        let ops = store.ops_in_range(801, 801, &[], None).unwrap();
-        assert_eq!(ops.len(), 1);
-        assert_eq!(
-            ops[0].net_profit_usd,
-            Some(0.0),
-            "the gate saw net 0.0, not None"
-        );
-
-        let ov = store.report_window_overview(0, None, None).unwrap();
-        assert_eq!(ov.ops, 3, "all three rows are counted");
-        assert_eq!(ov.quality.ops_excluded_from_net, 2);
-        assert!(
-            (ov.net_usd - arb_net).abs() < 1e-9,
-            "net unchanged by the zero-net row, got {}",
-            ov.net_usd
-        );
-        assert!((ov.gross_usd - 1.0).abs() < 1e-9);
-
-        // Per kind: sandwich counts stay inclusive while its net sum is empty.
-        let kinds = store.report_by_kind(0, None, None).unwrap();
-        let sand = kinds.iter().find(|r| r.label == "sandwich").unwrap();
-        assert_eq!(sand.ops, 2);
-        assert!((sand.gross_usd - 0.5).abs() < 1e-9);
-        assert_eq!(sand.net_usd, 0.0);
     }
 
     /// The net-concentration guard must never divide by zero and must only emit
@@ -1878,6 +1675,114 @@ mod tests {
             "usd_approximate": gross.is_none(),
         });
         ev
+    }
+
+    fn jit_journal(
+        block_number: u64,
+        facts: Vec<crate::explorer::types::JitFact>,
+    ) -> crate::explorer::jit_accounting::LpBlock {
+        use crate::explorer::jit_accounting::{LpBlock, LpTx};
+        LpBlock {
+            block_number,
+            hash: B256::repeat_byte(block_number as u8),
+            parent_hash: (block_number > 0).then(|| B256::repeat_byte((block_number - 1) as u8)),
+            ts: block_number * 12,
+            complete: true,
+            txs: vec![LpTx {
+                tx_hash: B256::repeat_byte(0xaa),
+                tx_index: 0,
+                from: address!("1111000000000000000000000000000000000001"),
+                to: Some(address!("3333000000000000000000000000000000000003")),
+                facts,
+                transfers: vec![],
+                swaps: vec![],
+                gas: None,
+                other_activity: false,
+            }],
+            swaps: vec![],
+        }
+    }
+
+    fn jit_fact(is_mint: bool, liquidity: u128) -> crate::explorer::types::JitFact {
+        crate::explorer::types::JitFact {
+            tx_index: 0,
+            log_index: 1,
+            pool: address!("3333000000000000000000000000000000000003"),
+            owner: address!("1111000000000000000000000000000000000001"),
+            tick_lower: -10,
+            tick_upper: 10,
+            is_mint,
+            is_collect: false,
+            sender: is_mint.then_some(address!("1111000000000000000000000000000000000001")),
+            recipient: None,
+            liquidity,
+            amount0: U256::ZERO,
+            amount1: U256::ZERO,
+            bin_amm: false,
+        }
+    }
+
+    fn persist_journal(
+        store: &ExplorerStore,
+        journal: &crate::explorer::jit_accounting::LpBlock,
+        rebuild: bool,
+    ) {
+        let hash = journal.hash;
+        let prices = std::collections::HashMap::new();
+        store
+            .insert_block_facts(BlockFactsInput {
+                block_number: journal.block_number,
+                block_hash: &hash,
+                ts: journal.ts,
+                base_fee_gwei: Some(1.0),
+                tx_count: 1,
+                txs: &[],
+                swaps: &[],
+                transfers: &[],
+                events: &[],
+                native_price_usd: None,
+                token_prices: &prices,
+                jit_journal: Some(JitJournalInput {
+                    block: journal,
+                    window_blocks: 1_000,
+                    rebuild,
+                }),
+            })
+            .unwrap();
+    }
+
+    /// A retried block must not add its Mint twice; an older block must use
+    /// the journal state at that point, not positions from later blocks.
+    #[test]
+    fn jit_retry_and_backfill_are_idempotent_and_as_of() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let open = jit_journal(10, vec![jit_fact(true, 100)]);
+        persist_journal(&store, &open, false);
+        assert_eq!(store.open_positions(0).unwrap()[0].liquidity, 100);
+
+        persist_journal(&store, &open, true);
+        assert_eq!(
+            store.open_positions(0).unwrap()[0].liquidity,
+            100,
+            "retry must not double the mint"
+        );
+
+        let partial = jit_journal(11, vec![jit_fact(false, 40)]);
+        persist_journal(&store, &partial, false);
+        assert_eq!(store.open_positions(0).unwrap()[0].liquidity, 60);
+
+        // As-of block 11 sees the Mint but not the future partial burn.
+        assert_eq!(
+            store.open_positions_as_of(11, 10).unwrap()[0].liquidity,
+            100
+        );
+        assert_eq!(store.open_positions_as_of(12, 10).unwrap()[0].liquidity, 60);
+
+        let add = jit_journal(12, vec![jit_fact(true, 20)]);
+        persist_journal(&store, &add, false);
+        let pos = &store.open_positions(0).unwrap()[0];
+        assert_eq!(pos.liquidity, 80);
+        assert_eq!(pos.opened_block, 10, "earliest opening is retained");
     }
 
     /// JIT profit is the reconciled valuation, never the classifier's old

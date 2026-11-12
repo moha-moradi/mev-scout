@@ -1,4 +1,4 @@
-//! Labeled golden set for Backrun / Frontrun ship-gate scoring.
+//! Labeled golden set for Backrun ship-gate scoring.
 //!
 //! Opportunity-side strategies do not map to these kinds. This module holds a
 //! small synthetic labeled set (positives + explicit negatives) and scores
@@ -28,8 +28,8 @@ const FILLER: Address = address!("9000000000000000000000000000000000000009");
 #[derive(Debug, Clone, Copy)]
 pub struct LabeledExpectation {
     pub id: &'static str,
-    /// `Some(Backrun|Frontrun)` for positives; `None` for negatives (no causal
-    /// claim of either kind on the labeled tx).
+    /// `Some(Backrun)` for positives; `None` for negatives (no causal
+    /// claim on the labeled tx).
     pub expect_kind: Option<MevKind>,
     /// When `expect_kind` is set, the tx_index that must carry the claim.
     pub expect_tx_index: Option<u64>,
@@ -272,81 +272,7 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                 ),
             ]),
         },
-        // ── Frontrun positive ──────────────────────────────────────────
-        LabeledCase {
-            expectation: LabeledExpectation {
-                id: "frontrun_cross_pool_close",
-                expect_kind: Some(MevKind::Frontrun),
-                expect_tx_index: Some(0),
-            },
-            input: block(vec![
-                tx(
-                    0,
-                    ATK,
-                    vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-                    vec![
-                        transfer(USDC, ATK, POOL_A, 100),
-                        transfer(TOKA, POOL_A, ATK, 200),
-                    ],
-                ),
-                tx(
-                    1,
-                    VICTIM,
-                    vec![swap(POOL_A, USDC, TOKA, 100, 150)],
-                    vec![
-                        transfer(USDC, VICTIM, POOL_A, 100),
-                        transfer(TOKA, POOL_A, VICTIM, 150),
-                    ],
-                ),
-                tx(
-                    2,
-                    ATK,
-                    vec![swap(POOL_B, TOKA, USDC, 200, 250)],
-                    vec![
-                        transfer(TOKA, ATK, POOL_B, 200),
-                        transfer(USDC, POOL_B, ATK, 250),
-                    ],
-                ),
-            ]),
-        },
-        // ── Frontrun negative ──────────────────────────────────────────
-        LabeledCase {
-            expectation: LabeledExpectation {
-                id: "frontrun_no_measurable_degradation",
-                expect_kind: None,
-                expect_tx_index: None,
-            },
-            input: block(vec![
-                tx(
-                    0,
-                    ATK,
-                    vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-                    vec![
-                        transfer(USDC, ATK, POOL_A, 100),
-                        transfer(TOKA, POOL_A, ATK, 200),
-                    ],
-                ),
-                tx(
-                    1,
-                    VICTIM,
-                    vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-                    vec![
-                        transfer(USDC, VICTIM, POOL_A, 100),
-                        transfer(TOKA, POOL_A, VICTIM, 200),
-                    ],
-                ),
-                tx(
-                    2,
-                    ATK,
-                    vec![swap(POOL_B, TOKA, USDC, 200, 250)],
-                    vec![
-                        transfer(TOKA, ATK, POOL_B, 200),
-                        transfer(USDC, POOL_B, ATK, 250),
-                    ],
-                ),
-            ]),
-        },
-        // ── Sandwich exclusion (neither frontrun nor backrun) ──────────
+        // ── Sandwich-shaped legs are not a backrun ─────────────────────
         LabeledCase {
             expectation: LabeledExpectation {
                 id: "sandwich_legs_not_causal",
@@ -524,95 +450,13 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                 ),
             ]),
         },
-        // ── Frontrun: victim degrades less than CAUSAL_PRICE_MIN_PCT
-        // (2.09 vs 2.10 front → 0.476% < 0.5%). Close is otherwise a
-        // profitable 2-pool cycle (+50 USDC), so the degradation gate alone
-        // keeps this out of the claims.
-        LabeledCase {
-            expectation: LabeledExpectation {
-                id: "frontrun_sub_threshold_degradation",
-                expect_kind: None,
-                expect_tx_index: None,
-            },
-            input: block(vec![
-                tx(
-                    0,
-                    ATK,
-                    vec![swap(POOL_A, USDC, TOKA, 100, 210)],
-                    vec![
-                        transfer(USDC, ATK, POOL_A, 100),
-                        transfer(TOKA, POOL_A, ATK, 210),
-                    ],
-                ),
-                tx(
-                    1,
-                    VICTIM,
-                    vec![swap(POOL_A, USDC, TOKA, 100, 209)],
-                    vec![
-                        transfer(USDC, VICTIM, POOL_A, 100),
-                        transfer(TOKA, POOL_A, VICTIM, 209),
-                    ],
-                ),
-                tx(
-                    2,
-                    ATK,
-                    vec![swap(POOL_B, TOKA, USDC, 210, 260)],
-                    vec![
-                        transfer(TOKA, ATK, POOL_B, 210),
-                        transfer(USDC, POOL_B, ATK, 260),
-                    ],
-                ),
-            ]),
-        },
-        // ── Frontrun: victim farther than CAUSAL_WINDOW_TXS after the front
-        // (distance 10-0 = 10 > 8); no same-direction victim qualifies.
-        LabeledCase {
-            expectation: LabeledExpectation {
-                id: "frontrun_victim_outside_window",
-                expect_kind: None,
-                expect_tx_index: None,
-            },
-            input: block({
-                let mut txs = vec![tx(
-                    0,
-                    ATK,
-                    vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-                    vec![
-                        transfer(USDC, ATK, POOL_A, 100),
-                        transfer(TOKA, POOL_A, ATK, 200),
-                    ],
-                )];
-                for i in 1..=9 {
-                    txs.push(filler(i));
-                }
-                txs.push(tx(
-                    10,
-                    VICTIM,
-                    vec![swap(POOL_A, USDC, TOKA, 100, 150)],
-                    vec![
-                        transfer(USDC, VICTIM, POOL_A, 100),
-                        transfer(TOKA, POOL_A, VICTIM, 150),
-                    ],
-                ));
-                txs.push(tx(
-                    11,
-                    ATK,
-                    vec![swap(POOL_B, TOKA, USDC, 200, 250)],
-                    vec![
-                        transfer(TOKA, ATK, POOL_B, 200),
-                        transfer(USDC, POOL_B, ATK, 250),
-                    ],
-                ));
-                txs
-            }),
-        },
     ]
 }
 
 fn causal_claims(events: &[crate::explorer::types::MevEvent]) -> Vec<(MevKind, u64)> {
     events
         .iter()
-        .filter(|e| matches!(e.kind, MevKind::Backrun | MevKind::Frontrun))
+        .filter(|e| e.kind == MevKind::Backrun)
         .map(|e| (e.kind, e.tx_index))
         .collect()
 }
@@ -682,7 +526,7 @@ pub fn score_causal_labeled_set(cases: &[LabeledCase]) -> GoldenSetScore {
                 } else {
                     fp += claims.len() as u64;
                     failures.push(format!(
-                        "{}: expected no Backrun/Frontrun, got {:?}",
+                        "{}: expected no Backrun, got {:?}",
                         exp.id, claims
                     ));
                 }
@@ -731,7 +575,7 @@ mod tests {
             "causal golden set must be perfect on the synthetic labels:\n{}",
             score.render()
         );
-        // 2 positives + 9 negatives. Name the cases: adding a fixture extends
+        // 1 positive + 6 negatives. Name the cases: adding a fixture extends
         // this list, dropping one fails by name instead of moving a magic count.
         assert_eq!(
             score.case_ids,
@@ -739,17 +583,13 @@ mod tests {
                 "backrun_after_market_move",
                 "backrun_no_pre_move_reference",
                 "backrun_same_sender_as_move",
-                "frontrun_cross_pool_close",
-                "frontrun_no_measurable_degradation",
                 "sandwich_legs_not_causal",
                 "backrun_sub_threshold_improvement",
                 "backrun_move_outside_window",
                 "backrun_size_mismatch",
-                "frontrun_sub_threshold_degradation",
-                "frontrun_victim_outside_window",
             ]
         );
-        assert_eq!(score.true_positives, 2);
-        assert_eq!(score.true_negatives, 9);
+        assert_eq!(score.true_positives, 1);
+        assert_eq!(score.true_negatives, 6);
     }
 }

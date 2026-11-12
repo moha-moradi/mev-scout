@@ -504,8 +504,17 @@ pub async fn index_block_fetched(
         jit_hashes,
     } = decode_successful_txs(&txs, &receipts, pools, cfg, base_fee_gwei);
 
-    let open_positions =
-        store.open_positions(block_number.saturating_sub(cfg.jit_window_blocks))?;
+    let jit_cutoff = block_number.saturating_sub(cfg.jit_window_blocks);
+    let latest = store.latest_classified_block()?;
+    let rebuild_lifecycle =
+        latest.is_some_and(|b| block_number <= b) || store.jit_block_exists(block_number)?;
+    let open_positions = if rebuild_lifecycle {
+        // Backfill/retry: state must be the one this block could have seen,
+        // never the latest materialized table from later blocks.
+        store.open_positions_as_of(block_number, jit_cutoff)?
+    } else {
+        store.open_positions(jit_cutoff)?
+    };
     let interest_lookback = store
         .interest_lookback(block_number, cfg.interest_lookback_blocks)
         .unwrap_or_default();
@@ -540,10 +549,10 @@ pub async fn index_block_fetched(
     };
 
     // Receipt-local, ordered LP journal for settled JIT reconciliation. The
-    // block is not persisted yet, so its parent comes from the retained
-    // journal or the hash-pinned header.
+    // parent is read from this exact header, never substituted from the last
+    // stored journal (which could belong to an abandoned fork).
     let mut journal = LpBlock::from_input(&input, &block_data, &txs, &receipts);
-    journal.parent_hash = parent_hash_for(rpc, store, &block_data).await;
+    journal.parent_hash = parent_hash_for(rpc, &block_data).await;
 
     let classified = classify::classify_block(&input);
     blocking_store(|| -> anyhow::Result<()> {
@@ -578,7 +587,7 @@ pub async fn index_block_fetched(
     // one (backfill safety).
     let oldest_open = events
         .iter()
-        .filter(|e| matches!(e.kind, MevKind::Jit | MevKind::JitArb))
+        .filter(|e| e.kind == MevKind::Jit)
         .filter_map(|e| e.details.get("opened_block").and_then(|v| v.as_u64()))
         .min()
         .unwrap_or(block_number)
@@ -649,6 +658,7 @@ pub async fn index_block_fetched(
                 jit_journal: Some(JitJournalInput {
                     block: &journal,
                     window_blocks: cfg.jit_window_blocks,
+                    rebuild: rebuild_lifecycle,
                 }),
             })
             .map(|_| ())
@@ -677,21 +687,12 @@ fn blocking_store<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
-/// Parent hash of exactly this header: the retained journal when the previous
-/// block is still in the window, otherwise a hash-pinned header read. A missing
-/// parent leaves settlement unprovable rather than guessing.
-async fn parent_hash_for(
-    rpc: &RpcClient,
-    store: &ExplorerStore,
-    block_data: &BlockData,
-) -> Option<B256> {
+/// Parent hash of exactly this header, hash-pinned. Stored journals are not a
+/// substitute: after a reorg they can belong to a different fork. A missing
+/// header leaves settlement unprovable rather than guessing.
+async fn parent_hash_for(rpc: &RpcClient, block_data: &BlockData) -> Option<B256> {
     if block_data.number == 0 {
         return None;
-    }
-    if let Ok(rows) = store.jit_blocks_range(block_data.number - 1, block_data.number - 1) {
-        if let Some(prev) = rows.first() {
-            return Some(prev.hash);
-        }
     }
     rpc.parent_hash_at(block_data.hash, block_data.number)
         .await
@@ -719,7 +720,7 @@ async fn fill_jit_valuation(
             requests.entry(hour).or_default().extend(tokens);
         }
     }
-    let mut priced: HashMap<u64, HashMap<Address, TokenUsd>> = HashMap::new();
+    let mut priced: HashMap<u64, HashMap<Address, (TokenUsd, String, u64)>> = HashMap::new();
     for (hour, tokens) in requests {
         let mut fetch: Vec<Address> = tokens.iter().copied().filter(|t| !t.is_zero()).collect();
         if tokens.contains(&Address::ZERO) && !cfg.wrapped_native.is_zero() {
@@ -729,7 +730,7 @@ async fn fill_jit_valuation(
             continue;
         }
         let ts = hour.saturating_mul(3600);
-        let quotes = warm_prices_for_tokens(cfg, rpc, &fetch, ts, store).await?;
+        let quotes = warm_quotes_for_tokens(cfg, rpc, &fetch, ts, store).await?;
         priced.insert(hour, quotes);
     }
 
@@ -744,20 +745,28 @@ async fn fill_jit_valuation(
             }
             let hour = point.ts / 3600;
             for token in [accounting.token0, accounting.token1] {
-                if let Some(q) = priced.get(&hour).and_then(|m| m.get(&token)) {
+                if let Some((q, source, observed)) = priced.get(&hour).and_then(|m| m.get(&token)) {
+                    let provenance = if *observed == hour {
+                        source.clone()
+                    } else {
+                        format!("{source}@{observed}")
+                    };
                     accounting.quotes.push(Quote {
                         token,
                         hour,
                         usd: q.usd,
                         decimals: q.decimals,
-                        source: "llama".into(),
+                        source: provenance,
                     });
                 }
             }
         }
         for gas in &accounting.gas {
             let hour = gas.ts / 3600;
-            if let Some(q) = priced.get(&hour).and_then(|m| m.get(&cfg.wrapped_native)) {
+            if let Some((q, _, _)) = priced.get(&hour).and_then(|m| m.get(&cfg.wrapped_native)) {
+                // Key the same observation under the native marker so a later
+                // repricing pass uses the exact quote this valuation used.
+                store.put_price(Address::ZERO, hour, q.usd, "native_via_wrapped")?;
                 accounting.quotes.push(Quote {
                     token: Address::ZERO,
                     hour,
@@ -841,6 +850,22 @@ pub async fn warm_prices_for_tokens(
     ts: u64,
     store: &ExplorerStore,
 ) -> anyhow::Result<HashMap<Address, TokenUsd>> {
+    Ok(warm_quotes_for_tokens(cfg, rpc, tokens, ts, store)
+        .await?
+        .into_iter()
+        .map(|(token, (quote, _, _))| (token, quote))
+        .collect())
+}
+
+/// Same warmer, retaining the observed hour and provenance for JIT evidence.
+/// Initial valuation and repricing therefore use the same actual quote.
+pub async fn warm_quotes_for_tokens(
+    cfg: &IngestConfig,
+    rpc: &RpcClient,
+    tokens: &[Address],
+    ts: u64,
+    store: &ExplorerStore,
+) -> anyhow::Result<HashMap<Address, (TokenUsd, String, u64)>> {
     let mut out = HashMap::new();
     // Known-token decimals come from the bundled list via TokenCache::warm;
     // long-tail tokens get llama-reported decimals when present. Cache per
@@ -855,14 +880,14 @@ pub async fn warm_prices_for_tokens(
 
     let hour = pricing::hour_bucket(ts);
     let quotes = store.prices_at(tokens, hour)?;
-    let mut priced: Vec<(Address, f64)> = Vec::new();
+    let mut priced: Vec<(Address, f64, String, u64)> = Vec::new();
     let mut missing: Vec<Address> = Vec::new();
     for t in tokens {
         if t.is_zero() || *t == crate::explorer::profit::NATIVE_MARKER {
             continue;
         }
-        if let Some((usd, _)) = quotes.get(t) {
-            priced.push((*t, *usd));
+        if let Some((usd, source, observed)) = quotes.get(t) {
+            priced.push((*t, *usd, source.clone(), *observed));
         } else {
             missing.push(*t);
         }
@@ -886,7 +911,7 @@ pub async fn warm_prices_for_tokens(
                         continue;
                     }
                     store.put_price(addr, hour, usd, "llama")?;
-                    priced.push((addr, usd));
+                    priced.push((addr, usd, "llama".into(), hour));
                     if let Some(d) = llama_dec {
                         llama_decimals.insert(addr, d);
                     }
@@ -899,29 +924,47 @@ pub async fn warm_prices_for_tokens(
     // Resolve decimals: bundled cache → llama-reported decimals → on-chain
     // ERC-20 decimals via Multicall3 (long-tail fallback).
     let mut need_onchain: Vec<Address> = Vec::new();
-    for (addr, usd) in &priced {
+    for (addr, usd, source, observed) in &priced {
         let dec = decimals_of(addr).or_else(|| llama_decimals.get(addr).copied());
         match dec {
             Some(d) => {
                 out.insert(
                     *addr,
-                    TokenUsd {
-                        usd: *usd,
-                        decimals: d,
-                    },
+                    (
+                        TokenUsd {
+                            usd: *usd,
+                            decimals: d,
+                        },
+                        source.clone(),
+                        *observed,
+                    ),
                 );
             }
             None => need_onchain.push(*addr),
         }
     }
     if !need_onchain.is_empty() {
-        let priced_usd: HashMap<Address, f64> = priced.iter().copied().collect();
-        let usd_of = |a: &Address| priced_usd.get(a).copied();
+        let by_addr: HashMap<Address, (f64, String, u64)> = priced
+            .iter()
+            .map(|(a, usd, source, observed)| (*a, (*usd, source.clone(), *observed)))
+            .collect();
         match crate::rpc::multicall::resolve_token_decimals(rpc, &need_onchain, 4).await {
             Ok(decs) => {
                 for addr in need_onchain {
-                    if let (Some(d), Some(usd)) = (decs.get(&addr), usd_of(&addr)) {
-                        out.insert(addr, TokenUsd { usd, decimals: *d });
+                    if let (Some(d), Some((usd, source, observed))) =
+                        (decs.get(&addr), by_addr.get(&addr))
+                    {
+                        out.insert(
+                            addr,
+                            (
+                                TokenUsd {
+                                    usd: *usd,
+                                    decimals: *d,
+                                },
+                                source.clone(),
+                                *observed,
+                            ),
+                        );
                     }
                 }
             }

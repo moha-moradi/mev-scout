@@ -98,7 +98,7 @@ fn complete_economics(
     {
         return Err("gas_cost_as_profit");
     }
-    let jit = matches!(op.kind.as_str(), "jit" | "jit_arb");
+    let jit = op.kind.as_str() == "jit";
     if jit
         && details
             .pointer("/jit_accounting/status")
@@ -173,6 +173,13 @@ fn complete_economics(
 }
 
 fn financing_cost(op: &OpRecord, details: &Value, netted: bool) -> Result<f64, &'static str> {
+    if details
+        .get("flashloan_fee_complete")
+        .and_then(Value::as_bool)
+        == Some(false)
+    {
+        return Err("flashloan_fee_incomplete");
+    }
     // Older classifiers stored a primary/max fee, not necessarily a sum over all loans.
     if ["flash_providers", "flashloans"].iter().any(|key| {
         details

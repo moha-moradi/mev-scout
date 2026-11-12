@@ -14,6 +14,15 @@ pub const MAX_HISTORY_BLOCKS: u64 = 1000;
 pub const MAX_FACTS: usize = 20_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LpSwap {
+    pub log_index: u64,
+    pub pool: Address,
+    pub token_in: Address,
+    pub token_out: Address,
+    pub amount_in: U256,
+    pub amount_out: U256,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LpTx {
     pub tx_hash: B256,
     pub tx_index: u64,
@@ -21,6 +30,9 @@ pub struct LpTx {
     pub to: Option<Address>,
     pub facts: Vec<JitFact>,
     pub transfers: Vec<TransferFact>,
+    /// Swaps in this receipt. Required to reconcile a same-transaction cycle;
+    /// unrelated swap tokens still fail the transfer check.
+    pub swaps: Vec<LpSwap>,
     pub gas: Option<Gas>,
     pub other_activity: bool,
 }
@@ -110,9 +122,23 @@ impl LpBlock {
                 to: t.to,
                 facts: t.jit.clone(),
                 transfers: t.transfers.clone(),
+                swaps: t
+                    .swaps
+                    .iter()
+                    .map(|s| LpSwap {
+                        log_index: s.log_index,
+                        pool: s.pool,
+                        token_in: s.token_in,
+                        token_out: s.token_out,
+                        amount_in: s.amount_in,
+                        amount_out: s.amount_out,
+                    })
+                    .collect(),
                 gas,
-                other_activity: !t.swaps.is_empty()
-                    || !t.flashloans.is_empty()
+                // Swaps are part of a same-transaction JIT cycle. They are
+                // validated by log order and exact transfer reconciliation in
+                // `reconcile`; financing/price/value activity is still fatal.
+                other_activity: !t.flashloans.is_empty()
                     || !t.liquidations.is_empty()
                     || !t.value.is_zero(),
             });
@@ -120,6 +146,7 @@ impl LpBlock {
         block.txs.sort_by_key(|t| t.tx_index);
         for t in &mut block.txs {
             t.facts.sort_by_key(|f| f.log_index);
+            t.swaps.sort_by_key(|s| s.log_index);
         }
         if block.swaps.len()
             + block
@@ -389,13 +416,19 @@ pub fn reconcile(
     if m.2.liquidity == 0 || m.2.liquidity != b.2.liquidity {
         a.reject("partial_burn");
     }
-    // EOA owns the V3 key. The mint callback can be a router, but it must be
-    // this tx's target. Closing is a direct pool call or a caller with that same
-    // EOA identity; manager-owned keys cannot pass this condition.
-    if m.1.from != a.owner
-        || b.1.from != a.owner
+    // The position key must belong to the operation itself: either the EOA
+    // sender (direct/routed mint) or the transaction target contract that
+    // mints, burns and collects the same key. Known shared position managers
+    // are never assumed to be a searcher.
+    let operates = |tx: &LpTx| tx.from == a.owner || tx.to == Some(a.owner);
+    let mint_sender_ok =
+        m.2.sender == Some(a.owner) || (m.1.from == a.owner && m.2.sender == m.1.to);
+    if shared_position_manager(a.owner)
+        || !operates(m.1)
+        || !operates(b.1)
+        || !operates(c.1)
         || c.2.recipient != Some(a.owner)
-        || m.2.sender != m.1.to
+        || !mint_sender_ok
     {
         a.reject("shared_manager_or_unprovable_beneficiary");
     } else {
@@ -443,6 +476,18 @@ pub fn reconcile(
     a.cashflow_amount0 = Some(signed_difference(c.2.amount0, m.2.amount0));
     a.cashflow_amount1 = Some(signed_difference(c.2.amount1, m.2.amount1));
     let mut seen = HashSet::new();
+    let (token0, token1) = (a.token0, a.token1);
+    let token_index = move |token: Address| {
+        if token == token0 {
+            Some(0)
+        } else if token == token1 {
+            Some(1)
+        } else {
+            None
+        }
+    };
+    let mint_edge = (m.1.tx_index, m.2.log_index);
+    let burn_edge = (b.1.tx_index, b.2.log_index);
     for (_, tx, _) in [**m, **b, **c] {
         if !seen.insert(tx.tx_hash) {
             continue;
@@ -455,21 +500,45 @@ pub fn reconcile(
         } else {
             a.reject("exact_receipt_gas_unavailable");
         }
+        let open_tx = tx.tx_hash == m.1.tx_hash;
+        let close_tx = tx.tx_hash == b.1.tx_hash;
+        // A same-transaction cycle's validating swap sits strictly between
+        // its Mint and Burn. An opening tx may keep trading after Mint; a
+        // closing tx may only trade before Burn.
+        let in_swap_window = |log_index: u64| {
+            let edge = (tx.tx_index, log_index);
+            (open_tx && edge > mint_edge || !open_tx) && (close_tx && edge < burn_edge || !close_tx)
+        };
+        let mut swap_in = [U256::ZERO; 2];
+        let mut swap_out = [U256::ZERO; 2];
+        for s in &tx.swaps {
+            if s.pool != a.pool || !in_swap_window(s.log_index) {
+                a.reject("unrelated_swap_in_owned_transaction");
+                continue;
+            }
+            let (Some(i), Some(o)) = (token_index(s.token_in), token_index(s.token_out)) else {
+                a.reject("unattributed_or_nonstandard_transfer");
+                continue;
+            };
+            match (
+                swap_in[i].checked_add(s.amount_in),
+                swap_out[o].checked_add(s.amount_out),
+            ) {
+                (Some(x), Some(y)) => {
+                    swap_in[i] = x;
+                    swap_out[o] = y;
+                }
+                _ => a.reject("transfer_overflow"),
+            }
+        }
         let mut ins = [U256::ZERO; 2];
         let mut outs = [U256::ZERO; 2];
+        let mut seen_swap_in = [U256::ZERO; 2];
+        let mut seen_swap_out = [U256::ZERO; 2];
         for tr in &tx.transfers {
-            let token = if tr.token == a.token0 {
-                Some(0)
-            } else if tr.token == a.token1 {
-                Some(1)
-            } else {
-                None
-            };
+            let token = token_index(tr.token);
             if let Some(i) = token {
-                if tr.from == a.owner
-                    && tr.to == a.pool
-                    && tx.tx_hash == m.1.tx_hash
-                    && tr.log_index < m.2.log_index
+                if tr.from == a.owner && tr.to == a.pool && open_tx && tr.log_index < m.2.log_index
                 {
                     match ins[i].checked_add(tr.amount) {
                         Some(n) => ins[i] = n,
@@ -477,12 +546,22 @@ pub fn reconcile(
                     }
                 } else if tr.from == a.pool
                     && tr.to == a.owner
-                    && tx.tx_hash == c.1.tx_hash
+                    && close_tx
                     && tr.log_index > b.2.log_index
                     && tr.log_index < c.2.log_index
                 {
                     match outs[i].checked_add(tr.amount) {
                         Some(n) => outs[i] = n,
+                        None => a.reject("transfer_overflow"),
+                    }
+                } else if in_swap_window(tr.log_index) && tr.to == a.pool {
+                    match seen_swap_in[i].checked_add(tr.amount) {
+                        Some(n) => seen_swap_in[i] = n,
+                        None => a.reject("transfer_overflow"),
+                    }
+                } else if in_swap_window(tr.log_index) && tr.from == a.pool {
+                    match seen_swap_out[i].checked_add(tr.amount) {
+                        Some(n) => seen_swap_out[i] = n,
                         None => a.reject("transfer_overflow"),
                     }
                 } else {
@@ -492,17 +571,21 @@ pub fn reconcile(
                 a.reject("unattributed_or_nonstandard_transfer");
             }
         }
-        let expected_in = if tx.tx_hash == m.1.tx_hash {
+        let expected_in = if open_tx {
             [m.2.amount0, m.2.amount1]
         } else {
             [U256::ZERO; 2]
         };
-        let expected_out = if tx.tx_hash == c.1.tx_hash {
+        let expected_out = if close_tx {
             [c.2.amount0, c.2.amount1]
         } else {
             [U256::ZERO; 2]
         };
-        if ins != expected_in || outs != expected_out {
+        if ins != expected_in
+            || outs != expected_out
+            || seen_swap_in != swap_in
+            || seen_swap_out != swap_out
+        {
             a.reject("token_transfer_reconciliation_failed");
         }
     }
@@ -606,6 +689,11 @@ pub fn standard_token(chain: u64, token: Address) -> bool {
         _ => &[],
     };
     tokens.contains(&token)
+}
+/// Canonical shared position managers. Their keys fund many users, so an
+/// event-level owner is not an attributable searcher.
+fn shared_position_manager(owner: Address) -> bool {
+    owner == address!("C36442b4a4522E871399CD717aBDD847Ab11FE88")
 }
 fn canonical_factory(chain: u64) -> Option<Address> {
     match chain {
@@ -731,7 +819,7 @@ pub async fn enrich(
     for (idx, ev) in events
         .iter_mut()
         .enumerate()
-        .filter(|(_, e)| matches!(e.kind, MevKind::Jit | MevKind::JitArb))
+        .filter(|(_, e)| e.kind == MevKind::Jit)
     {
         let pool = ev.pools.first().copied().unwrap_or_default();
         let mut a =
@@ -741,9 +829,6 @@ pub async fn enrich(
         }
         if !standard_token(chain, a.token0) || !standard_token(chain, a.token1) {
             a.reject("nonstandard_or_unsupported_tokens");
-        }
-        if ev.kind == MevKind::JitArb {
-            a.reject("jit_arb_component_overlap_unreconciled");
         }
         let open_block = ev.details["opened_block"]
             .as_u64()
@@ -846,7 +931,9 @@ pub fn quote_requests(a: &JitAccounting) -> BTreeMap<u64, HashSet<Address>> {
 mod accounting_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
     use super::*;
-    use crate::explorer::types::TransferFact;
+    use crate::data::{BlockData, ReceiptData, TxData};
+    use crate::explorer::classify::{BlockContext, BlockInput, TxInput};
+    use crate::explorer::types::{Amm, LegSource, SwapFact, TransferFact};
     use alloy::primitives::address;
 
     const OWNER: Address = address!("1111111111111111111111111111111111111111");
@@ -971,6 +1058,7 @@ mod accounting_tests {
             to: Some(ROUTER),
             facts,
             transfers,
+            swaps: vec![],
             gas,
             other_activity: false,
         }
@@ -1206,6 +1294,121 @@ mod accounting_tests {
         assert_eq!(a.fee_amount0.as_deref(), Some("100"));
         assert_eq!(a.fee_amount1.as_deref(), Some("200"));
         assert_eq!(a.gas.len(), 1, "one receipt, one gas entry");
+    }
+
+    /// The production path must accept a cycle whose validating swap is in the
+    /// same receipt: `LpBlock::from_input` records the swap and transfer legs
+    /// between Mint and Burn instead of rejecting the transaction as shared.
+    #[test]
+    fn same_tx_cycle_from_receipt_input_reconciles() {
+        let block_hash = B256::repeat_byte(0xaa);
+        let parent = B256::repeat_byte(0x99);
+        let tx_hash = B256::repeat_byte(0xbb);
+        let mut mint = fact(true, false, 0, 1, 50, 1_000, 2_000);
+        mint.sender = Some(OWNER);
+        let tx_input = TxInput {
+            tx_index: 0,
+            tx_hash,
+            from: OWNER,
+            to: Some(POOL),
+            success: true,
+            gas_used: 100,
+            effective_gas_price_gwei: 1.0,
+            value: U256::ZERO,
+            transfers: vec![
+                transfer(0, 0, USD0, OWNER, POOL, 1_000),
+                transfer(0, 0, USD1, OWNER, POOL, 2_000),
+                transfer(0, 2, USD0, OWNER, POOL, 10),
+                transfer(0, 3, USD1, POOL, OWNER, 20),
+                transfer(0, 5, USD0, POOL, OWNER, 1_100),
+                transfer(0, 5, USD1, POOL, OWNER, 2_200),
+            ],
+            swaps: vec![SwapFact {
+                tx_index: 0,
+                log_index: 3,
+                pool: POOL,
+                amm: Amm::V3,
+                token_in: USD0,
+                token_out: USD1,
+                amount_in: U256::from(10u64),
+                amount_out: U256::from(20u64),
+                token_source: LegSource::Registry,
+                tick: Some(0),
+                owner: Some(OWNER),
+            }],
+            jit: vec![
+                mint,
+                fact(false, false, 0, 4, 50, 1_000, 2_000),
+                fact(false, true, 0, 6, 0, 1_100, 2_200),
+            ],
+            ..Default::default()
+        };
+        let input = BlockInput {
+            block: 30,
+            ts: 1_000,
+            ctx: BlockContext::for_tests(),
+            open_positions: vec![],
+            interest_lookback: Default::default(),
+            prior_oracle_answers: Default::default(),
+            savax_exchange_rate_wad: None,
+            tip_sinks: Default::default(),
+            txs: vec![tx_input],
+        };
+        let header = BlockData {
+            number: 30,
+            hash: block_hash,
+            timestamp: 1_000,
+            base_fee_per_gas: Some(1),
+            gas_limit: 30_000_000,
+            gas_used: 100,
+            coinbase: Address::ZERO,
+            difficulty: U256::ZERO,
+            mix_hash: B256::ZERO,
+        };
+        let tx = TxData {
+            hash: tx_hash,
+            index: 0,
+            tx_type: 2,
+            from: OWNER,
+            to: Some(POOL),
+            input: Bytes::new(),
+            value: U256::ZERO,
+            gas_limit: 100,
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: Some(1),
+            gas_price: None,
+            nonce: 0,
+            access_list: vec![],
+            authorization_list: vec![],
+        };
+        let receipt = ReceiptData {
+            block_hash: Some(block_hash),
+            tx_hash,
+            tx_index: 0,
+            status: true,
+            gas_used: 100,
+            cumulative_gas_used: 100,
+            effective_gas_price: Some(1),
+            logs: vec![],
+            contract_address: None,
+        };
+        let mut journal = LpBlock::from_input(&input, &header, &[tx], &[receipt]);
+        assert!(journal.complete);
+        assert_eq!(journal.txs[0].swaps.len(), 1);
+        journal.parent_hash = Some(parent);
+        let mut a = base();
+        with_baselines(&mut a, std::slice::from_ref(&journal));
+        reconcile(
+            &mut a,
+            std::slice::from_ref(&journal),
+            (30, 0, 1),
+            (30, 0, 4),
+            1_000,
+        );
+        assert_eq!(a.status, "verified", "reasons={:?}", a.reasons);
+        assert_eq!(a.fee_amount0.as_deref(), Some("100"));
+        assert_eq!(a.fee_amount1.as_deref(), Some("200"));
+        assert_eq!(a.gas.len(), 1);
     }
 
     /// Fees come only from this position's own Collect. Another LP's activity

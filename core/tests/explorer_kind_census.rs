@@ -64,16 +64,18 @@ use rusqlite::Connection;
 /// a spelling drift fails the static gate instead of silently dropping kinds
 /// from the census join.
 const ALL_KINDS: &[MevKind] = &[
-    MevKind::Sandwich,
-    MevKind::Frontrun,
     MevKind::Backrun,
-    MevKind::ArbAtomic,
-    MevKind::JitArb,
-    MevKind::Jit,
     MevKind::Liquidation,
+    MevKind::Jit,
     MevKind::Skim,
+    MevKind::ArbAtomic,
     MevKind::Utility,
 ];
+
+/// Kind labels that survived in the `mev_ops.kind` CHECK constraint of the
+/// landed V1/V8 migrations. Rows written before the removal keep these
+/// verbatim (read-only, never re-labelled); the census excludes them.
+const RETIRED_KINDS: &[&str] = &["sandwich", "front-run", "front-run", "jit_arb"];
 
 /// `(kind, precedence)` VALUES rows injected straight from `kind_precedence`,
 /// so the census SQL can never drift from the Rust order (the single source).

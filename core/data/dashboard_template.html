@@ -95,7 +95,6 @@ a:hover { text-decoration: underline; }
   min-width: 0; box-shadow: 0 8px 28px rgba(0,0,0,.22);
 }
 .card h2, .card h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
-.live-ops-title { margin: 0; flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: visible; text-overflow: clip; }
 .kpi { position: relative; }
 .kpi-label { color: var(--muted); font: 10px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; }
 .kpi-value { margin-top: 10px; font: 700 23px/1.05 var(--mono); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
@@ -295,11 +294,9 @@ pre.raw {
       <div class="grid row2b" style="margin-top:14px">
         <div class="card"><h2>Top searchers</h2><div id="overview-searchers"></div></div>
         <div class="card">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;min-width:0">
-            <h2 class="live-ops-title">Live operations</h2>
-            <span class="pill warn" id="overview-unpriced-badge" style="display:none;flex:0 0 auto"></span>
-          </div>
-          <div class="table-wrap" style="margin-top:10px"><table><thead><tr><th>Time</th><th>Kind</th><th>Tx</th><th class="num">Net</th></tr></thead><tbody id="overview-ops"></tbody></table></div>
+          <h2>Competitors per strategy</h2>
+          <div class="chart chart-tall" id="chart-overview-competitors"></div>
+          <div class="caption" id="overview-competitors-cap"></div>
         </div>
       </div>
     </section>
@@ -457,11 +454,8 @@ pre.raw {
     "utility/claim_and_sell": "#60a5fa",
     "arb_atomic": "#a78bfa",
     jit: "#34d399",
-    sandwich: "#f87171",
     liquidation: "#c084fc",
-    frontrun: "#fb7185",
     backrun: "#38bdf8",
-    jit_arb: "#2dd4bf",
     skim: "#fbbf24"
   };
   var AMM_COLORS = { v2: "#a78bfa", v3: "#2dd4bf", v4: "#38bdf8", lb: "#fbbf24" };
@@ -486,11 +480,8 @@ pre.raw {
       "utility/keeper": "Keeper",
       arb_atomic: "Atomic arbitrage",
       jit: "JIT",
-      sandwich: "Sandwich",
       liquidation: "Liquidation",
-      frontrun: "Frontrun",
       backrun: "Backrun",
-      jit_arb: "JIT arb",
       skim: "Skim",
       utility: "Utility"
     };
@@ -498,10 +489,12 @@ pre.raw {
     if (key.indexOf("utility/") === 0) {
       return key.slice("utility/".length).replace(/_/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
     }
+    if (key.indexOf("/") > 0) {
+      var base = key.slice(0, key.indexOf("/"));
+      var sub = key.slice(key.indexOf("/") + 1).replace(/_/g, " ");
+      return (map[base] || base.replace(/_/g, " ")) + " · " + sub;
+    }
     return key.replace(/_/g, " ");
-  }
-  function familyLabel(key) {
-    return key.indexOf("utility/") === 0 ? "utility" : "mev";
   }
   var STRATEGY_INFO = {
     arb_atomic: {
@@ -509,20 +502,10 @@ pre.raw {
       rules: ["A resolved, non-aggregator cycle touches at least two pools.", "Attributable token flows leave a positive residual; material inventory deficits reject the candidate."],
       limits: "A detected cycle is not enough by itself. USD pricing and financing-cost coverage remain separate checks."
     },
-    sandwich: {
-      definition: "An attacker trades before and after another trader on the same pool.",
-      rules: ["The same sender opens and then closes in the opposite direction.", "A different sender trades in the opening direction between those legs."],
-      limits: "Victim price degradation is evidence, not a mandatory gate. Known losses remain in the cost-return comparison even when excluded from headline net."
-    },
     backrun: {
       definition: "A profitable cycle follows a pool move by another trader.",
       rules: ["A different sender first moves the same pool in the opposite direction.", "A subsequent closed cycle has attributable profit, a matching-unit size check and improved execution versus an earlier reference."],
       limits: "Causality is inferred. The proximity and price-impact thresholds are configurable; historical settings may be unavailable."
-    },
-    frontrun: {
-      definition: "A searcher opens before another trader and closes profitably afterward.",
-      rules: ["A later third-party trade in the same direction executes worse.", "The searcher closes with a positive signed ledger over the opening-to-closing window; closing can be multi-hop."],
-      limits: "This is an inferred causal pattern, not proof of mempool intent. Proximity and impact thresholds are configurable."
     },
     liquidation: {
       definition: "A liquidator repays debt and receives collateral or buys seized collateral.",
@@ -531,13 +514,8 @@ pre.raw {
     },
     jit: {
       definition: "Liquidity is opened briefly around pool activity and then removed.",
-      rules: ["Liquidity events match the pool, owner and position range in on-chain order.", "Pool activity occurs during the position lifetime; only fully verified V3 settlement supports realised accounting."],
+      rules: ["Liquidity events match the pool, owner and position range in on-chain order.", "Classification requires an in-range swap in the closing block; settled accounting separately verifies the swap and cashflows strictly within the position lifetime."],
       limits: "Paid fees are Collect minus Burn principal, not all pool swap fees. Pre-existing balances, shared ownership, incomplete settlement and unsupported LB accounting can leave profit unknown."
-    },
-    jit_arb: {
-      definition: "A JIT lifecycle overlaps an atomic arbitrage operation.",
-      rules: ["The JIT anchor transaction also satisfies atomic-arbitrage detection.", "The classifier upgrades the operation rather than counting a second standalone arbitrage."],
-      limits: "LP fees and arbitrage residuals must not be added twice. Combined profit stays unknown when overlapping flows cannot be reconciled."
     },
     skim: {
       definition: "A searcher retrieves excess tokens held by a V2-like pool.",
@@ -566,7 +544,9 @@ pre.raw {
     }
   };
   function strategyDescription(key, detailed) {
-    var info = STRATEGY_INFO[key];
+    // Compound slices (e.g. arb_atomic/claim_and_sell) inherit their base
+    // strategy's definition; the label still shows the subkind.
+    var info = STRATEGY_INFO[key] || STRATEGY_INFO[String(key).split("/")[0]];
     var html = '<div class="chart-help"><b>' + esc(sliceLabel(key)) + "</b>";
     if (!info) return html + "<p>No rule description is available for this strategy.</p></div>";
     html += "<p>" + esc(info.definition) + "</p>";
@@ -580,17 +560,6 @@ pre.raw {
   function strategyKeyForLabel(label) {
     return Object.keys(STRATEGY_INFO).concat(rollMix().map(function (m) { return m.key; }))
       .find(function (key) { return sliceLabel(key) === label; });
-  }
-  function strategyLegend() {
-    return { show: true, formatter: function (p) {
-      var key = strategyKeyForLabel(p.name);
-      return key ? strategyDescription(key, true) : esc(p.name);
-    } };
-  }
-  function strategyAxisTooltip(p) {
-    var name = p.name || p.value || "";
-    var key = strategyKeyForLabel(name);
-    return key ? strategyDescription(key, true) : esc(name);
   }
   var helpTrigger = null;
   var helpTimer = null;
@@ -634,7 +603,7 @@ pre.raw {
     return "hsl(" + (h % 360) + " 70% 60%)";
   }
   function pillClass(key) {
-    var last = key.split("/").pop();
+    var last = String(key || "").split("/").pop().replace(/[^a-zA-Z0-9_-]/g, "_");
     return "pill " + last;
   }
   /** Format Option USD — never coerce null to zero. */
@@ -662,15 +631,6 @@ pre.raw {
   function fmtTime(ts) {
     if (ts == null) return "—";
     return new Date(ts * 1000).toISOString().slice(11, 19);
-  }
-  function relTime(ts) {
-    if (ts == null) return "—";
-    var now = (S.generator && S.generator.generated_at) || Math.floor(Date.now() / 1000);
-    var d = Math.max(0, now - ts);
-    if (d < 60) return d + "s ago";
-    if (d < 3600) return Math.floor(d / 60) + "m ago";
-    if (d < 86400) return Math.floor(d / 3600) + "h ago";
-    return Math.floor(d / 86400) + "d ago";
   }
   function dispose(id) {
     if (charts[id]) { try { charts[id].dispose(); } catch (e) {} charts[id] = null; }
@@ -735,6 +695,49 @@ pre.raw {
     return m;
   }
 
+  function rowFromIndex(idx, r) {
+    if (!r) return null;
+    var slice = (idx.slices || [])[r[1]] || "";
+    var parts = slice.split("/");
+    var kind = parts.shift() || "";
+    var subkind = parts.length ? parts.join("/") : null;
+    var conf = r[2] === 0 ? "exact" : (r[2] === 1 ? "inferred" : "other");
+    return {
+      id: r[16],
+      tx_hash: (idx.tx || [])[r[8]] || "",
+      ts: r[0],
+      kind: kind,
+      subkind: subkind,
+      confidence: conf,
+      eoa: (idx.eoas || [])[r[5]] || "",
+      contract: r[6] == null ? null : ((idx.contracts || [])[r[6]] || null),
+      block_number: r[7],
+      net_profit_usd: r[9],
+      profit_usd: r[10],
+      gas_cost_usd: r[11],
+      volume_usd: r[12],
+      flashloan_fee_usd: r[13],
+      excluded_from_net: (((r[3] || 0) & 1) === 1),
+      tags: (r[14] || []).map(function (id) { return (idx.tags || [])[id]; }).filter(Boolean)
+    };
+  }
+  function indexRows() {
+    if (indexComplete()) return (P.op_index.rows || []).map(function (r) { return rowFromIndex(P.op_index, r); });
+    return P.events || [];
+  }
+  function rowById(id) {
+    var hit = (P.events || []).filter(function (e) { return String(e.id) === String(id); })[0];
+    if (hit) return hit;
+    if (indexComplete()) {
+      var r = (P.op_index.rows || []).filter(function (x) { return String(x[16]) === String(id); })[0];
+      return rowFromIndex(P.op_index, r);
+    }
+    return null;
+  }
+  function rowsByHash(hash) {
+    return indexRows().filter(function (e) { return e && e.tx_hash === hash; });
+  }
+
   function indexComplete() {
     return !!(T.index_complete && P.op_index && (P.op_index.rows || []).length);
   }
@@ -779,7 +782,7 @@ pre.raw {
 
   function unmatchedJitCount() {
     return (P.strategy_economics || []).filter(function (e) {
-      return e.slice_key === "jit" || e.slice_key === "jit_arb";
+      return e.slice_key === "jit";
     }).reduce(function (n, e) { return n + e.ops_total - e.ops_eligible; }, 0);
   }
 
@@ -878,7 +881,10 @@ pre.raw {
       return ob - oa;
     });
     var lookup = {};
-    ss.forEach(function (p) { lookup[p.bucket_start + "|" + p.slice_key] = p.ops; });
+    ss.forEach(function (p) {
+      var k = p.bucket_start + "|" + p.slice_key;
+      lookup[k] = (lookup[k] || 0) + p.ops;
+    });
     var cum = 0;
     var netByBucket = {};
     series.forEach(function (p) {
@@ -913,12 +919,11 @@ pre.raw {
         textStyle: darkText(),
         legend: {
           type: "scroll", bottom: 0, textStyle: darkText(),
-          pageTextStyle: darkText(), tooltip: strategyLegend()
+          pageTextStyle: darkText()
         },
         tooltip: { trigger: "item", confine: true, formatter: function (p) {
-          var key = strategyKeyForLabel(p.seriesName);
-          return (key ? strategyDescription(key, true) : esc(p.seriesName))
-            + "<br>" + esc(dateTime(buckets[p.dataIndex])) + "<br>" + (key ? p.value + " operations" : usd(p.value, true));
+          return esc(p.seriesName) + "<br>" + esc(dateTime(buckets[p.dataIndex])) + "<br>"
+            + (p.seriesType === "line" ? usd(p.value, true) : p.value + " operations");
         } }, 
         grid: { left: 48, right: 52, top: 18, bottom: 52 },
         xAxis: {
@@ -945,10 +950,7 @@ pre.raw {
         backgroundColor: "transparent",
         tooltip: {
           trigger: "item",
-          formatter: function (p) {
-            return strategyDescription(mix[p.dataIndex] ? mix[p.dataIndex].key : "", true)
-              + "<br>" + p.value + " ops (" + p.percent + "%)";
-          }
+          formatter: function (p) { return esc(p.name) + "<br>" + p.value + " ops (" + p.percent + "%)"; }
         },
         series: [{
           type: "pie", radius: ["46%", "72%"],
@@ -963,6 +965,7 @@ pre.raw {
     if (cG) {
       var pct = ops ? (priced / ops) * 100 : 0;
       cG.setOption({
+        tooltip: { formatter: function () { return priced + " / " + ops + " operations priced (" + pct.toFixed(1) + "%)"; } },
         series: [{
           type: "gauge", startAngle: 180, endAngle: 0, min: 0, max: 100,
           pointer: { show: false },
@@ -985,18 +988,51 @@ pre.raw {
         + '<div class="meta">' + (a.ops || 0) + " op · " + usd(a.net_usd, true) + "</div></div>";
     }).join("") || '<div class="empty">No searchers</div>';
 
-    var badge = $("overview-unpriced-badge");
-    if (uj > 0) { badge.style.display = ""; badge.textContent = uj + " JIT not comparable"; }
-    else if ((Q.ops_unpriced || 0) > 0) { badge.style.display = ""; badge.textContent = Q.ops_unpriced + " unpriced"; }
-    else badge.style.display = "none";
-
-    $("overview-ops").innerHTML = searchEvents().slice().reverse().slice(0, 40).map(function (e) {
-      var key = sliceKey(e.kind, e.subkind);
-      return '<tr class="clickable" data-op-id="' + esc(String(e.id)) + '" data-hash="' + esc(e.tx_hash) + '"><td>' + esc(relTime(e.ts))
-        + '</td><td><span class="' + pillClass(key) + '" title="' + esc(familyLabel(key)) + '">'
-        + esc(sliceLabel(key)) + "</span></td><td>"
-        + esc(short(e.tx_hash)) + '</td><td>' + usd(e.net_profit_usd, true) + "</td></tr>";
-    }).join("");
+    // Full-window competitor split from the complete (untruncated) op index.
+    var cComp = chart("chart-overview-competitors");
+    if (cComp) {
+      var OI = P.op_index || {};
+      var oiRows = OI.rows || [];
+      var oiSlices = OI.slices || [];
+      var totalComp = (OI.actors || []).length;
+      var perSlice = {};
+      oiRows.forEach(function (r) {
+        var key = oiSlices[r[1]];
+        if (key == null) return;
+        var acc = perSlice[key] || (perSlice[key] = { comps: {}, ops: 0 });
+        acc.comps[r[4]] = 1;
+        acc.ops += 1;
+      });
+      var compRows = Object.keys(perSlice).map(function (key) {
+        var n = Object.keys(perSlice[key].comps).length;
+        return { key: key, comps: n, ops: perSlice[key].ops, share: totalComp ? n * 100 / totalComp : null };
+      }).sort(function (a, b) { return b.comps - a.comps || b.ops - a.ops; });
+      cComp.setOption({
+        backgroundColor: "transparent",
+        textStyle: darkText(),
+        grid: { left: 128, right: 96, top: 12, bottom: 22 },
+        tooltip: { trigger: "item", confine: true, formatter: function (p) {
+          var r = compRows[p.dataIndex];
+          return esc(sliceLabel(r.key)) + "<br>" + r.comps + " competitors · " + percent(r.share)
+            + " of all competitors<br>" + r.ops + " operations · "
+            + (r.comps ? (r.ops / r.comps).toFixed(1) + " ops per competitor" : "—");
+        } },
+        xAxis: { type: "value", minInterval: 1, axisLabel: darkText(), splitLine: { lineStyle: { color: "#1c2838" } } },
+        yAxis: { type: "category", inverse: true, data: compRows.map(function (r) { return sliceLabel(r.key); }), axisLabel: darkText() },
+        graphic: compRows.length ? [] : [{ type: "text", left: "center", top: "middle", style: { text: "No operations in this window", fill: "#7f91ab" } }],
+        series: [{
+          type: "bar", barMaxWidth: 24,
+          data: compRows.map(function (r) { return { value: r.comps, itemStyle: { color: colorFor(r.key), borderRadius: [0, 4, 4, 0] } }; }),
+          label: { show: true, position: "right", color: "#cbd5e1", fontSize: 10, formatter: function (p) {
+            var r = compRows[p.dataIndex];
+            return r.comps + " · " + percent(r.share);
+          } }
+        }]
+      });
+      $("overview-competitors-cap").textContent = totalComp
+        + " unique competitors (contract or EOA) · share of all competitors in the window · "
+        + "one competitor can run several strategies, so shares need not total 100%";
+    }
   }
 
   function renderSearchers() {
@@ -1014,6 +1050,13 @@ pre.raw {
     if (cNet) {
       cNet.setOption({
         backgroundColor: "transparent",
+        tooltip: { trigger: "axis", confine: true, formatter: function (items) {
+          var p = items[0];
+          if (!p) return "";
+          var key = strategyKeyForLabel(p.name);
+          return (key ? strategyDescription(key, true) : esc(p.name))
+            + "<br>Net " + usd(p.value, true);
+        } },
         grid: { left: 120, right: 28, top: 8, bottom: 24 },
         xAxis: { type: "value", axisLabel: darkText(), splitLine: { lineStyle: { color: "#1c2838" } } },
         yAxis: { type: "category", data: mix.map(function (m) { return sliceLabel(m.key); }), axisLabel: darkText() },
@@ -1046,7 +1089,7 @@ pre.raw {
     if (cAmm) {
       cAmm.setOption({
         backgroundColor: "transparent",
-        tooltip: { formatter: function (p) { return p.name + ": " + p.value; } },
+        tooltip: { formatter: function (p) { return esc(p.name) + ": " + esc(String(p.value)); } },
         series: [{
           type: "treemap", roam: false, nodeClick: false, breadcrumb: { show: false },
           label: { color: "#eef3fb" },
@@ -1129,7 +1172,8 @@ pre.raw {
         var reasons = Object.keys(row.exclusion_reasons || {}).map(function (r) { return esc(r.replace(/_/g, " ")) + ": " + row.exclusion_reasons[r]; });
         return strategyDescription(row.slice_key, true) + "<br>Return on cost: " + percent(row.roi_pct)
           + "<br>Per $10 cost: " + usd(row.net_per_10, true) + " net; " + usd(row.gross_per_10, true) + " gross"
-          + "<br>Eligible: " + row.ops_eligible + " / " + row.ops_total + " · losses: " + row.observed_losses
+          + "<br>Eligible: " + row.ops_eligible + " / " + row.ops_total
+          + " (" + row.ops_exact + " exact · " + row.ops_inferred + " inferred) · losses: " + row.observed_losses
           + (reasons.length ? "<br>Not comparable: " + reasons.join("<br>") : "");
       } },
       xAxis: { type: "value", name: "%", axisLabel: { color: "#8b9bb3", formatter: "{value}%" }, splitLine: { lineStyle: { color: "#243044" } } },
@@ -1141,7 +1185,10 @@ pre.raw {
       markLine: { silent: true, symbol: "none", data: [{ xAxis: 0 }], lineStyle: { color: "#8296b0", type: "solid" }, label: { show: false } } }]
     });
     var eligible = rows.reduce(function (n, r) { return n + r.ops_eligible; }, 0);
-    $("analytics-roi-cap").textContent = eligible + " / " + (K.ops || 0) + " operations have comparable economics. "
+    var exact = rows.reduce(function (n, r) { return n + (r.ops_exact || 0); }, 0);
+    var inferred = rows.reduce(function (n, r) { return n + (r.ops_inferred || 0); }, 0);
+    $("analytics-roi-cap").textContent = eligible + " / " + (K.ops || 0) + " operations have comparable economics ("
+      + exact + " exact · " + inferred + " inferred). "
       + "Cost = recorded receipt gas + known financing fees, not deposited/borrowed capital or swap volume; off-ledger payouts (e.g. builder payments) are excluded. "
       + "Read as a ratio of sums: every $10 of recorded cost → the gross/net in the table. Historical, not a forecast return. "
       + "Unavailable observations are not zero-profit observations.";
@@ -1155,7 +1202,9 @@ pre.raw {
       var netCell = zeroCost ? na : usd(r.net_per_10, true);
       var returnCell = zeroCost ? na : percent(r.roi_pct);
       return '<tr><td>' + strategyBadge(r.slice_key) + '</td><td title="' + esc(reason || "All observations eligible") + '">'
-        + r.ops_eligible + " / " + r.ops_total + '</td><td>' + grossCell + '</td><td>' + netCell
+        + r.ops_eligible + " / " + r.ops_total
+        + ' <span class="caption">(' + (r.ops_exact || 0) + "e · " + (r.ops_inferred || 0) + "i)</span></td><td>"
+        + grossCell + '</td><td>' + netCell
         + '</td><td class="' + (r.roi_pct < 0 ? "loss" : "gain") + '">' + returnCell + '</td><td>' + r.observed_losses + '</td></tr>';
     }).join("") || '<tr><td colspan="6" class="empty">No operations in this window</td></tr>';
     // Reasons live beside the chart, not only in tooltips: show the largest
@@ -1187,7 +1236,10 @@ pre.raw {
     slices.sort();
     var heat = [];
     var lookup = {};
-    ss.forEach(function (p) { lookup[p.bucket_start + "|" + p.slice_key] = p.ops; });
+    ss.forEach(function (p) {
+      var k = p.bucket_start + "|" + p.slice_key;
+      lookup[k] = (lookup[k] || 0) + p.ops;
+    });
     slices.forEach(function (s, yi) {
       buckets.forEach(function (b, xi) {
         heat.push([xi, yi, lookup[b + "|" + s] || 0]);
@@ -1216,7 +1268,15 @@ pre.raw {
     if (cMix) {
       cMix.setOption({
         backgroundColor: "transparent",
-        tooltip: { trigger: "item" },
+        tooltip: {
+          trigger: "item",
+          confine: true,
+          formatter: function (p) {
+            var row = mix[p.dataIndex];
+            return (row ? strategyDescription(row.key, true) : esc(p.name))
+              + "<br>" + p.value + " ops (" + p.percent + "%)";
+          }
+        },
         series: [{
           type: "pie", radius: ["42%", "68%"],
           label: { color: "#8b9bb3" },
@@ -1235,6 +1295,13 @@ pre.raw {
     if (cConf) {
       cConf.setOption({
         backgroundColor: "transparent",
+        tooltip: { trigger: "axis", confine: true, formatter: function (items) {
+          var p = items[0];
+          if (!p) return "";
+          var total = confExact + confInf;
+          return esc(p.name) + " confidence<br>" + p.value + " operations"
+            + (total ? " (" + (100 * p.value / total).toFixed(1) + "%)" : "");
+        } },
         grid: { left: 80, right: 20, top: 10, bottom: 30 },
         xAxis: { type: "value", axisLabel: darkText(), splitLine: { lineStyle: { color: "#243044" } } },
         yAxis: { type: "category", data: ["Exact", "Inferred"], axisLabel: darkText() },
@@ -1262,6 +1329,13 @@ pre.raw {
       var netRows = mix.slice().sort(function (a, b) { return a.net - b.net; });
       cNet.setOption({
         backgroundColor: "transparent",
+        tooltip: { trigger: "axis", confine: true, formatter: function (items) {
+          var p = items[0];
+          if (!p) return "";
+          var key = strategyKeyForLabel(p.name);
+          return (key ? strategyDescription(key, true) : esc(p.name))
+            + "<br>Net " + usd(p.value, true);
+        } },
         grid: { left: 100, right: 24, top: 8, bottom: 24 },
         xAxis: { type: "value", axisLabel: darkText(), splitLine: { lineStyle: { color: "#243044" } } },
         yAxis: { type: "category", data: netRows.map(function (m) { return sliceLabel(m.key); }), axisLabel: darkText() },
@@ -1287,7 +1361,7 @@ pre.raw {
     if (cAmm) {
       cAmm.setOption({
         backgroundColor: "transparent",
-        tooltip: { formatter: function (p) { return p.name + ": " + p.value; } },
+        tooltip: { formatter: function (p) { return esc(p.name) + ": " + esc(String(p.value)); } },
         series: [{
           type: "treemap",
           roam: false,
@@ -1349,7 +1423,7 @@ pre.raw {
     $("ops-tbody").innerHTML = rows.map(function (e) {
       var key = sliceKey(e.kind, e.subkind);
       var active = String(state.opId) === String(e.id) ? " active" : "";
-      return '<tr class="clickable' + active + '" data-op-id="' + esc(String(e.id)) + '" data-hash="' + esc(e.tx_hash) + '"><td>'
+      return '<tr class="clickable' + active + '" tabindex="0" data-op-id="' + esc(String(e.id)) + '" data-hash="' + esc(e.tx_hash) + '"><td>'
         + esc(fmtTime(e.ts)) + '</td><td><span class="' + pillClass(key) + '">'
         + esc(sliceLabel(key)) + "</span></td><td>" + usd(e.net_profit_usd, true) + "</td></tr>";
     }).join("") || '<tr><td colspan="3" class="empty">No operations</td></tr>';
@@ -1357,20 +1431,20 @@ pre.raw {
 
   function openOp(key, fromHash) {
     // Ids distinguish several positions closed in the same tx; a legacy
-    // transaction hash still resolves when it maps to exactly one operation.
-    // With several matches we show a chooser instead of silently picking one.
-    var evs = P.evidence || [];
-    var ev = evs.filter(function (x) { return String(x.id) === String(key); })[0];
-    if (!ev) {
-      var byHash = evs.filter(function (x) { return x.tx_hash === key; });
-      if (byHash.length === 1) ev = byHash[0];
-    }
-    var row = null;
-    if (!ev) {
-      row = (P.events || []).filter(function (x) { return String(x.id) === String(key); })[0];
-      if (!row) {
-        var rowsByHash = (P.events || []).filter(function (x) { return x.tx_hash === key; });
-        if (rowsByHash.length === 1) row = rowsByHash[0];
+    // transaction hash resolves only against the full operation index. With
+    // several matches we show a chooser instead of silently picking one.
+    var ev = (P.evidence || []).filter(function (x) { return String(x.id) === String(key); })[0];
+    var row = rowById(key);
+    if (!row && !ev) {
+      var matches = rowsByHash(String(key));
+      if (matches.length === 1) row = matches[0];
+      else if (matches.length > 1) {
+        state.opId = null;
+        state.opHash = String(key);
+        state.legacyHash = String(key);
+        setView("operations", fromHash === true ? false : undefined);
+        renderOpDetail();
+        return;
       }
     }
     if (ev) {
@@ -1384,8 +1458,6 @@ pre.raw {
     } else {
       state.opId = null;
       state.opHash = String(key);
-      // Ambiguous legacy hash: keep the hash so the detail pane can offer a
-      // deterministic operation chooser.
       state.legacyHash = String(key);
     }
     setView("operations", fromHash === true ? false : undefined);
@@ -1424,28 +1496,19 @@ pre.raw {
     renderOperationsList();
     var byId = evidenceById();
     var ev = state.opId != null ? byId[String(state.opId)] : null;
-    if (!ev && state.opId == null && state.opHash) {
-      // Legacy #/op/<txhash>: resolve when the hash identifies one operation.
-      var matches = (P.evidence || []).filter(function (x) { return x.tx_hash === state.opHash; });
+    var row = state.opId != null ? rowById(state.opId) : null;
+    if (!ev && !row && state.opId == null && state.opHash) {
+      // Legacy #/op/<txhash>: the full index decides uniqueness, not the
+      // truncated evidence list that may contain only one sibling.
+      var matches = rowsByHash(state.opHash);
       if (matches.length === 1) {
-        ev = matches[0];
+        row = matches[0];
+        state.opId = row.id;
       } else if (matches.length > 1) {
         showOpChooser(matches);
         return;
       }
     }
-    if (!ev && state.opId == null && state.opHash) {
-      var hashRows = (P.events || []).filter(function (x) { return x.tx_hash === state.opHash; });
-      if (hashRows.length === 1) {
-        state.opId = hashRows[0].id;
-      } else if (hashRows.length > 1) {
-        showOpChooser(hashRows);
-        return;
-      }
-    }
-    var row = state.opId != null
-      ? (P.events || []).filter(function (e) { return String(e.id) === String(state.opId); })[0]
-      : null;
     if (ev) {
       state.opId = ev.id;
       state.opHash = ev.tx_hash;
@@ -1488,9 +1551,7 @@ pre.raw {
     if (!ev && row) badges += ' <span class="pill warn">evidence not emitted</span>';
     // Several positions can close in one transaction; let the reader pick the
     // exact operation instead of silently showing the first one.
-    var siblings = (P.evidence || []).filter(function (x) {
-      return state.opHash && x.tx_hash === state.opHash;
-    });
+    var siblings = state.opHash ? rowsByHash(state.opHash) : [];
     if (siblings.length > 1) {
       badges += ' <span class="caption">positions in this tx:</span> ' + siblings.map(function (s) {
         var active = String(s.id) === String(state.opId);
@@ -1500,19 +1561,21 @@ pre.raw {
     }
     $("op-badges").innerHTML = badges;
 
+    // Evidence may be truncated before the event row. Never lose an already
+    // reduced economics value just because the richer evidence object is gone.
     var net = ev ? ev.net_profit_usd : row.net_profit_usd;
     var gross = ev ? ev.profit_usd : row.profit_usd;
     var gas = ev ? ev.gas_cost_usd : row.gas_cost_usd;
     var vol = ev ? ev.volume_usd : row.volume_usd;
-    var flash = ev ? ev.flashloan_fee_usd : null;
+    var flash = ev && ev.flashloan_fee_usd != null ? ev.flashloan_fee_usd : row.flashloan_fee_usd;
     var acc = (ev && ev.details && ev.details.jit_accounting) || null;
     var netted = !!(ev && ev.details && ev.details.flashloan_fee_netted_in_ledger);
-    var econ = (ev && ev.economics) || null;
+    var econ = (ev && ev.economics) || (row && row.economics) || null;
     var econComplete = !!(econ && econ.eligible && econ.gross_usd != null
       && econ.cost_usd != null && econ.net_usd != null);
     $("op-kpis").innerHTML = [
       { l: "Net profit", v: usd(net, true) },
-      { l: "Gross profit", v: usd(gross, false) },
+      { l: "Gross profit", v: usd(gross, true) },
       { l: "Gas", v: usd(gas, false) },
       { l: "Volume", v: usd(vol, false) }
     ].map(function (x) {
@@ -1542,45 +1605,53 @@ pre.raw {
       var wfFlowed = steps.reduce(function (sum, s) { return s.isNet ? sum : sum + s.value; }, 0);
       var wfMismatch = wfNet != null && steps.some(function (s) { return s.isNet; })
         && Math.abs(wfFlowed - wfNet) > 1e-6;
-      // ECharts waterfall via helper totals
-      var help = [];
+      // A custom series draws each bar from its true start to end. ECharts
+      // stacking treats a positive bar on a negative base as starting at zero,
+      // so loss/cross-zero waterfalls need explicit geometry.
+      var points = [];
       var run = 0;
-      var vals = [];
-      steps.forEach(function (s, i) {
+      steps.forEach(function (s) {
         if (s.isNet) {
-          help.push(0);
-          vals.push(s.value);
-        } else if (i === 0) {
-          help.push(0);
-          vals.push(s.value);
-          run = s.value;
+          points.push({ name: s.name, value: s.value, start: 0, end: s.value });
         } else {
-          help.push(run + Math.min(s.value, 0));
-          vals.push(Math.abs(s.value));
+          var start = run;
           run += s.value;
+          points.push({ name: s.name, value: s.value, start: start, end: run });
         }
       });
       wf.setOption({
         backgroundColor: "transparent",
         tooltip: {
+          trigger: "item",
+          confine: true,
           formatter: function (p) {
-            if (p.seriesName === "assist") return "";
-            var s = steps[p.dataIndex];
-            return s.name + ": " + usd(s.value, true);
+            var s = points[p.dataIndex];
+            return esc(s.name) + ": " + usd(s.value, true);
           }
         },
         grid: { left: 50, right: 20, top: 20, bottom: 40 },
-        xAxis: { type: "category", data: steps.map(function (s) { return s.name; }), axisLabel: darkText() },
+        xAxis: { type: "category", data: points.map(function (s) { return s.name; }), axisLabel: darkText() },
         yAxis: { type: "value", axisLabel: darkText(), splitLine: { lineStyle: { color: "#243044" } } },
-        series: [
-          { name: "assist", type: "bar", stack: "wf", data: help, itemStyle: { borderColor: "transparent", color: "transparent" }, tooltip: { show: false } },
-          {
-            name: "pnl", type: "bar", stack: "wf",
-            data: steps.map(function (s, i) {
-              return { value: vals[i], itemStyle: { color: s.value >= 0 ? "#34d399" : "#f87171" } };
-            })
+        series: [{
+          type: "custom",
+          data: points.map(function (s) { return [s.start, s.end]; }),
+          renderItem: function (params, api) {
+            var i = params.dataIndex;
+            var a = api.coord([i, api.value(0)]);
+            var b = api.coord([i, api.value(1)]);
+            var band = api.size([1, 0])[0] || 24;
+            return {
+              type: "rect",
+              shape: {
+                x: a[0] - band * 0.28,
+                y: Math.min(a[1], b[1]),
+                width: band * 0.56,
+                height: Math.max(1, Math.abs(a[1] - b[1]))
+              },
+              style: { fill: points[i].value >= 0 ? "#34d399" : "#f87171" }
+            };
           }
-        ]
+        }]
       });
     }
     // Waterfall reconciliation note: the netted flash fee must not be taken
@@ -1588,6 +1659,8 @@ pre.raw {
     var wfNote = $("op-waterfall-note");
     if (wfMismatch) {
       wfNote.textContent = "Incomplete cost evidence: the bars do not reconcile with net, so no zero-cost bar is fabricated.";
+    } else if (wfGross != null && (wfGas == null || wfNet == null)) {
+      wfNote.textContent = "Cost is incomplete: a recorded gas or fee component is missing, so net is left empty rather than shown as a zero-cost bar.";
     } else if (netted) {
       wfNote.textContent = "Flash-loan fee is already netted in the ledger residual; the waterfall does not subtract it again.";
     } else if (!econComplete && ev && ev.flash_fee_unpriced) {
@@ -1653,39 +1726,41 @@ pre.raw {
       var lastLeg = route[route.length - 1];
       var firstIn = firstLeg.amount_in_human || firstLeg.amount_in;
       var lastOut = lastLeg.amount_out_human || lastLeg.amount_out;
-      // Show the first leg's input explicitly; the old loop started only at
-      // leg 1 and silently dropped it.
       html += '<div class="route-edge"><span class="caption">Input</span> '
         + tokenLabel(firstLeg.token_in, firstLeg.token_in_symbol, firstLeg.token_in_name)
         + (firstIn ? '<span class="amt">' + esc(firstIn) + "</span>" : "")
         + "</div>";
       route.forEach(function (leg, i) {
         if (i) {
-          var ain = leg.amount_in_human || leg.amount_in;
-          var aout = leg.amount_out_human || leg.amount_out;
-          html += '<div class="route-edge">'
-            + tokenLabel(leg.token_in, leg.token_in_symbol, leg.token_in_name)
-            + " → "
-            + tokenLabel(leg.token_out, leg.token_out_symbol, leg.token_out_name)
-            + (ain || aout
-              ? '<span class="amt">' + esc(ain || "?") + " → " + esc(aout || "?") + "</span>"
-              : "")
-            + "</div>";
+          var prev = route[i - 1];
+          var connected = prev.token_out && leg.token_in
+            && String(prev.token_out).toLowerCase() === String(leg.token_in).toLowerCase();
+          if (!connected) {
+            html += '<div class="route-edge"><span class="caption">Disconnected observed legs</span> '
+              + tokenLabel(prev.token_out, prev.token_out_symbol, prev.token_out_name)
+              + " → "
+              + tokenLabel(leg.token_in, leg.token_in_symbol, leg.token_in_name)
+              + "</div>";
+          }
         }
-        var amm = leg.amm || "?";
+        var amm = leg.amm || "observed AMM";
+        var aout = leg.amount_out_human || leg.amount_out;
         if (leg.token_source && leg.token_source !== "registry") nonReg = true;
         html += '<div class="route-node ' + esc(String(amm).toLowerCase()) + '"><div>'
           + ammIcon(amm) + "<b>" + esc(amm) + "</b></div><div title=\"" + esc(leg.pool || "") + "\">"
           + esc(short(leg.pool || "")) + "</div></div>";
+        html += '<div class="route-edge">'
+          + tokenLabel(leg.token_out, leg.token_out_symbol, leg.token_out_name)
+          + (aout ? '<span class="amt">' + esc(aout) + "</span>" : "")
+          + "</div>";
       });
-      // ...and the last leg's output, which the loop also omitted.
       html += '<div class="route-edge"><span class="caption">Output</span> '
         + tokenLabel(lastLeg.token_out, lastLeg.token_out_symbol, lastLeg.token_out_name)
         + (lastOut ? '<span class="amt">' + esc(lastOut) + "</span>" : "")
         + "</div>";
       $("op-route").innerHTML = html;
       $("op-route-cap").textContent = nonReg
-        ? "Observed AMM labels · proximity/non-registry token source on at least one leg"
+        ? "Observed AMM labels · proximity/non-registry token source on at least one leg · disconnected legs are shown, never bridged"
         : "Observed AMM · symbol/name/address + humanized amounts when decimals known";
     }
 
@@ -1699,6 +1774,24 @@ pre.raw {
           + esc(dateTime(t.ts)) + " · tx " + esc(short(t.tx_hash || "")) + "</span>"
           + "<div>amount0 " + esc(t.amount0 || "—") + " · amount1 " + esc(t.amount1 || "—") + "</div></li>");
       });
+    }
+    if (!tl.length && ev && ev.details && ev.details.front_run && ev.details.back_run) {
+      var fr = ev.details.front_run;
+      var br = ev.details.back_run;
+      var victimHashes = ev.victim_hashes || [];
+      tl.push("<li><strong>Front-run</strong>"
+        + '<span class="caption">Block ' + esc(String(ev.block_number)) + " · " + esc(dateTime(ev.ts))
+        + " · tx " + esc(short(fr.tx_hash || "")) + "</span>"
+        + "<div>" + esc(fr.amount_in || "?") + " → " + esc(fr.amount_out || "?") + "</div></li>");
+      victimHashes.forEach(function (h) {
+        tl.push("<li><strong>Victim</strong>"
+          + '<span class="caption">Block ' + esc(String(ev.block_number)) + " · " + esc(dateTime(ev.ts))
+          + " · tx " + esc(short(h)) + "</span></li>");
+      });
+      tl.push("<li><strong>Back-run</strong>"
+        + '<span class="caption">Block ' + esc(String(ev.block_number)) + " · " + esc(dateTime(ev.ts))
+        + " · tx " + esc(short(br.tx_hash || "")) + "</span>"
+        + "<div>" + esc(br.amount_in || "?") + " → " + esc(br.amount_out || "?") + "</div></li>");
     }
     if (!tl.length && route.length) {
       var tlBlock = (ev && ev.block_number) || (row && row.block_number) || "—";
@@ -1931,6 +2024,10 @@ pre.raw {
       var top = storage.slice(0, 12);
       cSt.setOption({
         backgroundColor: "transparent",
+        tooltip: { trigger: "axis", confine: true, formatter: function (items) {
+          var p = items[0];
+          return p ? esc(p.name) + ": " + esc(String(p.value)) + " rows" : "";
+        } },
         grid: { left: 100, right: 20, top: 10, bottom: 30 },
         xAxis: { type: "value", axisLabel: darkText(), splitLine: { lineStyle: { color: "#243044" } } },
         yAxis: { type: "category", data: top.map(function (t) { return t.table; }).reverse(), axisLabel: darkText() },
@@ -1969,13 +2066,26 @@ pre.raw {
       return;
     }
     if (["analytics", "operations", "searchers", "pools", "health", "overview"].indexOf(h) >= 0) {
+      if (h === "operations") {
+        state.opId = null;
+        state.opHash = null;
+        state.legacyHash = null;
+      }
       return setView(h, false);
     }
     setView("overview", false);
   }
 
   document.querySelectorAll(".navbtn").forEach(function (b) {
-    b.addEventListener("click", function () { setView(b.getAttribute("data-view")); });
+    b.addEventListener("click", function () {
+      var view = b.getAttribute("data-view");
+      if (view === "operations") {
+        state.opId = null;
+        state.opHash = null;
+        state.legacyHash = null;
+      }
+      setView(view);
+    });
   });
   $("global-search").addEventListener("input", function (e) {
     state.q = e.target.value || "";
@@ -2013,6 +2123,13 @@ pre.raw {
   });
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape") hideStrategyHelp();
+    if (e.key === "Enter" || e.key === " ") {
+      var pick = e.target.closest && e.target.closest("[data-op-id]");
+      if (pick) {
+        e.preventDefault();
+        openOp(pick.getAttribute("data-op-id"));
+      }
+    }
   });
   $("op-back").addEventListener("click", function () {
     state.opId = null;

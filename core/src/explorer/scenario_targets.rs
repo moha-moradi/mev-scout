@@ -54,29 +54,6 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         hunt: "corpus av-arb-*; dense multi-pool closed cycles",
     },
     StrategyScenarioTarget {
-        id: "baseline.sandwich",
-        label: "sandwich",
-        syn_test: "baseline_sandwich",
-        // Avalanche sparse. Ethereum cases live in explorer_corpus
-        // (26055651..=26055745 and 26059500..=26059550); seed_* here are
-        // Avalanche-only. Block 26089508 is a hunt observation, not a case.
-        real: RealSeedStatus::Hunt,
-        seed_from: None,
-        seed_to: None,
-        seed_searcher: None,
-        hunt: "same sender opposite legs around victim on one pool (Avalanche rare; ETH corpus 26059500..=26059550)",
-    },
-    StrategyScenarioTarget {
-        id: "baseline.frontrun",
-        label: "frontrun",
-        syn_test: "baseline_frontrun",
-        real: RealSeedStatus::Hunt,
-        seed_from: None,
-        seed_to: None,
-        seed_searcher: None,
-        hunt: "cross-pool/multi-hop close with victim price degradation; same-pool close is Sandwich; 2026-10-24 re-hunt 301 recent blocks: 0; AVAX 2026-10-25 (5001 blk, dwellir) 0",
-    },
-    StrategyScenarioTarget {
         id: "baseline.backrun",
         label: "backrun",
         syn_test: "baseline_backrun",

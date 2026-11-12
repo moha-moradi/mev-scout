@@ -11,7 +11,6 @@ use alloy::primitives::{Address, U256};
 use super::ExplorerStore;
 use crate::explorer::pricing::{hour_bucket, token_amount_to_usd, wei_to_usd, TokenUsd};
 use crate::explorer::profit::NATIVE_MARKER;
-use crate::explorer::types::MevKind;
 
 impl ExplorerStore {
     /// Reprice `profit_usd` / `net_profit_usd` / `excluded_from_net` for ops in
@@ -48,7 +47,7 @@ impl ExplorerStore {
         let mut pending: Vec<RepriceUpdate> = Vec::new();
         for row in rows {
             let row = row?;
-            if matches!(row.kind.as_str(), "jit" | "jit_arb") {
+            if row.kind.as_str() == "jit" {
                 if let Some(update) = self.reprice_jit(&row, &decimals_of)? {
                     pending.push(update);
                     continue;
@@ -64,8 +63,7 @@ impl ExplorerStore {
                 row.flashloan_fee_usd.unwrap_or(0.0)
             };
             let net = row.gas_cost_usd.map(|gas| profit_usd - gas - fee_for_net);
-            let excluded = (row.kind == MevKind::Sandwich.as_str()
-                && matches!(net, Some(n) if n <= 0.0)) as i64;
+            let excluded = 0i64;
             pending.push(RepriceUpdate {
                 id: row.id,
                 profit_usd: Some(profit_usd),
@@ -135,10 +133,15 @@ impl ExplorerStore {
             }
             let hour = point.ts / 3600;
             for token in [accounting.token0, accounting.token1] {
-                let (Some(decimals), Some((usd, source))) =
-                    (decimals_of(token), self.price_at(token, hour)?)
+                let (Some(decimals), Some((usd, source, observed))) =
+                    (decimals_of(token), self.price_quote_at(token, hour)?)
                 else {
                     continue;
+                };
+                let provenance = if observed == hour {
+                    source
+                } else {
+                    format!("{source}@{observed}")
                 };
                 accounting
                     .quotes
@@ -147,7 +150,7 @@ impl ExplorerStore {
                         hour,
                         usd,
                         decimals,
-                        source,
+                        source: provenance,
                     });
             }
         }
