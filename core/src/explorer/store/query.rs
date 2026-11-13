@@ -633,8 +633,8 @@ mod filter_tests {
 
     #[test]
     fn filter_clause_takes_enums_not_strings() {
-        let s = report_filter_clause(Some(MevKind::Backrun), Some(Confidence::Exact));
-        assert!(s.contains("kind = 'backrun'"));
+        let s = report_filter_clause(Some(MevKind::Skim), Some(Confidence::Exact));
+        assert!(s.contains("kind = 'skim'"));
         assert!(s.contains("confidence = 'exact'"));
     }
 

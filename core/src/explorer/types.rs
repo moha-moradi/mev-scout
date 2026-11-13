@@ -1,7 +1,8 @@
 //! Core data contracts for the realized-MEV explorer.
 //!
 //! `MevEvent` is one classified operation anchored to a single transaction
-//! (arb, liquidation, JIT, backrun, skim, utility).
+//! (arb, liquidation, JIT, skim, utility). A backrun is an `ArbAtomic` carrying
+//! the `backrun` tag, not a separate kind.
 use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
@@ -9,9 +10,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MevKind {
     /// Single tx whose token-flow graph closes a cycle ending in the start token.
+    /// A causal backrun is this kind with the `backrun` tag (see `classify::causal`).
     ArbAtomic,
-    /// Searcher swap(s) execute after a prior tx whose price move they harvest.
-    Backrun,
     /// Known liquidation event on a configured lending pool.
     Liquidation,
     /// Concentrated-liquidity Mint+Burn around swaps in one block (fee capture).
@@ -27,7 +27,6 @@ impl MevKind {
     /// Every emittable kind, in canonical order. Single source of truth for
     /// coverage tests and CLI error messages.
     pub const ALL: &[MevKind] = &[
-        MevKind::Backrun,
         MevKind::ArbAtomic,
         MevKind::Jit,
         MevKind::Liquidation,
@@ -38,7 +37,6 @@ impl MevKind {
     pub fn as_str(self) -> &'static str {
         match self {
             MevKind::ArbAtomic => "arb_atomic",
-            MevKind::Backrun => "backrun",
             MevKind::Liquidation => "liquidation",
             MevKind::Jit => "jit",
             MevKind::Skim => "skim",
@@ -47,12 +45,12 @@ impl MevKind {
     }
 
     /// Parse a stored kind label. Retired labels (`sandwich`, `frontrun`,
-    /// `jit_arb`) resolve to `None`: rows written before the removal keep their
-    /// own string and are read verbatim, never re-labelled.
+    /// `jit_arb`, `backrun`) resolve to `None`: rows written before the removal
+    /// keep their own string and are read verbatim, never re-labelled. A
+    /// backrun is now an `arb_atomic` row carrying the `backrun` tag.
     pub fn parse(s: &str) -> Option<MevKind> {
         match s {
             "arb_atomic" => Some(MevKind::ArbAtomic),
-            "backrun" => Some(MevKind::Backrun),
             "liquidation" => Some(MevKind::Liquidation),
             "jit" => Some(MevKind::Jit),
             "skim" => Some(MevKind::Skim),
@@ -88,6 +86,15 @@ pub fn utility_subkind(details: &serde_json::Value) -> Option<&'static str> {
         }
     }
     found
+}
+
+/// True when an event carries the `backrun` tag. A backrun is an `ArbAtomic`
+/// that causally harvests a prior price move — a tag, not a separate kind.
+pub fn has_backrun_tag(ev: &MevEvent) -> bool {
+    ev.details
+        .get("tags")
+        .and_then(|t| t.as_array())
+        .is_some_and(|a| a.iter().any(|t| t.as_str() == Some("backrun")))
 }
 
 impl std::fmt::Display for MevKind {

@@ -41,19 +41,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backrun_beats_arb_regardless_of_claim_order() {
-        let mut a = TxClaims::default();
-        assert!(a.claim(1, MevKind::Backrun));
-        assert!(!a.claim(1, MevKind::ArbAtomic));
-        assert_eq!(a.winner(1), Some(MevKind::Backrun));
-
-        let mut b = TxClaims::default();
-        assert!(b.claim(1, MevKind::ArbAtomic));
-        assert!(b.claim(1, MevKind::Backrun));
-        assert_eq!(b.winner(1), Some(MevKind::Backrun));
-    }
-
-    #[test]
     fn liquidation_jit_and_skim_beat_an_inferred_cycle() {
         for kind in [MevKind::Liquidation, MevKind::Jit, MevKind::Skim] {
             let mut claims = TxClaims::default();

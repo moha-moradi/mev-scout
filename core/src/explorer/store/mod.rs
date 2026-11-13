@@ -701,7 +701,7 @@ mod tests {
         );
         let mut back_evt = sample_event(120);
         back_evt.ts = 1_700_000_101;
-        back_evt.kind = MevKind::Backrun;
+        back_evt.kind = MevKind::Skim;
         let mut arb_evt = sample_event(121);
         arb_evt.ts = 1_700_000_200;
         arb_evt.kind = MevKind::ArbAtomic;
@@ -742,7 +742,7 @@ mod tests {
         assert!(!senders.is_empty());
 
         let senders_back = store
-            .top_senders_filtered(1_699_999_000, 5, Some(MevKind::Backrun), None)
+            .top_senders_filtered(1_699_999_000, 5, Some(MevKind::Skim), None)
             .unwrap();
         assert!(!senders_back.is_empty());
 
@@ -786,7 +786,7 @@ mod tests {
         let mut back = sample_event(511);
         back.ts = day_b;
         back.tx_index = 4;
-        back.kind = MevKind::Backrun;
+        back.kind = MevKind::Skim;
         let mut swp_a = swap_leg(3, 0, usdc, 5_000_000);
         swp_a.pool = arb.pools[0];
         let mut swp_b = swap_leg(4, 0, usdc, 10_000_000);
@@ -842,12 +842,12 @@ mod tests {
         assert_eq!(store.blocks_in_window(day_b).unwrap(), 1);
 
         let ov_k = store
-            .report_window_overview(0, Some(MevKind::Backrun), None)
+            .report_window_overview(0, Some(MevKind::Skim), None)
             .unwrap();
         assert_eq!(ov_k.ops, 1);
         assert_eq!(
             store
-                .report_by_kind(0, Some(MevKind::Backrun), None)
+                .report_by_kind(0, Some(MevKind::Skim), None)
                 .unwrap()
                 .len(),
             1

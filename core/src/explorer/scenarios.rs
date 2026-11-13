@@ -24,7 +24,7 @@ use crate::explorer::test_fixtures::{
     REBASE, SAVAX, TOKA, USDC, VICTIM, WNATIVE,
 };
 use crate::explorer::types::{
-    Amm, Confidence, EpochRewardFact, GmxEventFact, JitFact, KeeperFact, MevKind,
+    has_backrun_tag, Amm, Confidence, EpochRewardFact, GmxEventFact, JitFact, KeeperFact, MevKind,
     OracleUpdateFact, ReserveDataFact, UserOpFact,
 };
 
@@ -102,9 +102,9 @@ fn aggregator_leg_does_not_close_arb_cycle() {
 }
 
 
-/// Baseline `Backrun`: a large third-party move followed by the searcher's
-/// profitable opposite cycle → R. Negative: same trade without the pre-move
-/// reference is not attributed.
+/// Baseline backrun tag: a large third-party move followed by the searcher's
+/// profitable opposite cycle → an `ArbAtomic` carrying the `backrun` tag, R
+/// basis. Negative: same trade without the pre-move reference is not tagged.
 #[test]
 fn baseline_backrun() {
     for (name, with_reference, expect) in
@@ -151,9 +151,15 @@ fn baseline_backrun() {
             ],
         ));
         let events = classify_block(&block(txs));
-        assert_eq!(kinds(&events).contains(&MevKind::Backrun), expect, "{name}");
+        let tagged = events
+            .iter()
+            .any(|e| e.kind == MevKind::ArbAtomic && has_backrun_tag(e));
+        assert_eq!(tagged, expect, "{name}");
         if expect {
-            let ev = event_of(&events, MevKind::Backrun);
+            let ev = events
+                .iter()
+                .find(|e| e.kind == MevKind::ArbAtomic && has_backrun_tag(e))
+                .unwrap();
             assert_eq!(ev.searcher, ATK);
             assert_eq!(pnl_basis(ev), Some("R"));
         }

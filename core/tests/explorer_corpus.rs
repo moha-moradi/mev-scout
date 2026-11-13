@@ -259,14 +259,15 @@ const CORPUS: &[CorpusCase] = &[
     },
     // ETH backrun seeds from the 2026-10-25 re-hunt (drpc, 26264000..=26264962,
     // 963 blocks, 0 frontrun / 0 skim). Single-block causal pins; the explorer
-    // re-ingests the block and re-runs the backrun pass. Count + searcher only
-    // (no price cache in the E2E gate, so profit floors stay None).
+    // re-ingests the block and re-runs the backrun annotation. A backrun is an
+    // arb_atomic op carrying the `backrun` tag (see expected_tag). Count +
+    // searcher only (no price cache in the E2E gate, so profit floors stay None).
     CorpusCase {
         id: "eth-backrun-26264539",
         chain: ChainName::Ethereum,
         from_block: 26_264_539,
         to_block: 26_264_539,
-        kind: "backrun",
+        kind: "arb_atomic",
         min_ops: 1,
         searcher: Some(address!("e85091501587b32a323be2512b36fab392d7c6bc")),
         profit_usd_min: None,
@@ -277,7 +278,7 @@ const CORPUS: &[CorpusCase] = &[
         chain: ChainName::Ethereum,
         from_block: 26_264_858,
         to_block: 26_264_858,
-        kind: "backrun",
+        kind: "arb_atomic",
         min_ops: 1,
         searcher: Some(address!("b52dae80b2ce64715d50ff3dfe4edd337f3d29bf")),
         profit_usd_min: None,
@@ -653,10 +654,38 @@ fn assert_case(store: &ExplorerStore, case: &CorpusCase) {
         );
     }
 
+    if let Some(want) = expected_tag(case.id) {
+        let hit = ops.iter().any(|o| {
+            o.details_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .and_then(|v| {
+                    v.get("tags")
+                        .and_then(|t| t.as_array())
+                        .map(|a| a.iter().any(|x| x.as_str() == Some(want)))
+                })
+                .unwrap_or(false)
+        });
+        assert!(
+            hit,
+            "{}: expected details.tags to contain {want:?} on at least one op",
+            case.id
+        );
+    }
+
     eprintln!(
         "{}: ok — {} {} ops in {}..={} (floor {})",
         case.id, observed, case.kind, case.from_block, case.to_block, case.min_ops
     );
+}
+
+/// Tag expectations for corpus cases whose kind alone is not the assertion
+/// (a backrun is an `arb_atomic` op carrying the `backrun` tag).
+fn expected_tag(case_id: &str) -> Option<&'static str> {
+    match case_id {
+        id if id.starts_with("eth-backrun-") => Some("backrun"),
+        _ => None,
+    }
 }
 
 /// Protocol-label expectations for liquidation corpus cases (plan verify).
@@ -785,20 +814,12 @@ async fn run_chain_corpus(chain: ChainName, rpc_url: &str) -> bool {
     true
 }
 
-/// Every kind the classifier can emit. A record run reports all of them —
-/// including the ones with a zero count, which is how an absent rare kind
-/// (`jit`) is confirmed absent rather than merely unlisted.
-const ALL_KINDS: &[&str] = &[
-    "sandwich",
-    "frontrun",
-    "backrun",
-    "arb_atomic",
-    "jit_arb",
-    "jit",
-    "liquidation",
-    "skim",
-    "utility",
-];
+/// Every kind the classifier can emit, mirroring `MevKind::ALL`. A record run
+/// reports all of them — including the ones with a zero count, which is how an
+/// absent rare kind (`jit`) is confirmed absent rather than merely unlisted.
+/// Retired labels (`sandwich`, `frontrun`, `jit_arb`, `backrun`) are not
+/// emittable; a backrun is now an `arb_atomic` row carrying the `backrun` tag.
+const ALL_KINDS: &[&str] = &["arb_atomic", "jit", "liquidation", "skim", "utility"];
 
 /// `MEV_SCOUT_RECORD=1` — report derived facts instead of asserting them.
 fn recording() -> bool {
@@ -1008,7 +1029,7 @@ fn strategy_scenario_targets_match_avalanche_corpus_seeds() {
         let from = t.seed_from.expect("seeded");
         let to = t.seed_to.expect("seeded");
         let kind = match t.label {
-            "arb_atomic" | "long_tail" | "flash_arb" => "arb_atomic",
+            "arb_atomic" | "long_tail" | "flash_arb" | "backrun" => "arb_atomic",
             "liquidation" | "benqi" | "flash_loan_liq" => "liquidation",
             "bundler" | "claim_and_sell" => "utility",
             other => other,

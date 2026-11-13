@@ -1,17 +1,30 @@
-//! Causal backrun classify pass.
+//! Causal backrun annotation pass.
+//!
+//! A backrun is an atomic-arb cycle that harvests a prior price move. The arb
+//! pass owns the cycle and its P&L (flash netting, tip-sink exclusion,
+//! forwarded-profit attribution); this pass only attaches the `backrun` tag and
+//! the causal evidence to an already-emitted `ArbAtomic`. A market-moving tx
+//! `A` (large notional, different sender) on pool `P` is followed, within the
+//! adjacency window, by a tx `B` whose arb cycle trades *opposite* A's direction
+//! at a better execution price than the pool offered pre-move.
+//!
+//! A causal pair whose closer tx carries no arb event is recorded as
+//! `CausalAnchorMissing` — the coverage loss is observable, never silent.
+//! Causality is a logs-only proxy, not REVM `profit(B|after)`, so the evidence
+//! tier stays `inferred` while the arb's ledger residual keeps its own A19
+//! confidence.
 use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::Address;
 
-use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
-
 use crate::explorer::reject::RejectReason;
+use crate::explorer::types::{MevEvent, MevKind};
 
 use super::drops::DropSink;
 use super::legs::{
     opposite_dir, pool_legs, price_better_by, same_dir, tx_cycle_profit, CycleMiss, SwapLeg,
 };
-use super::{BlockInput, TxInput};
+use super::{append_tag, BlockInput, TxInput};
 
 fn note_cycle_miss(drops: &mut DropSink, tx_index: u64, miss: CycleMiss) {
     match miss {
@@ -45,28 +58,71 @@ fn note_cycle_miss(drops: &mut DropSink, tx_index: u64, miss: CycleMiss) {
     }
 }
 
-/// logs-only causal backrun. A market-moving tx `A` (large notional,
-/// different sender) on pool `P` is followed, within the adjacency window, by a
-/// tx `B` whose sender profitably closes a directed cycle whose leg on `P`
-/// trades *opposite* A's direction at a better execution price than the pool
-/// offered pre-move. Requiring pool overlap + direction-of-benefit + closed
-/// cycle; nothing else qualifies. Never Exact — this is a logs-only
-/// proxy, not REVM `profit(B|after)`.
+/// Attach the `backrun` tag and causal evidence to the arb event on `btx`.
+/// The arb's profit/confidence are untouched; causality is recorded as an
+/// inferred evidence tier under `details.causal`.
+fn annotate_backrun(
+    ev: &mut MevEvent,
+    pool: Address,
+    mover: &(u64, Address, SwapLeg),
+    pre_move: &SwapLeg,
+    closer: &SwapLeg,
+    min_pct: f64,
+) {
+    let (atx, afrom, aleg) = mover;
+    let a_hash = aleg.tx_hash;
+    append_tag(&mut ev.details, "backrun");
+    if !ev.victim_hashes.contains(&a_hash) {
+        ev.victim_hashes.push(a_hash);
+    }
+    ev.details["causal"] = serde_json::json!({
+        "mode": "realized",
+        "tier": "inferred",
+        "pool": format!("{pool:#x}"),
+        "source_tx_index": atx,
+        "source_sender": format!("{afrom:#x}"),
+        "move": {
+            "tx_index": atx,
+            "direction": format!("{:#x}->{:#x}", aleg.token_in, aleg.token_out),
+            "amount_in": aleg.amount_in.to_string(),
+            "amount_out": aleg.amount_out.to_string(),
+        },
+        "evidence": {
+            "STATE_DELTA_MATCH": true,
+            "DIRECTION_OF_BENEFIT": opposite_dir(aleg, closer),
+            "PROFIT_VERIFIED": true,
+            "exec_better_than_pre_move": price_better_by(closer, pre_move, min_pct),
+            "cycle": true,
+            "supporting_tx_hashes": [format!("{a_hash:#x}")],
+        },
+        "reasons": ["STATE_DELTA_MATCH", "PROFIT_VERIFIED", "DIRECT_TOKEN_CYCLE"],
+    });
+}
+
+/// logs-only causal backrun annotation over emitted atomic arbs. Requiring pool
+/// overlap + direction-of-benefit + a closed arb cycle; nothing else qualifies.
 pub(super) fn classify_backruns(
     input: &BlockInput,
+    events: &mut [MevEvent],
     drops: &mut DropSink,
-) -> Vec<MevEvent> {
+) {
     let by_pool = pool_legs(input);
     let txs_by_index: HashMap<u64, &TxInput> = input.txs.iter().map(|t| (t.tx_index, t)).collect();
-    let mut out: Vec<MevEvent> = Vec::new();
-    // The backrun leg can only anchor the backrun tx once **per pool**; a tx
-    // can swap on several pools, so pool must be part of the claim key.
+    // Annotation targets: txs the arb pass already classified as ArbAtomic.
+    let arb_txs: HashSet<u64> = events
+        .iter()
+        .filter(|e| e.kind == MevKind::ArbAtomic)
+        .map(|e| e.tx_index)
+        .collect();
+    // The scan runs once per (pool, tx) — a tx can swap on several pools.
     let mut claimed: HashSet<(Address, u64)> = HashSet::new();
+    // The annotation (or missing-anchor reject) lands once per tx.
+    let mut handled: HashSet<u64> = HashSet::new();
 
     for (pool, legs) in by_pool {
         for (bi, (btx, bfrom, bleg)) in legs.iter().enumerate() {
             if !claimed.insert((pool, *btx)) {
-                continue; // not-a-drop: already claimed on this pool
+                continue; // not-a-drop: already scanned on this pool
             }
             let Some(b_tx) = txs_by_index.get(btx).copied() else {
                 continue; // not-a-drop: leg index has no tx row
@@ -74,13 +130,15 @@ pub(super) fn classify_backruns(
             if b_tx.from != *bfrom {
                 continue; // not-a-drop: leg sender is not the tx sender
             }
-            let cycle = match tx_cycle_profit(input, b_tx) {
-                Ok(v) => v,
-                Err(miss) => {
+            // Cycle-miss diagnostics only when the arb pass emitted nothing:
+            // for a classified arb the arb pass owns the cycle rejects, and a
+            // forwarded-profit arb must not be vetoed by the stricter walk.
+            if !arb_txs.contains(btx) {
+                if let Err(miss) = tx_cycle_profit(input, b_tx) {
                     note_cycle_miss(drops, *btx, miss);
                     continue; // not-a-drop: cycle gate already recorded the miss
                 }
-            };
+            }
             // Nearest prior leg on the same pool in the opposite direction,
             // within the adjacency window, from a different sender.
             let mut move_: Option<(&(u64, Address, SwapLeg), &SwapLeg)> = None;
@@ -148,70 +206,25 @@ pub(super) fn classify_backruns(
             }
             let Some(a) = move_ else {
                 if !named_miss {
-                    drops.anchor(
-                        *btx,
-                        RejectReason::NoCounterpartyLeg,
-                        "no_prior_opposite_leg",
-                    );
+                    drops.anchor(*btx, RejectReason::NoCounterpartyLeg, "no_prior_opposite_leg");
                 }
                 continue; // not-a-drop: no qualifying counterparty; reason already recorded
             };
-            let atx = a.0 .0;
-            let afrom = a.0 .1;
-            let aleg = &a.0 .2;
-            let a_hash = a.0 .2.tx_hash;
-            let (_searcher, btoken, bamount) = cycle;
-            out.push(MevEvent {
-                pools: vec![pool],
-                profit_token: Some(btoken),
-                profit_amount: Some(bamount),
-                gas_cost_wei: super::gas::tx_gas_cost_wei(b_tx),
-                confidence: Confidence::Inferred,
-                victim_hashes: vec![a_hash],
-                details: serde_json::json!({
-                    "mode": "realized",
-                    "tier": "inferred",
-                    "pnl_basis": PnlBasis::R.as_str(),
-                    "pnl": {
-                        "basis": PnlBasis::R.as_str(),
-                        "profit_amount": bamount.to_string(),
-                        "profit_token": format!("{btoken:#x}"),
-                    },
-                    "pool": format!("{pool:#x}"),
-                    "source_tx_index": atx,
-                    "source_sender": format!("{afrom:#x}"),
-                    "move": {
-                        "tx_index": atx,
-                        "direction": format!("{:#x}->{:#x}", aleg.token_in, aleg.token_out),
-                        "amount_in": aleg.amount_in.to_string(),
-                        "amount_out": aleg.amount_out.to_string(),
-                    },
-                    "evidence": {
-                        "STATE_DELTA_MATCH": true,
-                        "DIRECTION_OF_BENEFIT": opposite_dir(aleg, bleg),
-                        "PROFIT_VERIFIED": true,
-                        "exec_better_than_pre_move": price_better_by(bleg, a.1, input.ctx.causal_price_min_pct),
-                        "cycle": true,
-                        "supporting_tx_hashes": [format!("{a_hash:#x}")],
-                    },
-                    "ledger": {
-                        "searcher": format!("{bfrom:#x}"),
-                        "profit_token": format!("{btoken:#x}"),
-                        "profit_amount": bamount.to_string(),
-                    },
-                    "reasons": ["STATE_DELTA_MATCH", "PROFIT_VERIFIED", "DIRECT_TOKEN_CYCLE"],
-                }),
-                ..MevEvent::for_tx(
-                    input.block,
-                    input.ts,
+            if !handled.insert(*btx) {
+                continue; // not-a-drop: already annotated on another pool
+            }
+            if let Some(ev) = events
+                .iter_mut()
+                .find(|e| e.kind == MevKind::ArbAtomic && e.tx_index == *btx)
+            {
+                annotate_backrun(ev, pool, a.0, a.1, bleg, input.ctx.causal_price_min_pct);
+            } else {
+                drops.anchor(
                     *btx,
-                    b_tx.tx_hash,
-                    MevKind::Backrun,
-                    *bfrom,
-                    None,
-                )
-            });
+                    RejectReason::CausalAnchorMissing,
+                    "causal_pair_without_arb_event",
+                );
+            }
         }
     }
-    out
 }

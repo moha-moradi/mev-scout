@@ -8,6 +8,7 @@
   "savax_rate_arb",
   "epoch_transition",
   "gmx_adl_arb",
+  "backrun",
   "flash_loan_liq",
   "bad_debt_liq",
   "buycollateral",

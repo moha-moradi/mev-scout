@@ -498,14 +498,14 @@ pre.raw {
   }
   var STRATEGY_INFO = {
     arb_atomic: {
-      definition: "A searcher closes a token cycle across multiple pools inside one successful transaction.",
-      rules: ["A resolved, non-aggregator cycle touches at least two pools.", "Attributable token flows leave a positive residual; material inventory deficits reject the candidate."],
+      definition: "A searcher closes a token cycle across multiple pools inside one successful transaction. A causal backrun is this kind carrying the backrun tag.",
+      rules: ["A resolved, non-aggregator cycle touches at least two pools.", "Attributable token flows leave a positive residual; material inventory deficits reject the candidate.", "A backrun tag adds inferred causal evidence (a prior opposite-direction move) under details.causal."],
       limits: "A detected cycle is not enough by itself. USD pricing and financing-cost coverage remain separate checks."
     },
     backrun: {
-      definition: "A profitable cycle follows a pool move by another trader.",
+      definition: "Retired kind (historical rows only). A backrun is now an atomic-arbitrage op carrying the backrun tag.",
       rules: ["A different sender first moves the same pool in the opposite direction.", "A subsequent closed cycle has attributable profit, a matching-unit size check and improved execution versus an earlier reference."],
-      limits: "Causality is inferred. The proximity and price-impact thresholds are configurable; historical settings may be unavailable."
+      limits: "Causality is inferred. New backruns render under Atomic arbitrage with a backrun tag; this entry only labels rows indexed before the kind retirement."
     },
     liquidation: {
       definition: "A liquidator repays debt and receives collateral or buys seized collateral.",

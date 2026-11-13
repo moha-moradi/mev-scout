@@ -325,7 +325,9 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), n, "duplicate strategy scenario ids");
-        assert!(n >= 25, "expected full baseline+P0–P3 catalogue");
+        // 23 rows after the sandwich/frontrun kind retirement; a backrun is now
+        // a tag on baseline.arb, not a separate baseline row.
+        assert!(n >= 23, "expected full baseline+P0–P3 catalogue");
     }
 
     #[test]

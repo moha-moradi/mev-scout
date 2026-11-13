@@ -19,13 +19,6 @@ use crate::explorer::types::{MevEvent, MevKind};
 /// Compute the explorer-side canonical ID for a classified realized op.
 pub fn explorer_canonical_id(ev: &MevEvent) -> String {
     match ev.kind {
-        MevKind::Backrun => {
-            format!(
-                "Backrun|{:#x}|source_tx:{}",
-                first_pool(&ev.pools),
-                detail_or_null(ev, "source_tx_index")
-            )
-        }
         MevKind::Liquidation => {
             format!(
                 "Liquidation|{:#x}|{:#x}",
@@ -103,16 +96,7 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
     }
 }
 
-/// `ev.details[key]` as an owned `Value`, or JSON null when the key is absent.
-/// Returned as a `Value` (not a rendered string) so each call site's existing
-/// format spec renders it identically — the emitted canonical id is unchanged.
-fn detail_or_null(ev: &MevEvent, key: &str) -> serde_json::Value {
-    ev.details
-        .get(key)
-        .cloned()
-        .unwrap_or(serde_json::json!(null))
-}
-
+/// First pool of the event, or the zero address when it carries none.
 fn first_pool(pools: &[Address]) -> Address {
     pools.first().copied().unwrap_or_default()
 }

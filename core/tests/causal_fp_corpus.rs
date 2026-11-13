@@ -27,7 +27,7 @@ use alloy::primitives::{address, Address, B256, U256};
 use rusqlite::Connection;
 
 use mev_scout_core::explorer::profit::ProfitTokenPolicy;
-use mev_scout_core::explorer::types::{Amm, LegSource, MevKind, SwapFact, TransferFact};
+use mev_scout_core::explorer::types::{has_backrun_tag, Amm, LegSource, MevKind, SwapFact, TransferFact};
 use mev_scout_core::explorer::{classify_block, BlockContext, BlockInput, TxInput};
 
 // ── Avalanche C-Chain values (core/data/chains.toml) ──────────────────────────
@@ -382,7 +382,7 @@ fn causal_classifier_offline_fp_gate() {
         let input = block_input(*block, &blocks[block]);
         let classified = classify_block(&input);
         for e in &classified.events {
-            if e.kind == MevKind::Backrun {
+            if e.kind == MevKind::ArbAtomic && has_backrun_tag(e) {
                 fp_events.push((*block, e.tx_index, e.kind, e.searcher));
             }
         }
@@ -391,7 +391,7 @@ fn causal_classifier_offline_fp_gate() {
     let fp_count = fp_events.len();
     eprintln!(
         "causal_fp_corpus: {} blocks total, {} swap-dense (>= {} swaps), \
-         {} causal claims (Backrun)",
+         {} causal claims (backrun-tagged arb)",
         blocks.len(),
         dense.len(),
         MIN_SWAPS_PER_BLOCK,
@@ -403,7 +403,7 @@ fn causal_classifier_offline_fp_gate() {
 
     assert_eq!(
         fp_count, CAUSAL_FP_GATE,
-        "causal FP gate: observed {fp_count} Backrun claims on zero-real-op \
+        "causal FP gate: observed {fp_count} backrun-tagged arb claims on zero-real-op \
          seed data; gate = {CAUSAL_FP_GATE}"
     );
 }

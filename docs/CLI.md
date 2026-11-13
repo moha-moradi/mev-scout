@@ -543,12 +543,13 @@ Gates that depend on this table:
 
 #### Known biases / methodology notes
 
-- Logs-only backrun/frontrun are **not** REVM `profit(B|before)` vs `profit(B|after)` —
-  they are inferred causal proxies with §23 evidence codes in `details`.
+- Logs-only backrun (a `backrun` tag on an `ArbAtomic`, not a separate kind) is
+  **not** REVM `profit(B|before)` vs `profit(B|after)` — it is an inferred causal
+  proxy with §23 evidence codes under `details.causal`.
 - Contrast: the **scanner** now computes the tree's first `profit(B|before)` vs
   `profit(B|after)` differential — `BackrunDetector`'s net-flip rule (D3) over
   state `S_{i-1}` vs `S_i`. The realized explorer
-  backrun classifier above stays logs-only; wiring the explorer to consume the
+  backrun annotation above stays logs-only; wiring the explorer to consume the
   scanner differential is a separate change.
 - JIT covers Uni V3 Mint/Burn **and** LFJ/Pharaoh LB DepositedToBins/WithdrawnFromBins
   (bin range mapped into tick_lower/tick_upper; overlap = any same-pool swap).
@@ -563,7 +564,7 @@ Gates that depend on this table:
 
 | Bias | Status | Notes |
 |---|---|---|
-| Logs-only Backrun / Frontrun | By design | Execution-price proxies ≠ REVM `profit(B\|before_A)` vs `profit(B\|after_A)`. `STATE_DELTA_MATCH` / `PROFIT_VERIFIED` are **not** REVM-verified. |
+| Logs-only backrun tag | By design | Execution-price proxies ≠ REVM `profit(B\|before_A)` vs `profit(B\|after_A)`. `STATE_DELTA_MATCH` / `PROFIT_VERIFIED` are **not** REVM-verified. The arb's ledger residual keeps its own A19 confidence; causality stays `tier=inferred`. |
 | Gas | Mitigated (Phase 2.1) | Prefer receipt `effectiveGasPrice`, then legacy `gasPrice`; only fall back to `base_fee + priority`. |
 | Multi-token profit | Mitigated (Phase 2.3) | Persist sums USD across all positive residuals; `profit_token` remains display-primary. JIT fee-capture stays unit-reported (`profit_token=None`). |
 | Hourly pricing / FOT | Partial | Hourly token prices at persist; FOT/rebase tokens flagged `usd_approximate` in details. Long-tail decimals via Multicall3; realized-rate fallback for unpriced residuals. |

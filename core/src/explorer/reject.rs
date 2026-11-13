@@ -51,6 +51,10 @@ pub enum RejectReason {
     CausalWindowTooWide,
     /// Causal gate: an in-window counterparty failed the price-advantage floor.
     CausalPriceMoveBelowFloor,
+    /// Causal backrun: the causal gates passed but the closer tx carries no
+    /// emitted `ArbAtomic` to annotate (the arb pass rejected the cycle). The
+    /// coverage loss is recorded here rather than dropped silently.
+    CausalAnchorMissing,
     /// Skim: a pair outflow has V2 venue evidence but the pool is not in the
     /// v2-like registry. Aggregated per block.
     SkimPoolNotV2Like,
@@ -83,6 +87,7 @@ impl RejectReason {
             RejectReason::NoCounterpartyLeg => "no_counterparty_leg",
             RejectReason::CausalWindowTooWide => "causal_window_too_wide",
             RejectReason::CausalPriceMoveBelowFloor => "causal_price_move_below_floor",
+            RejectReason::CausalAnchorMissing => "causal_anchor_missing",
             RejectReason::SkimPoolNotV2Like => "skim_pool_not_v2_like",
             RejectReason::SkimLooksLikeSwap => "skim_looks_like_swap",
             RejectReason::JitPairingUnmatched => "jit_pairing_unmatched",

@@ -1,4 +1,6 @@
-//! Labeled golden set for Backrun ship-gate scoring.
+//! Labeled golden set for the causal-backrun ship-gate scoring. A backrun is
+//! an `ArbAtomic` carrying the `backrun` tag, so a positive expectation is
+//! `Some(ArbAtomic)` and `causal_claims` counts only tagged arbs.
 //!
 //! Opportunity-side strategies do not map to these kinds. This module holds a
 //! small synthetic labeled set (positives + explicit negatives) and scores
@@ -15,7 +17,7 @@ use crate::explorer::classify::{classify_block, BlockInput, TxInput};
 use crate::explorer::test_fixtures::{
     self as fixtures, swap, ATK, MARKET, POOL_A, POOL_B, TOKA, USDC, VICTIM,
 };
-use crate::explorer::types::{MevKind, SwapFact, TransferFact};
+use crate::explorer::types::{has_backrun_tag, FlashLoanFact, MevKind, SwapFact, TransferFact};
 
 /// The single block number the labeled set is scored at. Fixtures share every
 /// other address with `test_fixtures` so a schema/field change lands once.
@@ -28,8 +30,8 @@ const FILLER: Address = address!("9000000000000000000000000000000000000009");
 #[derive(Debug, Clone, Copy)]
 pub struct LabeledExpectation {
     pub id: &'static str,
-    /// `Some(Backrun)` for positives; `None` for negatives (no causal
-    /// claim on the labeled tx).
+    /// `Some(ArbAtomic)` for positives (a `backrun`-tagged arb); `None` for
+    /// negatives (no causal claim on the labeled tx).
     pub expect_kind: Option<MevKind>,
     /// When `expect_kind` is set, the tx_index that must carry the claim.
     pub expect_tx_index: Option<u64>,
@@ -160,7 +162,7 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
         LabeledCase {
             expectation: LabeledExpectation {
                 id: "backrun_after_market_move",
-                expect_kind: Some(MevKind::Backrun),
+                expect_kind: Some(MevKind::ArbAtomic),
                 expect_tx_index: Some(2),
             },
             input: block(vec![
@@ -450,13 +452,182 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                 ),
             ]),
         },
+        // ── Divergence: flash-funded backrun — the arb pass nets the fee ──
+        // Same causal shape as the positive, but the closer borrows the anchor
+        // token via a flash loan. The tag lands on the arb event and the profit
+        // is net of the flash fee (30 − 5 = 25), which the old causal walk
+        // (no flash netting) would have overstated.
+        LabeledCase {
+            expectation: LabeledExpectation {
+                id: "backrun_flash_funded",
+                expect_kind: Some(MevKind::ArbAtomic),
+                expect_tx_index: Some(2),
+            },
+            input: {
+                let provider = address!("9000000000000000000000000000000000000009");
+                let mut closer = tx(
+                    2,
+                    ATK,
+                    vec![
+                        swap(POOL_A, TOKA, USDC, 100, 120),
+                        swap(POOL_B, USDC, TOKA, 120, 130),
+                    ],
+                    vec![
+                        transfer(TOKA, provider, ATK, 100),
+                        transfer(TOKA, ATK, POOL_A, 100),
+                        transfer(USDC, POOL_A, ATK, 120),
+                        transfer(USDC, ATK, POOL_B, 120),
+                        transfer(TOKA, POOL_B, ATK, 130),
+                        transfer(TOKA, ATK, provider, 105),
+                    ],
+                );
+                closer.flashloans = vec![FlashLoanFact {
+                    tx_index: 2,
+                    log_index: 0,
+                    protocol: "aave_v3",
+                    initiator: ATK,
+                    token: TOKA,
+                    amount: U256::from(100),
+                    fee: Some(U256::from(5)),
+                    recipient: ATK,
+                    provider,
+                }];
+                block(vec![
+                    tx(
+                        0,
+                        VICTIM,
+                        vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+                        vec![
+                            transfer(TOKA, VICTIM, POOL_A, 100),
+                            transfer(USDC, POOL_A, VICTIM, 110),
+                        ],
+                    ),
+                    tx(
+                        1,
+                        MARKET,
+                        vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
+                        vec![
+                            transfer(USDC, MARKET, POOL_A, 1000),
+                            transfer(TOKA, POOL_A, MARKET, 100),
+                        ],
+                    ),
+                    closer,
+                ])
+            },
+        },
+        // ── Divergence: forwarded-profit backrun — the arb pass attributes ──
+        // The executor contract nets zero and forwards the residual to a single
+        // payee. The arb pass emits an Inferred arb attributed to the payee; the
+        // old causal walk returned NoResidual and missed it. The tag lands.
+        LabeledCase {
+            expectation: LabeledExpectation {
+                id: "backrun_forwarded_profit",
+                expect_kind: Some(MevKind::ArbAtomic),
+                expect_tx_index: Some(2),
+            },
+            input: {
+                let searcher = address!("9000000000000000000000000000000000000009");
+                let recipient = address!("a00000000000000000000000000000000000000a");
+                let mut closer = tx(
+                    2,
+                    ATK,
+                    vec![
+                        fixtures::swap_owned(searcher, POOL_A, USDC, TOKA, 100, 200),
+                        fixtures::swap_owned(searcher, POOL_B, TOKA, USDC, 200, 110),
+                    ],
+                    vec![
+                        transfer(USDC, searcher, POOL_A, 100),
+                        transfer(TOKA, POOL_A, searcher, 200),
+                        transfer(TOKA, searcher, POOL_B, 200),
+                        transfer(USDC, POOL_B, searcher, 110),
+                        transfer(USDC, searcher, recipient, 10),
+                    ],
+                );
+                closer.to = Some(searcher);
+                block(vec![
+                    tx(
+                        0,
+                        VICTIM,
+                        vec![swap(POOL_A, USDC, TOKA, 100, 110)],
+                        vec![
+                            transfer(USDC, VICTIM, POOL_A, 100),
+                            transfer(TOKA, POOL_A, VICTIM, 110),
+                        ],
+                    ),
+                    tx(
+                        1,
+                        MARKET,
+                        vec![swap(POOL_A, TOKA, USDC, 1000, 100)],
+                        vec![
+                            transfer(TOKA, MARKET, POOL_A, 1000),
+                            transfer(USDC, POOL_A, MARKET, 100),
+                        ],
+                    ),
+                    closer,
+                ])
+            },
+        },
+        // ── Divergence: tip-sink residual is not a backrun ─────────────────
+        // The residual is forwarded only to a tip sink (coinbase). The arb pass
+        // drops it as BuilderTip, so there is no arb to tag — the old causal
+        // walk would have counted the tip as backrun profit.
+        LabeledCase {
+            expectation: LabeledExpectation {
+                id: "backrun_tip_sink_residual",
+                expect_kind: None,
+                expect_tx_index: None,
+            },
+            input: {
+                let searcher = address!("9000000000000000000000000000000000000009");
+                let coinbase = address!("b00000000000000000000000000000000000000b");
+                let mut closer = tx(
+                    2,
+                    ATK,
+                    vec![
+                        fixtures::swap_owned(searcher, POOL_A, USDC, TOKA, 100, 200),
+                        fixtures::swap_owned(searcher, POOL_B, TOKA, USDC, 200, 110),
+                    ],
+                    vec![
+                        transfer(USDC, searcher, POOL_A, 100),
+                        transfer(TOKA, POOL_A, searcher, 200),
+                        transfer(TOKA, searcher, POOL_B, 200),
+                        transfer(USDC, POOL_B, searcher, 110),
+                        transfer(USDC, searcher, coinbase, 10),
+                    ],
+                );
+                closer.to = Some(searcher);
+                let mut input = block(vec![
+                    tx(
+                        0,
+                        VICTIM,
+                        vec![swap(POOL_A, USDC, TOKA, 100, 110)],
+                        vec![
+                            transfer(USDC, VICTIM, POOL_A, 100),
+                            transfer(TOKA, POOL_A, VICTIM, 110),
+                        ],
+                    ),
+                    tx(
+                        1,
+                        MARKET,
+                        vec![swap(POOL_A, TOKA, USDC, 1000, 100)],
+                        vec![
+                            transfer(TOKA, MARKET, POOL_A, 1000),
+                            transfer(USDC, POOL_A, MARKET, 100),
+                        ],
+                    ),
+                    closer,
+                ]);
+                input.tip_sinks.insert(coinbase);
+                input
+            },
+        },
     ]
 }
 
 fn causal_claims(events: &[crate::explorer::types::MevEvent]) -> Vec<(MevKind, u64)> {
     events
         .iter()
-        .filter(|e| e.kind == MevKind::Backrun)
+        .filter(|e| e.kind == MevKind::ArbAtomic && has_backrun_tag(e))
         .map(|e| (e.kind, e.tx_index))
         .collect()
 }
@@ -526,7 +697,7 @@ pub fn score_causal_labeled_set(cases: &[LabeledCase]) -> GoldenSetScore {
                 } else {
                     fp += claims.len() as u64;
                     failures.push(format!(
-                        "{}: expected no Backrun, got {:?}",
+                        "{}: expected no backrun tag, got {:?}",
                         exp.id, claims
                     ));
                 }
@@ -567,6 +738,50 @@ pub fn score_embedded_causal_set() -> GoldenSetScore {
 mod tests {
     use super::*;
 
+    /// Coverage-diff tooling: dump every labeled case's classified events as
+    /// JSON to `MEV_SCOUT_GOLDEN_DUMP` (path). Run before and after a
+    /// classifier change and diff the two files; representation-only deltas
+    /// (kind/tag, confidence, canonical id) must be enumerated in the report.
+    #[test]
+    #[ignore = "set MEV_SCOUT_GOLDEN_DUMP=<path> and select explicitly"]
+    fn dump_labeled_case_events() {
+        let Ok(path) = std::env::var("MEV_SCOUT_GOLDEN_DUMP") else {
+            eprintln!("skip: set MEV_SCOUT_GOLDEN_DUMP=<path>");
+            return;
+        };
+        let cases = causal_labeled_set();
+        let mut out = Vec::new();
+        for case in &cases {
+            let events = classify_block(&case.input);
+            let events: Vec<serde_json::Value> = events
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "kind": e.kind.as_str(),
+                        "tx_index": e.tx_index,
+                        "tx_hash": format!("{:#x}", e.tx_hash),
+                        "searcher": format!("{:#x}", e.searcher),
+                        "profit_token": e.profit_token.map(|t| format!("{t:#x}")),
+                        "profit_amount": e.profit_amount.map(|a| a.to_string()),
+                        "confidence": e.confidence.as_str(),
+                        "canonical_id": crate::explorer::explorer_canonical_id(e),
+                        "tags": e.details.get("tags").cloned().unwrap_or(serde_json::json!([])),
+                        "pnl_basis": e.details.get("pnl_basis").cloned().unwrap_or(serde_json::Value::Null),
+                        "victim_hashes": e.victim_hashes.iter().map(|h| format!("{h:#x}")).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            out.push(serde_json::json!({
+                "id": case.expectation.id,
+                "expect_kind": case.expectation.expect_kind.map(|k| k.as_str()),
+                "expect_tx_index": case.expectation.expect_tx_index,
+                "events": events,
+            }));
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&out).unwrap()).unwrap();
+        eprintln!("dumped {} cases to {path}", out.len());
+    }
+
     #[test]
     fn embedded_causal_set_passes_ship_gate() {
         let score = score_embedded_causal_set();
@@ -575,7 +790,7 @@ mod tests {
             "causal golden set must be perfect on the synthetic labels:\n{}",
             score.render()
         );
-        // 1 positive + 6 negatives. Name the cases: adding a fixture extends
+        // 3 positives + 7 negatives. Name the cases: adding a fixture extends
         // this list, dropping one fails by name instead of moving a magic count.
         assert_eq!(
             score.case_ids,
@@ -587,9 +802,12 @@ mod tests {
                 "backrun_sub_threshold_improvement",
                 "backrun_move_outside_window",
                 "backrun_size_mismatch",
+                "backrun_flash_funded",
+                "backrun_forwarded_profit",
+                "backrun_tip_sink_residual",
             ]
         );
-        assert_eq!(score.true_positives, 1);
-        assert_eq!(score.true_negatives, 6);
+        assert_eq!(score.true_positives, 3);
+        assert_eq!(score.true_negatives, 7);
     }
 }

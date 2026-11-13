@@ -64,7 +64,6 @@ use rusqlite::Connection;
 /// a spelling drift fails the static gate instead of silently dropping kinds
 /// from the census join.
 const ALL_KINDS: &[MevKind] = &[
-    MevKind::Backrun,
     MevKind::Liquidation,
     MevKind::Jit,
     MevKind::Skim,
@@ -74,8 +73,19 @@ const ALL_KINDS: &[MevKind] = &[
 
 /// Kind labels that survived in the `mev_ops.kind` CHECK constraint of the
 /// landed V1/V8 migrations. Rows written before the removal keep these
-/// verbatim (read-only, never re-labelled); the census excludes them.
-const RETIRED_KINDS: &[&str] = &["sandwich", "front-run", "front-run", "jit_arb"];
+/// verbatim (read-only, never re-labelled); the census excludes them. A
+/// backrun is now an `arb_atomic` row carrying the `backrun` tag.
+const RETIRED_KINDS: &[&str] = &["sandwich", "frontrun", "jit_arb", "backrun"];
+
+/// Every kind the CHECK constraint accepts: the emittable kinds plus the
+/// retired labels kept for historical rows.
+fn census_kinds_sql_list() -> String {
+    let mut kinds: Vec<String> = ALL_KINDS.iter().map(|k| k.as_str().to_string()).collect();
+    kinds.extend(RETIRED_KINDS.iter().map(|s| s.to_string()));
+    kinds.sort();
+    kinds.dedup();
+    kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ")
+}
 
 /// `(kind, precedence)` VALUES rows injected straight from `kind_precedence`,
 /// so the census SQL can never drift from the Rust order (the single source).
@@ -189,16 +199,12 @@ fn guard_multi_kind_sql() -> String {
         .to_string()
 }
 
-/// Preflight: any `kind` outside the census kind list would be silently
-/// dropped by the `prec` join — bail instead of undercounting.
+/// Preflight: any `kind` outside the census kind list (emittable + retired)
+/// would be silently dropped by the `prec` join — bail instead of undercounting.
 fn unknown_kind_sql() -> String {
-    let kinds: Vec<String> = ALL_KINDS
-        .iter()
-        .map(|k| format!("'{}'", k.as_str()))
-        .collect();
     format!(
         "SELECT COUNT(*) FROM mev_ops WHERE kind NOT IN ({})",
-        kinds.join(", ")
+        census_kinds_sql_list()
     )
 }
 
@@ -493,15 +499,24 @@ fn census_sql_prepares_against_real_schema() -> anyhow::Result<()> {
         )
         .context("real schema has no mev_ops table")?;
     let check_kinds = check_constraint_kinds(&ddl)?;
-    let expected: BTreeSet<String> = ALL_KINDS.iter().map(|k| k.as_str().to_string()).collect();
+    let mut expected: BTreeSet<String> = ALL_KINDS.iter().map(|k| k.as_str().to_string()).collect();
+    expected.extend(RETIRED_KINDS.iter().map(|s| s.to_string()));
     assert_eq!(
         check_kinds, expected,
-        "mev_ops.kind CHECK constraint != ALL_KINDS — extend ALL_KINDS (and the census) \
-         for the new kind"
+        "mev_ops.kind CHECK constraint != ALL_KINDS + RETIRED_KINDS — extend the census \
+         kind lists for the new kind"
     );
-    for kind in &check_kinds {
-        MevKind::parse(kind)
-            .with_context(|| format!("schema kind '{kind}' does not parse as a MevKind"))?;
+    // Emittable kinds parse; retired labels deliberately do not (read verbatim).
+    for kind in ALL_KINDS {
+        MevKind::parse(kind.as_str()).with_context(|| {
+            format!("emittable kind '{}' does not parse as a MevKind", kind.as_str())
+        })?;
+    }
+    for kind in RETIRED_KINDS {
+        assert!(
+            MevKind::parse(kind).is_none(),
+            "retired kind '{kind}' must not parse as an emittable MevKind"
+        );
     }
 
     // 2. Every census statement prepares against the real schema.
@@ -523,24 +538,20 @@ fn census_sql_prepares_against_real_schema() -> anyhow::Result<()> {
     assert_eq!(
         pairs,
         vec![
-            ("arb_atomic".into(), "backrun".into(), 1),
             ("arb_atomic".into(), "jit".into(), 1),
             ("arb_atomic".into(), "liquidation".into(), 1),
-            ("arb_atomic".into(), "sandwich".into(), 1),
-            ("backrun".into(), "sandwich".into(), 1),
             ("skim".into(), "utility".into(), 1),
         ],
-        "pair enumeration / counts wrong (dup same-kind rows must not double-count)"
+        "pair enumeration / counts wrong (dup same-kind rows must not double-count; \
+         retired sandwich/backrun labels on block 200 are excluded from the prec join)"
     );
 
     let usd: Vec<(String, String, i64, f64)> = query_tuples(&mem, &census_usd_sql())?;
     let expect_usd: Vec<(&str, &str, i64, f64)> = vec![
-        // Ordered by the loser's gross. After B8, ArbAtomic (precedence 7)
-        // loses to Liquidation and Jit, so those costs are the arb row.
-        ("arb_atomic", "backrun", 1, 9.0),
-        ("arb_atomic", "sandwich", 1, 9.0),
+        // Ordered by the loser's gross. ArbAtomic (precedence 4) loses to
+        // Liquidation (1) and Jit (2), so those costs are the arb row. The
+        // retired sandwich/backrun labels on block 200 contribute no census pair.
         ("arb_atomic", "jit", 1, 5.0),
-        ("backrun", "sandwich", 1, 4.0),
         ("arb_atomic", "liquidation", 1, 3.0),
         ("skim", "utility", 1, 0.0), // NULL gross (unpriced) contributes 0
     ];

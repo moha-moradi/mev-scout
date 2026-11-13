@@ -10,7 +10,8 @@
 //! 4. Atomic arb pass — ≥2 swaps in one tx + closed cycle + positive net
 //!    delta of a single profit token.
 //! 5. JIT pass — V3 Mint+Burn same position same block.
-//! 6. Backrun pass — causal harvest of a prior price move.
+//! 6. Backrun annotation — tag an emitted `ArbAtomic` that causally harvests a
+//!    prior price move (a `backrun` tag, not a separate kind).
 //! 7. `Utility` covers exact-fingerprint operational executions (keeper,
 //!    airdrop claim-and-sell, ERC-4337 bundler). No residual-inference pass
 //!    exists; a future one gets its own kind, never this bucket.
@@ -276,13 +277,16 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     jit_events.retain(|ev| !component_txs(ev).iter().any(|t| arb_txs.contains(t)));
     events.append(&mut jit_events);
 
-    // ── 3c. Causal backrun ─────────────────────────────────────────────
-    let mut backruns = classify_backruns(input, &mut drops);
+    // ── 3c. Causal backrun annotation ──────────────────────────────────
+    // Backrun is a tag on an emitted ArbAtomic, not a separate kind: the arb
+    // pass owns the cycle P&L. Annotate before the precedence retain so the
+    // tag rides on the arb event whenever the arb pass emitted one.
+    classify_backruns(input, &mut events, &mut drops);
     // TxClaims is the authority for "one tx index, one P&L-bearing kind".
     // Passes still over-emit; a claimed tx index keeps only its highest-
     // precedence kind.
     let mut claims = claims::TxClaims::default();
-    for ev in events.iter().chain(backruns.iter()) {
+    for ev in events.iter() {
         claims.claim(ev.tx_index, ev.kind);
     }
     // A same-block JIT anchors on Mint; its Burn receipt is part of the same
@@ -292,7 +296,6 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
             claims.claim(burn, e.kind);
         }
     }
-    events.append(&mut backruns);
     events.retain(|e| claims.is_claimed(e.tx_index) && claims.winner(e.tx_index) == Some(e.kind));
 
     events.sort_by(|a, b| {
@@ -335,12 +338,11 @@ pub(crate) fn normalize_confidence(events: &mut [MevEvent]) {
 
 /// Kind priority for [`claims::TxClaims`] (lower = higher priority).
 ///
-/// Backrun > Liquidation > Jit > Skim > ArbAtomic > Utility. A real collision
-/// keeps the explicitly anchored kind (liquidation / mint-burn / pair outflow)
-/// and drops the inferred cycle.
+/// Liquidation > Jit > Skim > ArbAtomic > Utility. A real collision keeps the
+/// explicitly anchored kind (liquidation / mint-burn / pair outflow) and drops
+/// the inferred cycle. A backrun is a tag on `ArbAtomic`, not a competing kind.
 pub fn kind_precedence(k: MevKind) -> u8 {
     match k {
-        MevKind::Backrun => 0,
         MevKind::Liquidation => 1,
         MevKind::Jit => 2,
         MevKind::Skim => 3,
@@ -549,13 +551,13 @@ mod tests {
     use crate::explorer::ingest::IngestConfig;
     use crate::explorer::store::OpenPosition;
     use crate::explorer::test_fixtures::{
-        block, block_with_v2, classify_kind, event_of, flash_loan, jit, kinds, liquidation, swap,
+        block, block_with_v2, classify_kind, flash_loan, jit, kinds, liquidation, swap,
         swap_at_tick, swap_owned, transfer, tx, tx_to, ATK, POOL_A, POOL_B, TOKA, USDC, VICTIM,
         WNATIVE,
     };
     use crate::explorer::types::{
-        utility_subkind, Confidence, JitFact, KeeperFact, MevKind, UserOpFact, V2PairOpFact,
-        V2PairOpKind,
+        has_backrun_tag, utility_subkind, Confidence, JitFact, KeeperFact, MevKind, UserOpFact,
+        V2PairOpFact, V2PairOpKind,
     };
     use crate::types::ChainName;
     use alloy::primitives::{address, b256, Address, U256};
@@ -1303,16 +1305,22 @@ mod tests {
                 ],
             ));
             let events = classify_block(&block(txs));
-            let found = kinds(&events).contains(&MevKind::Backrun);
-            assert_eq!(found, expect, "{name}");
+            let tagged: Vec<&MevEvent> = events
+                .iter()
+                .filter(|e| e.kind == MevKind::ArbAtomic && has_backrun_tag(e))
+                .collect();
+            assert_eq!(!tagged.is_empty(), expect, "{name}");
             if !expect {
                 continue;
             }
-            let ev = event_of(&events, MevKind::Backrun);
+            let ev = tagged[0];
             assert_eq!(ev.searcher, ATK);
-            assert_eq!(ev.confidence, Confidence::Inferred);
+            // A19: the arb's ledger residual is Exact; causality stays an
+            // inferred evidence tier under details.causal.
+            assert_eq!(ev.confidence, Confidence::Exact);
             assert_eq!(ev.tx_index, back_idx);
-            let reasons: Vec<&str> = ev.details["reasons"]
+            let causal = &ev.details["causal"];
+            let reasons: Vec<&str> = causal["reasons"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -1321,18 +1329,12 @@ mod tests {
             assert!(reasons.contains(&"STATE_DELTA_MATCH"));
             assert!(reasons.contains(&"DIRECT_TOKEN_CYCLE"));
             assert_eq!(
-                ev.details["evidence"]["DIRECTION_OF_BENEFIT"],
+                causal["evidence"]["DIRECTION_OF_BENEFIT"],
                 serde_json::json!(true)
             );
-            assert_eq!(ev.details["tier"], serde_json::json!("inferred"));
-            assert_eq!(ev.details["mode"], serde_json::json!("realized"));
-            assert_eq!(
-                events.iter().filter(|e| e.kind == MevKind::Backrun).count(),
-                1
-            );
-            assert!(!events
-                .iter()
-                .any(|e| e.kind == MevKind::ArbAtomic && e.tx_index == back_idx));
+            assert_eq!(causal["tier"], serde_json::json!("inferred"));
+            assert_eq!(causal["mode"], serde_json::json!("realized"));
+            assert_eq!(tagged.len(), 1);
             assert_eq!(ev.victim_hashes, vec![B256::repeat_byte(move_idx as u8)]);
         }
     }
@@ -1380,7 +1382,9 @@ mod tests {
         ];
         let events = classify_block(&block(txs));
         assert!(
-            kinds(&events).contains(&MevKind::Backrun),
+            events
+                .iter()
+                .any(|e| e.kind == MevKind::ArbAtomic && has_backrun_tag(e)),
             "same-token size gate should accept, got {events:?}"
         );
     }
@@ -1808,7 +1812,7 @@ mod tests {
     fn pnl_kind(k: MevKind) -> bool {
         matches!(
             k,
-            MevKind::Backrun | MevKind::ArbAtomic | MevKind::Jit | MevKind::Liquidation | MevKind::Skim
+            MevKind::ArbAtomic | MevKind::Jit | MevKind::Liquidation | MevKind::Skim
         )
     }
 
@@ -1894,8 +1898,6 @@ mod tests {
                 );
             }
         }
-        assert_eq!(kind_precedence(MevKind::Backrun), 0);
-        assert!(kind_precedence(MevKind::Backrun) < kind_precedence(MevKind::Liquidation));
         assert!(kind_precedence(MevKind::Liquidation) < kind_precedence(MevKind::Jit));
         assert!(kind_precedence(MevKind::Jit) < kind_precedence(MevKind::Skim));
         assert!(kind_precedence(MevKind::Skim) < kind_precedence(MevKind::ArbAtomic));

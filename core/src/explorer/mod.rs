@@ -15,9 +15,10 @@
 //! Classification passes (in `classify`), applied per block in priority order:
 //! liquidations, UniV2 `skim()` capture (`Skim`), atomic-arbitrage cycles
 //! (`ArbAtomic`, Exact only), keeper / claim-and-sell / ERC-4337 bundler
-//! (`Utility`, with `subkind`), backruns (`Backrun`), and narrowly-intersected
-//! JIT liquidity (`Jit`). Kinds are mutually exclusive by priority (`Backrun` >
-//! `Liquidation` > `Jit` > `Skim` > `ArbAtomic` > `Utility`).
+//! (`Utility`, with `subkind`), and narrowly-intersected JIT liquidity (`Jit`).
+//! A causal backrun is an `ArbAtomic` carrying the `backrun` tag, not a separate
+//! kind. Kinds are mutually exclusive by priority (`Liquidation` > `Jit` >
+//! `Skim` > `ArbAtomic` > `Utility`).
 //! Costs are netted per op: gas (wei × effective price → USD via native price)
 //! and any flash-loan fee (USD via borrowed token price).
 //! The atomic-arb pass requires a closed multi-pool swap cycle with flow
