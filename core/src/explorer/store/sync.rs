@@ -18,12 +18,12 @@ impl ExplorerStore {
     }
     /// True when the block was already classified (idempotent skip).
     pub fn block_classified(&self, block: u64) -> anyhow::Result<bool> {
-        let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM blocks_classified WHERE block = ?1",
+        let v: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM blocks_classified WHERE block = ?1)",
             [block as i64],
             |r| r.get(0),
         )?;
-        Ok(n > 0)
+        Ok(v)
     }
     /// Highest block already checkpointed as classified.
     pub fn latest_classified_block(&self) -> anyhow::Result<Option<u64>> {
