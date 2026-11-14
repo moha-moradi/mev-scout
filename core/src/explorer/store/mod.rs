@@ -654,14 +654,17 @@ mod tests {
     }
 
     #[test]
-    fn liquidation_pnl_same_asset_is_exact() {
+    fn liquidation_pnl_same_asset_is_inferred() {
         let asset = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let mut prices = std::collections::HashMap::new();
         prices.insert(asset, token_usd(1.0, 0));
         let ev = liquidation_event(asset, asset);
-        let (usd, conf, _) = liquidation_pnl(&ev, &prices);
+        let (usd, conf, details) = liquidation_pnl(&ev, &prices);
         assert!((usd.unwrap() - 200.0).abs() < 1e-9);
-        assert_eq!(conf, "exact");
+        // A19: liquidation is `O` basis, so it can never claim `exact`.
+        assert_eq!(conf, "inferred");
+        assert!(details.contains("LIQ_SAME_ASSET"));
+        assert!(details.contains("\"pnl_basis\":\"O\""));
     }
 
     #[test]

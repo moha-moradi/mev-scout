@@ -93,7 +93,9 @@ pub fn annotate_event_with_volume(
         accounting.valuation.gross_usd.filter(|v| v.is_finite())
     } else if ev.kind == MevKind::Liquidation {
         let (usd, conf, details) = liquidation_pnl(ev, token_prices);
-        confidence = conf;
+        // Persist may only lower confidence. Liquidation P&L is always `O`
+        // basis (A19), so it can never promote an inferred event to exact.
+        confidence = min_confidence(confidence, conf);
         details_json = details;
         usd
     } else if !ev.profit_tokens.is_empty() {
@@ -330,21 +332,28 @@ pub fn annotate_event_with_volume(
 }
 
 /// Liquidation P&L: gross seized collateral value minus repaid
-/// debt value, both priced at persist time. Cross-asset liquidations are an
-/// approximation (liquidation bonus / market-sale slippage) and are marked
-/// `inferred` with `LIQ_BONUS_APPROX`; missing prices fall back to the
-/// collateral display amount with `MULTI_ASSET_PRICING`.
+/// debt value, both priced at persist time. Liquidations are `O` basis (A19),
+/// so they are never `exact`: cross-asset liquidations are an approximation
+/// (liquidation bonus / market-sale slippage) flagged `LIQ_BONUS_APPROX`, and
+/// same-asset liquidations are flagged `LIQ_SAME_ASSET`. Missing prices fall
+/// back to the collateral display amount with `MULTI_ASSET_PRICING`.
 pub(super) fn liquidation_pnl(
     ev: &MevEvent,
     token_prices: &std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
 ) -> (Option<f64>, &'static str, String) {
     use crate::explorer::types::LiquidationDetails;
 
+    let mut details = ev.details.clone();
+    // Liquidation is an `O` basis. Only fill the marker when the classifier
+    // did not set it; never overwrite an existing basis.
+    if details.get("pnl_basis").is_none() {
+        details["pnl_basis"] = serde_json::json!("O");
+    }
+
     // Benqi seizeTokens left in qi units when exchangeRateStored failed —
     // never price the qiToken address (wrong Llama matches / inflated USD).
     let reasons_pre = reason_list(&ev.details);
     if reasons_pre.iter().any(|r| r == "QI_EXCHANGE_RATE_MISSING") {
-        let mut details = ev.details.clone();
         details["profit_usd_method"] = serde_json::json!("skipped_qi_unconverted");
         return (None, "inferred", details.to_string());
     }
@@ -365,19 +374,20 @@ pub(super) fn liquidation_pnl(
         None => (None, None, true),
     };
 
-    let mut details = ev.details.clone();
     let mut reasons = reason_list(&details);
     details["profit_usd_method"] = serde_json::json!("collateral_usd_minus_debt_usd");
     match (collateral_usd, debt_usd) {
         (Some(c), Some(d)) => {
-            if cross_asset {
-                reasons.push("LIQ_BONUS_APPROX".to_string());
-                details["reasons"] = serde_json::json!(reasons);
-                (Some(c - d), "inferred", details.to_string())
-            } else {
-                details["reasons"] = serde_json::json!(reasons);
-                (Some(c - d), "exact", details.to_string())
-            }
+            reasons.push(
+                if cross_asset {
+                    "LIQ_BONUS_APPROX"
+                } else {
+                    "LIQ_SAME_ASSET"
+                }
+                .to_string(),
+            );
+            details["reasons"] = serde_json::json!(reasons);
+            (Some(c - d), "inferred", details.to_string())
         }
         _ => {
             reasons.push("MULTI_ASSET_PRICING".to_string());
@@ -385,6 +395,16 @@ pub(super) fn liquidation_pnl(
             details["reasons"] = serde_json::json!(reasons);
             (None, "inferred", details.to_string())
         }
+    }
+}
+
+/// Confidence lattice: `inferred` is the floor. Persist-time annotation may
+/// lower `exact` to `inferred`, never raise.
+fn min_confidence(a: &'static str, b: &'static str) -> &'static str {
+    if a == "exact" && b != "exact" {
+        b
+    } else {
+        a
     }
 }
 
@@ -948,6 +968,35 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("\"pnl_basis\":\"O\""));
+    }
+
+    /// A1/A19: a same-asset liquidation is priced exactly enough to be useful
+    /// but is still an `O`-basis estimate, so persist stores `inferred` and
+    /// leaves the ledger-backed `exact` claim to `R`-basis events only.
+    #[test]
+    fn same_asset_liquidation_persists_inferred_and_o_basis() {
+        let asset = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let mut prices = HashMap::new();
+        prices.insert(asset, token_usd(1.0, 0));
+        let mut ev = sample_event(603);
+        ev.kind = MevKind::Liquidation;
+        ev.confidence = Confidence::Exact;
+        ev.profit_token = Some(asset);
+        ev.profit_amount = Some(U256::from(500u64));
+        ev.details = serde_json::json!({
+            "collateral_asset": format!("{asset:#x}"),
+            "debt_asset": format!("{asset:#x}"),
+            "collateral_amount": "500",
+            "debt_to_cover": "300",
+        });
+
+        let op = annotate_event(&ev, &[], &prices, Some(1.0), 0);
+        assert_eq!(op.confidence, "inferred");
+        let profit = op.profit_usd.expect("same-asset liquidation priced");
+        assert!((profit - 200.0).abs() < 1e-9, "got {profit}");
+        let details = op.details_json.as_deref().unwrap_or("");
+        assert!(details.contains("LIQ_SAME_ASSET"), "got {details}");
+        assert!(details.contains("\"pnl_basis\":\"O\""), "got {details}");
     }
 
     /// BuyCollateral is valued as collateral_usd − base_paid_usd once the
