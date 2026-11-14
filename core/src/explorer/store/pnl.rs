@@ -478,7 +478,6 @@ mod tests {
             flashloan_fee_token: None,
             confidence: Confidence::Exact,
             victim_hashes: vec![],
-            victim_swap_size: None,
             details: serde_json::json!({
                 "route": [{"pool": "0x3333", "amm": "v3"}]
             }),

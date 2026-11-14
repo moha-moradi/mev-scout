@@ -690,7 +690,29 @@ fn p3_2_balancer_staleness() {
         tx_index: 0,
         log_index: 9,
         pool: address!("cccccccccccccccccccccccccccccccccccccccc"),
-        token_index: 0,
+        rate: U256::from(1),
+    }];
+    let ev = classify_kind(&block(vec![t]), MevKind::ArbAtomic);
+    assert!(
+        has_tag(std::slice::from_ref(&ev), "rate_provider_staleness"),
+        "a different pool's refresh must not clear this pool's staleness tag"
+    );
+
+    let mut s0 = swap(POOL_A, USDC, TOKA, 100, 200);
+    s0.amm = Amm::Balancer;
+    let mut s1 = swap(POOL_B, TOKA, USDC, 200, 110);
+    s1.amm = Amm::V2;
+    let transfers = vec![
+        transfer(0, USDC, ATK, POOL_A, 100),
+        transfer(1, TOKA, POOL_A, ATK, 200),
+        transfer(2, TOKA, ATK, POOL_B, 200),
+        transfer(3, USDC, POOL_B, ATK, 110),
+    ];
+    let mut t = tx(0, ATK, true, vec![s0, s1], transfers);
+    t.rate_cache_updates = vec![crate::explorer::types::RateCacheFact {
+        tx_index: 0,
+        log_index: 9,
+        pool: POOL_A,
         rate: U256::from(1),
     }];
     let ev = classify_kind(&block(vec![t]), MevKind::ArbAtomic);
@@ -926,6 +948,31 @@ fn p3_15_epoch_transition() {
     }];
     let mut input = block(vec![t]);
     input.ctx.epoch_venue_pools = std::sync::Arc::new(std::collections::HashSet::from([POOL_A]));
+    let ev = classify_kind(&input, MevKind::ArbAtomic);
+    assert!(!has_tag(std::slice::from_ref(&ev), "epoch_transition"));
+
+    // The reward token must appear on the route.
+    let mut s0 = swap(POOL_A, USDC, TOKA, 100, 200);
+    s0.amm = Amm::Solidly;
+    let mut s1 = swap(POOL_B, TOKA, USDC, 200, 110);
+    s1.amm = Amm::Solidly;
+    let transfers = vec![
+        transfer(0, USDC, ATK, POOL_A, 100),
+        transfer(1, TOKA, POOL_A, ATK, 200),
+        transfer(2, TOKA, ATK, POOL_B, 200),
+        transfer(3, USDC, POOL_B, ATK, 110),
+    ];
+    let mut t = tx(0, ATK, true, vec![s0, s1], transfers);
+    t.epoch_rewards = vec![EpochRewardFact {
+        tx_index: 0,
+        log_index: 9,
+        emitter: address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        reward_token: WNATIVE,
+        amount: U256::from(1),
+    }];
+    let mut input = block(vec![t]);
+    input.ctx.epoch_venue_pools =
+        std::sync::Arc::new(std::collections::HashSet::from([POOL_A, POOL_B]));
     let ev = classify_kind(&input, MevKind::ArbAtomic);
     assert!(!has_tag(std::slice::from_ref(&ev), "epoch_transition"));
 

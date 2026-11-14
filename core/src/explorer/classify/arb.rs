@@ -42,12 +42,13 @@ pub(super) fn classify_atomic_arbs(
     let mut rejects: Vec<RejectedCandidate> = Vec::new();
     let mut seen_gmx_adl = false;
     for tx in &input.txs {
-        // P3.7: an ADL in this or a prior tx can explain a later arb; a later
-        // ADL cannot explain an earlier one. The route must also touch a
+        // P3.7: a forced-deleveraging event (ADL, GMX liquidation, or impact
+        // distribution) in this or a prior tx can explain a later arb; a later
+        // event cannot explain an earlier one. The route must also touch a
         // configured GMX market token, so a block-level coincidence is not a tag.
         let adl_seen = seen_gmx_adl
             || tx.gmx_events.iter().any(|g| {
-                g.kind == "adl"
+                matches!(g.kind, "adl" | "liquidation" | "impact")
                     && (input.ctx.gmx_event_emitters.is_empty()
                         || input.ctx.gmx_event_emitters.contains(&g.emitter))
             });
@@ -922,7 +923,7 @@ mod split_tests {
             wrapped_native: WNATIVE,
             savax: None,
             savax_exchange_rate_wad: None,
-            epoch_notify: false,
+            epoch_reward_tokens: &[],
             epoch_venue_pools: &[],
             gmx_adl_signal: false,
             rate_cache_updates: &[],

@@ -32,7 +32,7 @@ rows are removed by `mev-scout explorer purge-retired`.
 | P3.1 | lb_bin_jit | B | coverage_unknown | avalanche | | | no address-bound seed yet; live-eligible. Bin accounting remains explicitly unavailable (PnL NULL, never zero). |
 | P3.2 | rate_provider_staleness | B | coverage_unknown | - | | | rare; not a deletion signal. |
 | P3.5 | curve_imbalance | B | coverage_unknown | - | | | rare; not a deletion signal. |
-| P3.7 | gmx_adl_arb | B | coverage_unknown | avalanche | | | ADL must appear in the same or a prior tx and the route must touch a configured GMX index token (WAVAX/USDC/WBTC.e/WETH.e). |
+| P3.7 | gmx_adl_arb | B | coverage_unknown | avalanche | | | ADL/liquidation/impact event must appear in the same or a prior tx and the route must touch a configured GMX index token (WAVAX/USDC/WBTC.e/WETH.e). |
 | P3.12 | fot_arb|rebase_arb | B | coverage_unknown | - | | | rare; not a deletion signal. |
 | P3.13 | claim_and_sell | B | verified | avalanche | 97781738 | 97781738 | Seeded |
 | P3.15 | epoch_transition | B | coverage_unknown | - | | | requires `NotifyReward` and both cycle legs on registry-matched epoch venues; one touch or a timestamp alone is not a signal. |

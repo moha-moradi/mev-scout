@@ -56,8 +56,6 @@ pub fn decode_rate_cache_update(log: &LogData) -> Option<RateCacheFact> {
         tx_index: 0,
         log_index: 0,
         pool: log.address,
-        token_index: u64::try_from(U256::from_be_slice(log.topics[1].as_slice()))
-            .unwrap_or(u64::MAX),
         rate: U256::from_be_slice(&log.data[0..32]),
     })
 }

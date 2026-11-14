@@ -3,6 +3,8 @@
 //! Prefer `details.tags` over new [`MevKind`] variants. Every tag is a
 //! Mode-A (or declared-inferred) fingerprint over already-decoded facts;
 //! P&L stays on the family basis (`R`/`O`/`F`) of the parent event.
+use std::collections::HashSet;
+
 use alloy::primitives::{Address, U256};
 
 use crate::explorer::types::{Amm, RateCacheFact, SwapFact, TransferFact};
@@ -34,11 +36,21 @@ pub fn arb_strategy_tags(swaps: &[SwapFact], opts: &ArbTagOpts<'_>) -> Vec<&'sta
         tags.push("curve_imbalance");
     }
 
-    // P3.2 — Balancer rate-provider staleness (inferred): Balancer leg on a
-    // cross-venue arb with no same-block TokenRateCacheUpdated (ComposableStable
-    // emits from the pool, not the Vault — any in-block refresh clears the tag).
-    if has_amm(Amm::Balancer) && cross_venue && opts.rate_cache_updates.is_empty() {
-        tags.push("rate_provider_staleness");
+    // P3.2 — Balancer rate-provider staleness (inferred): a Balancer leg on a
+    // cross-venue arb whose pool did not refresh its rate cache in the block.
+    if has_amm(Amm::Balancer) && cross_venue {
+        let balancer_pools: HashSet<Address> = swaps
+            .iter()
+            .filter(|s| s.amm == Amm::Balancer)
+            .map(|s| s.pool)
+            .collect();
+        let refreshed = opts
+            .rate_cache_updates
+            .iter()
+            .any(|r| balancer_pools.contains(&r.pool) && !r.rate.is_zero());
+        if !refreshed {
+            tags.push("rate_provider_staleness");
+        }
     }
 
     // P3.12 — FoT / rebase token arb (drift flag secondary; P&L still R).
@@ -83,9 +95,9 @@ pub fn arb_strategy_tags(swaps: &[SwapFact], opts: &ArbTagOpts<'_>) -> Vec<&'sta
     }
 
     // P3.15 — Pharaoh / Blackhole epoch-transition arb: a `NotifyReward` in the
-    // block and *both* sides of the cycle trading epoch venues. A single touch
-    // (or a timestamp alone) is not an epoch imbalance.
-    if opts.epoch_notify && !opts.epoch_venue_pools.is_empty() {
+    // block, both sides of the cycle on epoch venues, and the route touching
+    // the reward token. A single touch (or a timestamp alone) is not enough.
+    if !opts.epoch_reward_tokens.is_empty() && !opts.epoch_venue_pools.is_empty() {
         let mut epoch_pools: Vec<Address> = swaps
             .iter()
             .filter(|s| opts.epoch_venue_pools.contains(&s.pool))
@@ -94,7 +106,11 @@ pub fn arb_strategy_tags(swaps: &[SwapFact], opts: &ArbTagOpts<'_>) -> Vec<&'sta
         let legs = epoch_pools.len();
         epoch_pools.sort_unstable();
         epoch_pools.dedup();
-        if legs >= 2 && epoch_pools.len() >= 2 {
+        let touches_reward = swaps.iter().any(|s| {
+            opts.epoch_reward_tokens.contains(&s.token_in)
+                || opts.epoch_reward_tokens.contains(&s.token_out)
+        });
+        if legs >= 2 && epoch_pools.len() >= 2 && touches_reward {
             tags.push("epoch_transition");
         }
     }
@@ -150,8 +166,8 @@ pub struct ArbTagOpts<'a> {
     pub savax: Option<Address>,
     /// Benqi `getPooledAvaxByShares(1e18)` at the block (plan P3.16 mode A+B).
     pub savax_exchange_rate_wad: Option<U256>,
-    /// True when the block carries a `NotifyReward` (P3.15).
-    pub epoch_notify: bool,
+    /// Reward tokens from in-block `NotifyReward` events with a non-zero amount.
+    pub epoch_reward_tokens: &'a [Address],
     pub epoch_venue_pools: &'a [Address],
     pub gmx_adl_signal: bool,
     /// Same-block Balancer TokenRateCacheUpdated facts (plan P3.2).
@@ -210,7 +226,7 @@ mod tests {
             wrapped_native: WAVAX,
             savax: None,
             savax_exchange_rate_wad: None,
-            epoch_notify: false,
+            epoch_reward_tokens: &[],
             epoch_venue_pools: &[],
             gmx_adl_signal: false,
             rate_cache_updates: &[],
@@ -241,7 +257,6 @@ mod tests {
             tx_index: 0,
             log_index: 0,
             pool: POOL,
-            token_index: 0,
             rate: U256::from(1),
         }];
         o.rate_cache_updates = &updates;

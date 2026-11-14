@@ -460,7 +460,6 @@ pub struct RateCacheFact {
     pub log_index: u64,
     /// ComposableStablePool that refreshed its cached rate.
     pub pool: Address,
-    pub token_index: u64,
     pub rate: U256,
 }
 

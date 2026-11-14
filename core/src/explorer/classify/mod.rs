@@ -202,7 +202,13 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
         .iter()
         .flat_map(|t| t.reserve_updates.iter().cloned())
         .collect();
-    let epoch_notify = input.txs.iter().any(|t| !t.epoch_rewards.is_empty());
+    let epoch_reward_tokens: Vec<Address> = input
+        .txs
+        .iter()
+        .flat_map(|t| t.epoch_rewards.iter())
+        .filter(|e| !e.amount.is_zero() && !e.emitter.is_zero())
+        .map(|e| e.reward_token)
+        .collect();
     let epoch_venue_list: Vec<Address> = input.ctx.epoch_venue_pools.iter().copied().collect();
     let block_rate_cache: Vec<RateCacheFact> = input
         .txs
@@ -213,7 +219,7 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
         wrapped_native: input.ctx.wrapped_native,
         savax: input.ctx.savax,
         savax_exchange_rate_wad: input.savax_exchange_rate_wad,
-        epoch_notify,
+        epoch_reward_tokens: &epoch_reward_tokens,
         epoch_venue_pools: &epoch_venue_list,
         // Per-tx: the arb pass only tags when an ADL appears in this or a
         // prior tx, never a later one.
@@ -1704,7 +1710,6 @@ mod tests {
             flashloan_fee_token: None,
             confidence: Confidence::Inferred,
             victim_hashes: vec![],
-            victim_swap_size: None,
             details: serde_json::json!({}),
         };
         let mut drop = keep.clone();
@@ -1734,7 +1739,6 @@ mod tests {
             flashloan_fee_token: None,
             confidence: Confidence::Exact,
             victim_hashes: vec![],
-            victim_swap_size: None,
             details: serde_json::json!({}),
         };
         let h = b256!("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
@@ -2045,7 +2049,6 @@ mod confidence_basis_tests {
             flashloan_fee_token: None,
             confidence,
             victim_hashes: vec![],
-            victim_swap_size: None,
             details: serde_json::json!({ "pnl_basis": basis }),
         }
     }

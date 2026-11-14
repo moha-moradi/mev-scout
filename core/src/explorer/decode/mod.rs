@@ -58,7 +58,8 @@ use alloy::primitives::B256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LogFamily {
     Transfer,
-    /// Aggregator topics emit both a signal and a swap edge.
+    /// Aggregator topics emit a swap edge; router-internal legs never close
+    /// an arbitrage cycle.
     Aggregator,
     Swap,
     Liquidation,

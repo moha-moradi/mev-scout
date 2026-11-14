@@ -1523,7 +1523,6 @@ mod tests {
             flashloan_fee_token: None,
             confidence: crate::explorer::types::Confidence::Exact,
             victim_hashes: vec![],
-            victim_swap_size: None,
             details: serde_json::json!({}),
         }
     }
