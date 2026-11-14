@@ -57,9 +57,9 @@ impl ExplorerStore {
                 "WITH RECURSIVE seq(b) AS (
                    SELECT ?1 UNION ALL SELECT b+1 FROM seq WHERE b < ?2
                  )
-                 SELECT b FROM seq
-                 WHERE b NOT IN (SELECT block FROM blocks_classified
-                                 WHERE block BETWEEN ?1 AND ?2)",
+                 SELECT s.b FROM seq s
+                 LEFT JOIN blocks_classified c ON c.block = s.b
+                 WHERE c.block IS NULL",
             )?;
             let rows = stmt.query_map(rusqlite::params![lo as i64, hi as i64], |r| {
                 r.get::<_, i64>(0)
