@@ -415,11 +415,7 @@ mod tests {
     use crate::explorer::types::{Confidence, MevEvent, MevKind};
     use alloy::primitives::{B256, U256};
 
-    fn event(
-        block: u64,
-        searcher: Address,
-        contract: Option<Address>,
-    ) -> MevEvent {
+    fn event(block: u64, searcher: Address, contract: Option<Address>) -> MevEvent {
         MevEvent {
             block,
             ts: 1_700_000_000,
@@ -453,10 +449,9 @@ mod tests {
         // Two identical (searcher, contract, block) ops become one label tuple;
         // the distinct tuples remain, in deterministic (sorted) order.
         assert_eq!(out.len(), 3);
-        assert!(
-            out.iter()
-                .all(|(eoa, _, block)| *block == 100 && (*eoa == ATK || *eoa == VICTIM))
-        );
+        assert!(out
+            .iter()
+            .all(|(eoa, _, block)| *block == 100 && (*eoa == ATK || *eoa == VICTIM)));
         assert!(out.windows(2).all(|w| w[0] <= w[1]));
     }
 

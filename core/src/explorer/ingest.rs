@@ -850,6 +850,17 @@ fn known_token_cache(chain_id: u64) -> std::sync::Arc<crate::cache::TokenCache> 
         .clone()
 }
 
+/// Max addresses per DefiLlama historical price request.
+const LLAMA_CHUNK: usize = 50;
+
+/// Concurrency cap when fetching llama chunks in parallel.
+const LLAMA_CONCURRENCY: usize = 4;
+
+/// Consecutive chunks of at most `LLAMA_CHUNK` addresses.
+fn llama_token_chunks(tokens: &[Address]) -> Vec<Vec<Address>> {
+    tokens.chunks(LLAMA_CHUNK).map(|c| c.to_vec()).collect()
+}
+
 /// Outcome of a stats-window price fill.
 pub async fn warm_prices_for_tokens(
     cfg: &IngestConfig,
@@ -903,29 +914,39 @@ pub async fn warm_quotes_for_tokens(
     // Llama-reported decimals stay alongside the price for resolution below.
     let mut llama_decimals: HashMap<Address, u32> = HashMap::new();
     if !missing.is_empty() {
-        match pricing::fetch_prices_llama(cfg.chain, ts, &missing).await {
-            Ok(prices) => {
-                for (addr, (usd, llama_dec)) in prices {
-                    // A non-positive quote is not a price: caching it would
-                    // value every amount of this token in the hour at $0 and
-                    // silently mark partial totals complete. Leave it unpriced.
-                    if !usd.is_finite() || usd <= 0.0 {
-                        warn!(
-                            token = %format!("{addr:#x}"),
-                            hour,
-                            usd,
-                            "llama returned a non-positive price; leaving token unpriced"
-                        );
-                        continue;
-                    }
-                    store.put_price(addr, hour, usd, "llama")?;
-                    priced.push((addr, usd, "llama".into(), hour));
-                    if let Some(d) = llama_dec {
-                        llama_decimals.insert(addr, d);
+        let chain = cfg.chain;
+        let mut collected = HashMap::new();
+        let mut stream = futures::stream::iter(llama_token_chunks(&missing))
+            .map(|chunk| pricing::fetch_prices_llama(chain, ts, &chunk))
+            .buffer_unordered(LLAMA_CONCURRENCY);
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(prices) => {
+                    for (addr, (usd, llama_dec)) in prices {
+                        collected.insert(addr, (usd, llama_dec));
                     }
                 }
+                Err(e) => warn!("llama price fetch failed for a token chunk: {e}"),
             }
-            Err(e) => warn!("llama price fetch failed ({} tokens): {e}", missing.len()),
+        }
+        for (addr, (usd, llama_dec)) in collected {
+            // A non-positive quote is not a price: caching it would
+            // value every amount of this token in the hour at $0 and
+            // silently mark partial totals complete. Leave it unpriced.
+            if !usd.is_finite() || usd <= 0.0 {
+                warn!(
+                    token = %format!("{addr:#x}"),
+                    hour,
+                    usd,
+                    "llama returned a non-positive price; leaving token unpriced"
+                );
+                continue;
+            }
+            store.put_price(addr, hour, usd, "llama")?;
+            priced.push((addr, usd, "llama".into(), hour));
+            if let Some(d) = llama_dec {
+                llama_decimals.insert(addr, d);
+            }
         }
     }
 
@@ -1502,6 +1523,32 @@ mod tests {
         ];
         let toks = event_tokens(&[ev]);
         assert_eq!(toks, vec![primary, residual]);
+    }
+
+    #[test]
+    fn llama_token_chunks_bounded_and_ordered() {
+        let tokens: Vec<Address> = (0..121)
+            .map(|i| {
+                let mut a = [0u8; 20];
+                a[0] = i as u8;
+                Address::from(a)
+            })
+            .collect();
+        let out = llama_token_chunks(&tokens);
+        assert_eq!(out.len(), 3);
+        assert_eq!([out[0].len(), out[1].len(), out[2].len()], [50, 50, 21]);
+        assert!(out.iter().all(|c| !c.is_empty()));
+        // Order preserved across chunk boundaries.
+        assert_eq!(out.into_iter().flatten().collect::<Vec<_>>(), tokens);
+    }
+
+    #[test]
+    fn llama_token_chunks_empty_and_single_chunk() {
+        assert!(llama_token_chunks(&[] as &[Address]).is_empty());
+        let one = vec![Address::from([1u8; 20])];
+        let out = llama_token_chunks(&one);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], one);
     }
 
     fn sample() -> MevEvent {
