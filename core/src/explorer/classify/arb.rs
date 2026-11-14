@@ -15,7 +15,7 @@ use crate::explorer::types::{
     Amm, Confidence, MevEvent, MevKind, PnlBasis, SwapFact, TransferFact,
 };
 
-use super::legs::searcher_candidates;
+use super::legs::{resolved_cycle_edges, searcher_candidates};
 use super::{append_tag, has_unresolved_tokens, BlockInput, TxInput};
 
 const CLASSIFY_STRATEGY: &str = "explorer_classify";
@@ -155,26 +155,14 @@ pub(super) fn classify_atomic_arbs(
         let candidates = searcher_candidates(tx);
 
         // ── Atomic arb ─────────────────────────────────────────────────
-        // Resolved directional edges (token_in, token_out, pool).
-        //
-        // Aggregator/router legs are excluded: those edges are the router's
-        // *internal* routing (e.g. a token→USDC sale split across its own
-        // pools), decoded only by token proximity. Letting them close the
-        // cycle mislabels a one-way aggregator conversion as the searcher's
-        // atomic arb (regression: two ~$76–78 USDC "arbs" via the KyberSwap
-        // executor that mev.zone does not count). Genuine searcher cycles run
-        // over real DEX pools (v2/v3/v4).
-        let resolved_edges: Vec<(Address, Address, Address)> = tx
-            .swaps
-            .iter()
-            .filter(|s| {
-                s.amm != Amm::Aggregator
-                    && !has_unresolved_tokens(s)
-                    && s.token_in != decode::TOKEN0_SENTINEL
-                    && s.token_in != decode::TOKEN1_SENTINEL
-            })
-            .map(|s| (s.token_in, s.token_out, s.pool))
-            .collect();
+        // Resolved directional edges (token_in, token_out, pool). Aggregator/
+        // router legs are the router's *internal* routing (e.g. a token→USDC
+        // sale split across its own pools), decoded only by token proximity;
+        // letting them close the cycle mislabels a one-way aggregator
+        // conversion as the searcher's atomic arb (regression: two ~$76–78
+        // USDC "arbs" via the KyberSwap executor that mev.zone does not
+        // count). Genuine searcher cycles run over real DEX pools (v2/v3/v4).
+        let resolved_edges = resolved_cycle_edges(tx);
 
         let Some((anchor, walk_tokens)) = find_closed_cycle(&resolved_edges) else {
             if resolved_edges.len() >= 2 {
@@ -914,7 +902,7 @@ fn initiator_blocks_cycle(
 mod split_tests {
     use super::*;
     use crate::explorer::test_fixtures::{
-        block, swap, transfer, tx, ATK, POOL_A, POOL_B, TOKA, USDC, WNATIVE,
+        block, swap, swap_agg, transfer, tx, ATK, MARKET, POOL_A, POOL_B, TOKA, USDC, WNATIVE,
     };
     use crate::explorer::types::KeeperFact;
 
@@ -1002,6 +990,37 @@ mod split_tests {
         assert!(
             tagged,
             "arb event must carry claim_and_sell and airdrop tags"
+        );
+    }
+
+    /// A2: two real DEX legs that chain without returning to the start token,
+    /// plus an aggregator leg that would close the loop. With the aggregator
+    /// leg excluded the chain is open, so `classify_atomic_arbs` emits no
+    /// ArbAtomic event.
+    #[test]
+    fn aggregator_only_cycle_produces_no_arb() {
+        let t = tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, 100, 200),
+                swap(POOL_B, USDC, WNATIVE, 200, 300),
+                swap_agg(MARKET, WNATIVE, TOKA, 300, 400),
+            ],
+            vec![],
+        );
+        let input = block(vec![t]);
+        let opts = tag_opts();
+
+        let (events, _) = classify_atomic_arbs(&input, &opts);
+        assert!(
+            events.iter().all(|e| e.kind != MevKind::ArbAtomic),
+            "aggregator-only cycle must not emit an arb event: {:?}",
+            events
+                .iter()
+                .map(|e| (e.kind, e.tx_index))
+                .collect::<Vec<_>>()
         );
     }
 

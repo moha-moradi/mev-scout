@@ -8,6 +8,7 @@ use crate::explorer::decode;
 use crate::explorer::profit::{
     has_closed_cycle, has_inventory_spend, select_profit_token, DeltaLedger,
 };
+use crate::explorer::types::Amm;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct SwapLeg {
@@ -81,6 +82,28 @@ pub(super) fn price_better_by(b: &SwapLeg, r: &SwapLeg, min_pct: f64) -> bool {
         (Some(pb), Some(pr)) if pr > 0.0 => (pb - pr) / pr * 100.0 > min_pct,
         _ => false,
     }
+}
+
+/// Resolved directional cycle edges for a tx: `(token_in, token_out, pool)`.
+///
+/// Single source of the cycle-edge filter shared by `tx_cycle_profit` (the
+/// causal backrun pass) and `classify_atomic_arbs`. Aggregator/router legs are
+/// excluded: those edges are the router's *internal* routing (e.g. a
+/// token→USDC sale split across its own pools), decoded only by token
+/// proximity. Letting them close a cycle mislabels a one-way aggregator
+/// conversion as the searcher's atomic arb. Unresolved / sentinel legs are
+/// also excluded because their direction is not yet authoritative.
+pub(super) fn resolved_cycle_edges(tx: &TxInput) -> Vec<(Address, Address, Address)> {
+    tx.swaps
+        .iter()
+        .filter(|s| {
+            s.amm != Amm::Aggregator
+                && !has_unresolved_tokens(s)
+                && s.token_in != decode::TOKEN0_SENTINEL
+                && s.token_in != decode::TOKEN1_SENTINEL
+        })
+        .map(|s| (s.token_in, s.token_out, s.pool))
+        .collect()
 }
 
 /// Flatten every successful tx's direction-resolved swaps in block order,
@@ -166,16 +189,7 @@ pub(super) fn tx_cycle_profit(
     let ledger =
         DeltaLedger::from_transfers(&tx.transfers, input.ctx.wrapped_native, (tx.from, tx.value));
     let candidates = searcher_candidates(tx);
-    let resolved: Vec<(Address, Address, _)> = tx
-        .swaps
-        .iter()
-        .filter(|s| {
-            !has_unresolved_tokens(s)
-                && s.token_in != decode::TOKEN0_SENTINEL
-                && s.token_in != decode::TOKEN1_SENTINEL
-        })
-        .map(|s| (s.token_in, s.token_out, s.pool))
-        .collect();
+    let resolved = resolved_cycle_edges(tx);
     if resolved.len() < 2 {
         return Err(CycleMiss::TooFewEdges);
     }
@@ -209,8 +223,11 @@ pub(super) fn tx_cycle_profit(
 
 #[cfg(test)]
 mod tests {
-    use super::searcher_candidates;
-    use crate::explorer::test_fixtures::{transfer, tx, ATK, POOL_A, POOL_B, USDC, VICTIM};
+    use super::{resolved_cycle_edges, searcher_candidates, tx_cycle_profit, CycleMiss};
+    use crate::explorer::test_fixtures::{
+        block, swap, swap_agg, transfer, tx, ATK, MARKET, POOL_A, POOL_B, TOKA, USDC, VICTIM,
+        WNATIVE,
+    };
 
     #[test]
     fn sender_leads_and_no_participation_is_invented() {
@@ -252,5 +269,46 @@ mod tests {
             searcher_candidates(&t),
             "candidate order must not depend on hash iteration"
         );
+    }
+
+    /// A2: aggregator/router legs are internal routing and must be dropped from
+    /// the cycle graph, so a one-way conversion that only "closes" via the
+    /// aggregator must not be counted as a closed cycle.
+    #[test]
+    fn resolved_edges_exclude_aggregator_legs() {
+        let t = tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, 100, 200),
+                swap_agg(MARKET, USDC, WNATIVE, 200, 300),
+            ],
+            vec![],
+        );
+        let edges = resolved_cycle_edges(&t);
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0], (TOKA, USDC, POOL_A));
+        assert!(edges.iter().all(|(_, _, pool)| *pool != MARKET));
+    }
+
+    /// A2: two real DEX legs that chain but never return to the start token,
+    /// plus an aggregator leg that would close the loop. With the aggregator
+    /// excluded the chain is open, so `tx_cycle_profit` reports NotClosed.
+    #[test]
+    fn aggregator_only_cycle_is_not_closed() {
+        let my_tx = tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, 100, 200),
+                swap(POOL_B, USDC, WNATIVE, 200, 300),
+                swap_agg(MARKET, WNATIVE, TOKA, 300, 400),
+            ],
+            vec![],
+        );
+        let input = block(vec![my_tx.clone()]);
+        assert_eq!(tx_cycle_profit(&input, &my_tx), Err(CycleMiss::NotClosed));
     }
 }
