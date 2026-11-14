@@ -1,4 +1,4 @@
-//! Aggregator/router swap edges, brand signals, and DEX-edge dedup.
+//! Aggregator/router swap edges and DEX-edge dedup.
 use crate::utils::{abi_word_address, topic_address};
 use alloy::primitives::{Address, B256, U256};
 
@@ -9,10 +9,9 @@ use super::sentinels::is_unresolved_token;
 
 /// Decode an aggregator/DEX-router edge. Returns fully-directional
 /// facts for 1inch `Swapped`, Paraswap `Swapped`/`SwappedV3`, 0x `Fill`,
-/// and Odos Router V2 `Swap`. Brand is resolved via router allowlist with
-/// topic fallback (Kyber MetaAggregation shares the 1inch `Swapped` topic).
-/// 0x tokens are not in the event payload (asset encodings live in dynamic
-/// data), so token slots stay unresolved for the transfer-pairing fallback.
+/// and Odos Router V2 `Swap`. 0x tokens are not in the event payload (asset
+/// encodings live in dynamic data), so token slots stay unresolved for the
+/// transfer-pairing fallback.
 pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
     decode_aggregator_inner(log).map(|fact| (Amm::Aggregator, fact))
 }

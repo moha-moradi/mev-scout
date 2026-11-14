@@ -35,7 +35,7 @@ use alloy::primitives::{Address, B256, U256};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::explorer::types::{MevEvent, MevKind};
+use crate::explorer::types::MevEvent;
 
 /// One persisted open concentrated-liquidity position (`jit_open_positions`).
 ///
@@ -81,18 +81,6 @@ pub struct MevOpRow {
     /// `report_by_kind` still groups on `kind` alone. Legacy `bundler` values
     /// remain readable from the stored column.
     pub subkind: Option<String>,
-}
-
-impl MevOpRow {
-    /// Parse `kind` through the domain enum (SQLite TEXT boundary).
-    pub fn kind_enum(&self) -> Option<MevKind> {
-        self.kind.parse().ok()
-    }
-
-    /// Parse `confidence` through the domain enum (SQLite TEXT boundary).
-    pub fn confidence_enum(&self) -> Option<crate::explorer::types::Confidence> {
-        self.confidence.parse().ok()
-    }
 }
 
 /// Aggregate row for stats/leaderboard queries.
@@ -361,7 +349,7 @@ pub(super) fn map_mev_op_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MevOpRow
 mod tests {
     use super::pnl::liquidation_pnl;
     use super::*;
-    use crate::explorer::types::{Confidence, MevEvent};
+    use crate::explorer::types::{Confidence, MevEvent, MevKind};
     use crate::explorer::RejectedCandidate;
     use alloy::primitives::{address, b256};
 
@@ -594,9 +582,6 @@ mod tests {
             .unwrap()
             .iter()
             .any(|p| p.tick_lower == -200));
-
-        assert_eq!(store.prune_jit_positions(100).unwrap(), 1);
-        assert!(store.open_positions(0).unwrap().is_empty());
     }
 
     #[test]

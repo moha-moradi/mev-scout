@@ -399,12 +399,4 @@ impl ExplorerStore {
         }
         Ok(inserted)
     }
-    /// Purge `transfers` older than `keep_blocks` behind head (retention).
-    pub fn prune_transfers(&self, before_block: u64) -> anyhow::Result<usize> {
-        let n = self.conn.execute(
-            "DELETE FROM transfers WHERE block_number < ?1",
-            [before_block as i64],
-        )?;
-        Ok(n)
-    }
 }

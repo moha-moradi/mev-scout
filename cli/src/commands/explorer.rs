@@ -1,4 +1,6 @@
 //! `mev-scout explorer` subcommands: index (historical), report, dashboard.
+use std::path::{Path, PathBuf};
+
 use comfy_table::Table;
 
 use mev_scout_core::config::validation;
@@ -13,6 +15,21 @@ fn explorer_store(config: &Config, chain: ChainName) -> anyhow::Result<ExplorerS
     ExplorerStore::open(config.effective_explorer_db_path(&chain))
 }
 
+/// Explicit `--db`, else the effective explorer DB path for the first
+/// configured chain.
+fn resolve_db(config: &Config, db: Option<&Path>) -> PathBuf {
+    if let Some(p) = db {
+        return p.to_path_buf();
+    }
+    let chain = config
+        .chains
+        .keys()
+        .next()
+        .and_then(|k| k.parse::<ChainName>().ok())
+        .unwrap_or(ChainName::Avalanche);
+    PathBuf::from(config.effective_explorer_db_path(&chain))
+}
+
 fn short_addr(s: &str) -> String {
     if s.len() == 42 && s.starts_with("0x") {
         format!("{}..{}", &s[..8], &s[s.len() - 6..])
@@ -22,12 +39,12 @@ fn short_addr(s: &str) -> String {
 }
 
 mod backfill;
-pub mod dashboard;
+mod dashboard;
 mod purge;
 mod report;
 
 pub use backfill::cmd_backfill;
-pub use dashboard::cmd_dashboard;
+use dashboard::cmd_dashboard;
 pub use purge::cmd_purge_retired;
 pub use report::cmd_explorer_report;
 

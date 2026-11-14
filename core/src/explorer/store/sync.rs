@@ -2,19 +2,6 @@
 use super::ExplorerStore;
 
 impl ExplorerStore {
-    /// Read `indexed_to` for a chain (0 when absent).
-    pub fn get_indexed_to(&self, chain_id: u64) -> anyhow::Result<u64> {
-        let v: Option<u64> = self
-            .conn
-            .query_row(
-                "SELECT indexed_to FROM sync_state WHERE chain_id = ?1",
-                [chain_id as i64],
-                |r| r.get(0),
-            )
-            .map(Some)
-            .unwrap_or(None);
-        Ok(v.unwrap_or(0))
-    }
     /// Upsert sync checkpoint after indexing through `indexed_to`.
     pub fn set_sync_state(&self, chain_id: u64, head: u64, indexed_to: u64) -> anyhow::Result<()> {
         let now = crate::utils::epoch_secs() as i64;

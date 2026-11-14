@@ -125,11 +125,6 @@ impl ExplorerStore {
         )?;
         Ok(())
     }
-    /// Label a searcher automatically after a confirmed classifier hit
-    /// (growth loop): address → label with `source = classifier`.
-    pub fn label_searcher_auto(&self, address: Address, block: u64) -> anyhow::Result<()> {
-        self.label_competitor(address, None, block)
-    }
     /// `(name, entity)` for an address label, if present.
     pub fn get_label(&self, address: Address) -> anyhow::Result<Option<(String, Option<String>)>> {
         let addr = format!("{address:#x}");

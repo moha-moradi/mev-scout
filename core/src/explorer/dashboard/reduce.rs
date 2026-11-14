@@ -273,12 +273,12 @@ pub fn reduce(
     let unknown_rewritten = ops.iter().filter(|o| o.kind_raw == "unknown").count() as i64;
     let kpi = reduce_kpi(ops, caps);
     let bucket_secs = auto_bucket_secs(window);
-    let series = reduce_series(ops, block_timestamps, window, bucket_secs, caps);
-    let kind_matrix = reduce_kind_matrix(ops, caps);
+    let series = reduce_series(ops, block_timestamps, window, bucket_secs);
+    let kind_matrix = reduce_kind_matrix(ops);
     let actors = reduce_actors(ops, labels, caps);
-    let pools = reduce_pools(ops, caps);
-    let tokens = reduce_tokens(ops, caps);
-    let (tag_facets, reason_facets, untagged_ops) = reduce_facets(ops, catalogue_tags, caps);
+    let pools = reduce_pools(ops);
+    let tokens = reduce_tokens(ops);
+    let (tag_facets, reason_facets, untagged_ops) = reduce_facets(ops, catalogue_tags);
     let strategy_economics = reduce_strategy_economics(ops);
     let strategy_series = reduce_strategy_series(ops, window, bucket_secs);
     let scatter_cap = max_ops.max(2_000);
@@ -758,7 +758,6 @@ fn reduce_series(
     block_timestamps: &[i64],
     window: &WindowSpec,
     bucket_secs: i64,
-    _caps: &StoreCaps,
 ) -> Vec<SeriesPoint> {
     let mut map: BTreeMap<i64, SeriesPoint> = BTreeMap::new();
     let mut searcher_sets: BTreeMap<i64, HashSet<String>> = BTreeMap::new();
@@ -824,7 +823,7 @@ fn reduce_series(
 type KindKey = (String, Option<String>, String);
 type KindAgg = (i64, f64, f64);
 
-fn reduce_kind_matrix(ops: &[OpRecord], _caps: &StoreCaps) -> Vec<KindCell> {
+fn reduce_kind_matrix(ops: &[OpRecord]) -> Vec<KindCell> {
     let mut map: HashMap<KindKey, KindAgg> = HashMap::new();
     for kind in MevKind::ALL {
         map.insert(
@@ -941,7 +940,7 @@ fn reduce_actors(
     rows
 }
 
-fn reduce_pools(ops: &[OpRecord], _caps: &StoreCaps) -> Vec<PoolRow> {
+fn reduce_pools(ops: &[OpRecord]) -> Vec<PoolRow> {
     struct Acc {
         ops: HashSet<i64>,
         gross: f64,
@@ -1026,7 +1025,7 @@ fn reduce_pools(ops: &[OpRecord], _caps: &StoreCaps) -> Vec<PoolRow> {
     rows
 }
 
-fn reduce_tokens(ops: &[OpRecord], _caps: &StoreCaps) -> Vec<TokenRow> {
+fn reduce_tokens(ops: &[OpRecord]) -> Vec<TokenRow> {
     struct Acc {
         ops: i64,
         gross: f64,
@@ -1079,9 +1078,8 @@ fn reduce_tokens(ops: &[OpRecord], _caps: &StoreCaps) -> Vec<TokenRow> {
 fn reduce_facets(
     ops: &[OpRecord],
     catalogue: &HashSet<String>,
-    caps: &StoreCaps,
 ) -> (Vec<FacetRow>, Vec<FacetRow>, i64) {
-    fn bump(map: &mut HashMap<String, (i64, f64, f64)>, key: &str, o: &OpRecord, caps: &StoreCaps) {
+    fn bump(map: &mut HashMap<String, (i64, f64, f64)>, key: &str, o: &OpRecord) {
         let e = map.entry(key.to_string()).or_insert((0, 0.0, 0.0));
         e.0 += 1;
         if let Some(g) = o.profit_usd {
@@ -1093,7 +1091,6 @@ fn reduce_facets(
                 e.2 += n;
             }
         }
-        let _ = caps;
     }
     let mut tags: HashMap<String, (i64, f64, f64)> = HashMap::new();
     let mut reasons: HashMap<String, (i64, f64, f64)> = HashMap::new();
@@ -1104,7 +1101,7 @@ fn reduce_facets(
             untagged_ops += 1;
         }
         for t in &op_tags {
-            bump(&mut tags, t, o, caps);
+            bump(&mut tags, t, o);
         }
         // Facets need only the details arrays, not routes or enriched evidence.
         if let Some(details) = o
@@ -1119,7 +1116,7 @@ fn reduce_facets(
                     .filter_map(|v| v.as_str())
                     .filter(|s| seen.insert(*s))
                 {
-                    bump(&mut reasons, r, o, caps);
+                    bump(&mut reasons, r, o);
                 }
             }
         }
@@ -1354,18 +1351,6 @@ mod tests {
             since_ts: 0,
             until_ts: 3_600,
         };
-        let caps = StoreCaps {
-            user_version: 0,
-            schema_head: 0,
-            has_subkind: true,
-            has_excluded_from_net: true,
-            has_volume_usd: true,
-            has_flashloan_fee_usd: true,
-            has_pricing_flags: true,
-            has_ops_ts_index: false,
-            has_ops_natural_key: false,
-            tables: vec![],
-        };
         let ops = vec![
             op(
                 1,
@@ -1396,7 +1381,7 @@ mod tests {
                 None,
             ),
         ];
-        let series = reduce_series(&ops, &[], &window, 3600, &caps);
+        let series = reduce_series(&ops, &[], &window, 3600);
         let p = series.iter().find(|p| p.ops > 0).expect("bucket");
         assert_eq!(p.ops, 2);
         assert!((p.gross_usd - 8.0).abs() < 1e-9);

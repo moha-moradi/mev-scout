@@ -324,15 +324,6 @@ impl ExplorerStore {
         }
         Ok(out)
     }
-    /// Prune positions older than the block window. Returns rows removed.
-    pub fn prune_jit_positions(&self, before_block: u64) -> anyhow::Result<usize> {
-        let n = self.conn.execute(
-            "DELETE FROM jit_open_positions WHERE opened_block < ?1",
-            [before_block as i64],
-        )?;
-        Ok(n)
-    }
-
     /// Persist one block's ordered LP journal (receipt-local log order).
     ///
     /// Rows are replaced, not appended: a retried block must converge instead
@@ -402,25 +393,6 @@ impl ExplorerStore {
             out.push(block);
         }
         Ok(out)
-    }
-
-    /// Drop journal rows older than `before_block` (bounded retention).
-    pub fn prune_jit_blocks(&self, before_block: u64) -> anyhow::Result<usize> {
-        let n = self.conn.execute(
-            "DELETE FROM jit_blocks WHERE block_number < ?1",
-            [before_block as i64],
-        )?;
-        Ok(n)
-    }
-
-    /// Replay every retained journal row into `jit_open_positions`.
-    ///
-    /// Used after a reorg: deleting a closing Burn also deleted the row it
-    /// closed, and the opening Mint may sit before the fork point and survive.
-    /// Rebuilding from the surviving journals restores that state instead of
-    /// trusting the mutated table.
-    pub fn rebuild_jit_positions(&self) -> anyhow::Result<()> {
-        replay_jit_positions(&self.conn)
     }
 }
 

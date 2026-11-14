@@ -160,9 +160,6 @@ pub fn apply_c_token_liq_conversion(
         }
         ev.profit_token = Some(new_coll);
         ev.profit_amount = Some(new_coll_amt);
-    } else if let Some(tok) = ev.profit_token {
-        // Debt-only remap: keep profit on whatever collateral was already set.
-        let _ = tok;
     }
 
     if let Some(pnl) = details.get_mut("pnl").and_then(|v| v.as_object_mut()) {

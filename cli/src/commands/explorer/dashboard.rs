@@ -7,7 +7,6 @@ use mev_scout_core::config::Config;
 use mev_scout_core::explorer::dashboard::{
     build, render_csv, render_html, render_json, BuildOptions, WindowSpec,
 };
-use mev_scout_core::types::ChainName;
 
 /// CLI flags for one dashboard emission (or a `--repeat` loop).
 pub struct DashboardArgs {
@@ -22,21 +21,8 @@ pub struct DashboardArgs {
     pub repeat: Option<Duration>,
 }
 
-fn resolve_db(config: &Config, db: Option<&Path>) -> anyhow::Result<PathBuf> {
-    if let Some(p) = db {
-        return Ok(p.to_path_buf());
-    }
-    let chain = config
-        .chains
-        .keys()
-        .next()
-        .and_then(|k| k.parse::<ChainName>().ok())
-        .unwrap_or(ChainName::Avalanche);
-    Ok(PathBuf::from(config.effective_explorer_db_path(&chain)))
-}
-
 fn emit_once(config: &Config, args: &DashboardArgs) -> anyhow::Result<()> {
-    let db_path = resolve_db(config, args.db.as_deref())?;
+    let db_path = super::resolve_db(config, args.db.as_deref());
     let window = WindowSpec::parse(&args.window)?;
     let opts = BuildOptions {
         db_path: db_path.clone(),

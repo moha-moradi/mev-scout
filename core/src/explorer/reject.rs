@@ -21,10 +21,9 @@ pub enum RejectReason {
     GasDominates,
     /// Dropped by the per-tx top-N cap (normal competition pressure).
     MaxCandidates,
-    /// Scanner taxonomy placeholder. Classify does not emit it, and neither
-    /// does the explorer runner: a block the scanner never visited is the
-    /// absence of a row, not a reject. The variant stays so a report that
-    /// iterates this enum can show an explicit zero instead of a missing label.
+    /// Legacy scanner taxonomy value. Classify never emits it: a block the
+    /// scanner never visited is the absence of a row, not a reject. Retained so
+    /// historical `rejected_candidates` rows keep a stable reason label.
     StateStale,
     /// Explorer classify: closed swap-edge cycle failed (≥2 resolved edges).
     UnresolvedCycle,
