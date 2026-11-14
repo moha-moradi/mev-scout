@@ -1037,6 +1037,7 @@ fn lb_amounts_rejects_over_64_entries() {
 
 #[test]
 fn dispatched_topics_are_unique_and_classified() {
+    use super::LogFamily;
     use crate::chain::events::{
         AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC, AAVE_V3_LIQUIDATION_CALL_TOPIC,
         AAVE_V3_RESERVE_DATA_UPDATED_TOPIC, BALANCER_FLASH_LOAN_TOPIC,
@@ -1056,60 +1057,65 @@ fn dispatched_topics_are_unique_and_classified() {
     use std::collections::HashSet;
 
     let topics = [
-        TRANSFER_TOPIC,
-        V2_SWAP_TOPIC,
-        V3_SWAP_TOPIC,
-        *DONASWAP_V3_SWAP_TOPIC,
-        *V4_SWAP_TOPIC,
-        *INF_CL_SWAP_TOPIC,
-        *CURVE_TOKEN_EXCHANGE_TOPIC,
-        *CURVE_V2_TOKEN_EXCHANGE_TOPIC,
-        *BALANCER_SWAP_TOPIC,
-        *LB_SWAP_TOPIC,
-        *TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
-        *PENDLE_SWAP_TOPIC,
-        *FLUID_SWAP_TOPIC,
-        *METRIC_SWAP_TOPIC,
-        *SOLIDLY_SWAP_TOPIC,
-        ONEINCH_SWAPPED_TOPIC,
-        PARASWAP_SWAPPED_TOPIC,
-        PARASWAP_SWAPPED_V3_TOPIC,
-        ZRX_FILL_TOPIC,
-        ODOS_SWAP_TOPIC,
-        *AAVE_V3_LIQUIDATION_CALL_TOPIC,
-        *COMPOUND_V3_ABSORB_TOPIC,
-        *COMPOUND_V2_LIQUIDATE_BORROW_TOPIC,
-        *MORPHO_BLUE_LIQUIDATE_TOPIC,
-        *SILO_V2_LIQUIDATION_CALL_TOPIC,
-        *EULER_V2_LIQUIDATE_TOPIC,
-        *UNI_V3_FLASH_TOPIC,
-        *AAVE_V3_FLASH_LOAN_TOPIC,
-        *AAVE_V2_FLASH_LOAN_TOPIC,
-        *BALANCER_FLASH_LOAN_TOPIC,
-        *MORPHO_BLUE_FLASH_LOAN_TOPIC,
-        *COMPOUND_V3_BUY_COLLATERAL_TOPIC,
-        V3_MINT_TOPIC,
-        V3_BURN_TOPIC,
-        *LB_DEPOSITED_TO_BINS_TOPIC,
-        *LB_WITHDRAWN_FROM_BINS_TOPIC,
-        V2_SYNC_TOPIC,
-        *V2_MINT_TOPIC,
-        *V2_BURN_TOPIC,
-        *CHAINLINK_ANSWER_UPDATED_TOPIC,
-        *AAVE_V3_RESERVE_DATA_UPDATED_TOPIC,
-        *BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC,
-        *GELATO_EXEC_SUCCESS_TOPIC,
-        *CHAINLINK_UPKEEP_PERFORMED_TOPIC,
-        *CHAINLINK_LOG_TRIGGERED_TOPIC,
-        *NOTIFY_REWARD_TOPIC,
+        (TRANSFER_TOPIC, LogFamily::Transfer),
+        (ONEINCH_SWAPPED_TOPIC, LogFamily::Aggregator),
+        (PARASWAP_SWAPPED_TOPIC, LogFamily::Aggregator),
+        (PARASWAP_SWAPPED_V3_TOPIC, LogFamily::Aggregator),
+        (ZRX_FILL_TOPIC, LogFamily::Aggregator),
+        (ODOS_SWAP_TOPIC, LogFamily::Aggregator),
+        (V2_SWAP_TOPIC, LogFamily::Swap),
+        (V3_SWAP_TOPIC, LogFamily::Swap),
+        (*DONASWAP_V3_SWAP_TOPIC, LogFamily::Swap),
+        (*V4_SWAP_TOPIC, LogFamily::Swap),
+        (*INF_CL_SWAP_TOPIC, LogFamily::Swap),
+        (*CURVE_TOKEN_EXCHANGE_TOPIC, LogFamily::Swap),
+        (*CURVE_V2_TOKEN_EXCHANGE_TOPIC, LogFamily::Swap),
+        (*BALANCER_SWAP_TOPIC, LogFamily::Swap),
+        (*LB_SWAP_TOPIC, LogFamily::Swap),
+        (*TRADER_JOE_LB_SWAP_LEGACY_TOPIC, LogFamily::Swap),
+        (*PENDLE_SWAP_TOPIC, LogFamily::Swap),
+        (*FLUID_SWAP_TOPIC, LogFamily::Swap),
+        (*METRIC_SWAP_TOPIC, LogFamily::Swap),
+        (*SOLIDLY_SWAP_TOPIC, LogFamily::Swap),
+        (*AAVE_V3_LIQUIDATION_CALL_TOPIC, LogFamily::Liquidation),
+        (*COMPOUND_V3_ABSORB_TOPIC, LogFamily::Liquidation),
+        (*COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, LogFamily::Liquidation),
+        (*MORPHO_BLUE_LIQUIDATE_TOPIC, LogFamily::Liquidation),
+        (*SILO_V2_LIQUIDATION_CALL_TOPIC, LogFamily::Liquidation),
+        (*EULER_V2_LIQUIDATE_TOPIC, LogFamily::Liquidation),
+        (*UNI_V3_FLASH_TOPIC, LogFamily::FlashLoan),
+        (*AAVE_V3_FLASH_LOAN_TOPIC, LogFamily::FlashLoan),
+        (*AAVE_V2_FLASH_LOAN_TOPIC, LogFamily::FlashLoan),
+        (*BALANCER_FLASH_LOAN_TOPIC, LogFamily::FlashLoan),
+        (*MORPHO_BLUE_FLASH_LOAN_TOPIC, LogFamily::FlashLoan),
+        (*COMPOUND_V3_BUY_COLLATERAL_TOPIC, LogFamily::BuyCollateral),
+        (V3_MINT_TOPIC, LogFamily::V3Liquidity),
+        (V3_BURN_TOPIC, LogFamily::V3Liquidity),
+        (*V3_COLLECT_TOPIC, LogFamily::V3Liquidity),
+        (*LB_DEPOSITED_TO_BINS_TOPIC, LogFamily::LbLiquidity),
+        (*LB_WITHDRAWN_FROM_BINS_TOPIC, LogFamily::LbLiquidity),
+        (V2_SYNC_TOPIC, LogFamily::V2PairOp),
+        (*V2_MINT_TOPIC, LogFamily::V2PairOp),
+        (*V2_BURN_TOPIC, LogFamily::V2PairOp),
+        (*CHAINLINK_ANSWER_UPDATED_TOPIC, LogFamily::Oracle),
+        (*AAVE_V3_RESERVE_DATA_UPDATED_TOPIC, LogFamily::Reserve),
+        (
+            *BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC,
+            LogFamily::RateCache,
+        ),
+        (*GELATO_EXEC_SUCCESS_TOPIC, LogFamily::Keeper),
+        (*CHAINLINK_UPKEEP_PERFORMED_TOPIC, LogFamily::Keeper),
+        (*CHAINLINK_LOG_TRIGGERED_TOPIC, LogFamily::Keeper),
+        (*NOTIFY_REWARD_TOPIC, LogFamily::EpochReward),
     ];
     let mut seen = HashSet::new();
-    for topic in topics {
+    for (topic, expected) in topics {
         assert!(seen.insert(topic), "topic0 collision: {topic}");
-        assert!(
-            log_family(topic).is_some(),
-            "topic0 has no decoder family: {topic}"
+        assert_eq!(
+            log_family(topic),
+            Some(expected),
+            "topic0 {topic} misclassified"
         );
     }
-    assert_eq!(seen.len(), 46);
+    assert_eq!(seen.len(), 47);
 }

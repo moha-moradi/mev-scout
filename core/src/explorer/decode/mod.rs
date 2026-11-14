@@ -48,6 +48,9 @@ pub use signals::{
 pub use swap::decode_swap;
 pub use transfer::{decode_transfer, decode_v2_pair_op};
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
 use alloy::primitives::B256;
 
 /// Decoder family selected by topic0. One log maps to one family.
@@ -75,90 +78,90 @@ pub(crate) enum LogFamily {
     EpochReward,
 }
 
-/// Topic0 dispatch. Arm order matches the historical decoder scan.
-pub(crate) fn log_family(topic0: B256) -> Option<LogFamily> {
-    use crate::chain::events::{
-        AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC, AAVE_V3_LIQUIDATION_CALL_TOPIC,
-        AAVE_V3_RESERVE_DATA_UPDATED_TOPIC, BALANCER_FLASH_LOAN_TOPIC,
-        BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC, CHAINLINK_ANSWER_UPDATED_TOPIC,
-        CHAINLINK_LOG_TRIGGERED_TOPIC, CHAINLINK_UPKEEP_PERFORMED_TOPIC,
-        COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC,
-        COMPOUND_V3_BUY_COLLATERAL_TOPIC, DONASWAP_V3_SWAP_TOPIC, EULER_V2_LIQUIDATE_TOPIC,
-        GELATO_EXEC_SUCCESS_TOPIC, INF_CL_SWAP_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC,
-        MORPHO_BLUE_LIQUIDATE_TOPIC, NOTIFY_REWARD_TOPIC, SILO_V2_LIQUIDATION_CALL_TOPIC,
-        TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRANSFER_TOPIC, UNI_V3_FLASH_TOPIC, V2_BURN_TOPIC,
-        V2_MINT_TOPIC, V2_SWAP_TOPIC, V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
-    };
-    use crate::pool::decoders::{
-        BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
-        FLUID_SWAP_TOPIC, LB_DEPOSITED_TO_BINS_TOPIC, LB_SWAP_TOPIC, LB_WITHDRAWN_FROM_BINS_TOPIC,
-        METRIC_SWAP_TOPIC, PENDLE_SWAP_TOPIC, SOLIDLY_SWAP_TOPIC, V3_BURN_TOPIC, V3_MINT_TOPIC,
-    };
+/// Exact-topic0 dispatch table, built once per process. Every arm of the
+/// historical scanner is a single `topic0` equality, so a lookup table fully
+/// replaces it and removes the linear scan per log.
+///
+/// Range or multi-topic predicates (none currently) must stay as plain
+/// functions; they are not represented here.
+fn topic_families() -> &'static HashMap<B256, LogFamily> {
+    static TABLE: OnceLock<HashMap<B256, LogFamily>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        use crate::chain::events::{
+            AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC, AAVE_V3_LIQUIDATION_CALL_TOPIC,
+            AAVE_V3_RESERVE_DATA_UPDATED_TOPIC, BALANCER_FLASH_LOAN_TOPIC,
+            BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC, CHAINLINK_ANSWER_UPDATED_TOPIC,
+            CHAINLINK_LOG_TRIGGERED_TOPIC, CHAINLINK_UPKEEP_PERFORMED_TOPIC,
+            COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC,
+            COMPOUND_V3_BUY_COLLATERAL_TOPIC, DONASWAP_V3_SWAP_TOPIC, EULER_V2_LIQUIDATE_TOPIC,
+            GELATO_EXEC_SUCCESS_TOPIC, INF_CL_SWAP_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC,
+            MORPHO_BLUE_LIQUIDATE_TOPIC, NOTIFY_REWARD_TOPIC, SILO_V2_LIQUIDATION_CALL_TOPIC,
+            TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRANSFER_TOPIC, UNI_V3_FLASH_TOPIC, V2_BURN_TOPIC,
+            V2_MINT_TOPIC, V2_SWAP_TOPIC, V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
+        };
+        use crate::pool::decoders::{
+            BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+            FLUID_SWAP_TOPIC, LB_DEPOSITED_TO_BINS_TOPIC, LB_SWAP_TOPIC,
+            LB_WITHDRAWN_FROM_BINS_TOPIC, METRIC_SWAP_TOPIC, PENDLE_SWAP_TOPIC, SOLIDLY_SWAP_TOPIC,
+            V3_BURN_TOPIC, V3_MINT_TOPIC,
+        };
 
-    match topic0 {
-        t if t == TRANSFER_TOPIC => Some(LogFamily::Transfer),
-        t if t == aggregator::ONEINCH_SWAPPED_TOPIC
-            || t == aggregator::PARASWAP_SWAPPED_TOPIC
-            || t == aggregator::PARASWAP_SWAPPED_V3_TOPIC
-            || t == aggregator::ZRX_FILL_TOPIC
-            || t == aggregator::ODOS_SWAP_TOPIC =>
-        {
-            Some(LogFamily::Aggregator)
-        }
-        t if t == V2_SWAP_TOPIC
-            || t == V3_SWAP_TOPIC
-            || t == *DONASWAP_V3_SWAP_TOPIC
-            || t == *V4_SWAP_TOPIC
-            || t == *INF_CL_SWAP_TOPIC
-            || t == *CURVE_TOKEN_EXCHANGE_TOPIC
-            || t == *CURVE_V2_TOKEN_EXCHANGE_TOPIC
-            || t == *BALANCER_SWAP_TOPIC
-            || t == *LB_SWAP_TOPIC
-            || t == *TRADER_JOE_LB_SWAP_LEGACY_TOPIC
-            || t == *PENDLE_SWAP_TOPIC
-            || t == *FLUID_SWAP_TOPIC
-            || t == *METRIC_SWAP_TOPIC
-            || t == *SOLIDLY_SWAP_TOPIC =>
-        {
-            Some(LogFamily::Swap)
-        }
-        t if t == *AAVE_V3_LIQUIDATION_CALL_TOPIC
-            || t == *COMPOUND_V3_ABSORB_TOPIC
-            || t == *COMPOUND_V2_LIQUIDATE_BORROW_TOPIC
-            || t == *MORPHO_BLUE_LIQUIDATE_TOPIC
-            || t == *SILO_V2_LIQUIDATION_CALL_TOPIC
-            || t == *EULER_V2_LIQUIDATE_TOPIC =>
-        {
-            Some(LogFamily::Liquidation)
-        }
-        t if t == *UNI_V3_FLASH_TOPIC
-            || t == *AAVE_V3_FLASH_LOAN_TOPIC
-            || t == *AAVE_V2_FLASH_LOAN_TOPIC
-            || t == *BALANCER_FLASH_LOAN_TOPIC
-            || t == *MORPHO_BLUE_FLASH_LOAN_TOPIC =>
-        {
-            Some(LogFamily::FlashLoan)
-        }
-        t if t == *COMPOUND_V3_BUY_COLLATERAL_TOPIC => Some(LogFamily::BuyCollateral),
-        t if t == V3_MINT_TOPIC || t == V3_BURN_TOPIC || t == *jit::V3_COLLECT_TOPIC => {
-            Some(LogFamily::V3Liquidity)
-        }
-        t if t == *LB_DEPOSITED_TO_BINS_TOPIC || t == *LB_WITHDRAWN_FROM_BINS_TOPIC => {
-            Some(LogFamily::LbLiquidity)
-        }
-        t if t == V2_SYNC_TOPIC || t == *V2_MINT_TOPIC || t == *V2_BURN_TOPIC => {
-            Some(LogFamily::V2PairOp)
-        }
-        t if t == *CHAINLINK_ANSWER_UPDATED_TOPIC => Some(LogFamily::Oracle),
-        t if t == *AAVE_V3_RESERVE_DATA_UPDATED_TOPIC => Some(LogFamily::Reserve),
-        t if t == *BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC => Some(LogFamily::RateCache),
-        t if t == *GELATO_EXEC_SUCCESS_TOPIC
-            || t == *CHAINLINK_UPKEEP_PERFORMED_TOPIC
-            || t == *CHAINLINK_LOG_TRIGGERED_TOPIC =>
-        {
-            Some(LogFamily::Keeper)
-        }
-        t if t == *NOTIFY_REWARD_TOPIC => Some(LogFamily::EpochReward),
-        _ => None,
-    }
+        let mut table = HashMap::new();
+        table.insert(TRANSFER_TOPIC, LogFamily::Transfer);
+        table.insert(aggregator::ONEINCH_SWAPPED_TOPIC, LogFamily::Aggregator);
+        table.insert(aggregator::PARASWAP_SWAPPED_TOPIC, LogFamily::Aggregator);
+        table.insert(aggregator::PARASWAP_SWAPPED_V3_TOPIC, LogFamily::Aggregator);
+        table.insert(aggregator::ZRX_FILL_TOPIC, LogFamily::Aggregator);
+        table.insert(aggregator::ODOS_SWAP_TOPIC, LogFamily::Aggregator);
+        table.insert(V2_SWAP_TOPIC, LogFamily::Swap);
+        table.insert(V3_SWAP_TOPIC, LogFamily::Swap);
+        table.insert(*DONASWAP_V3_SWAP_TOPIC, LogFamily::Swap);
+        table.insert(*V4_SWAP_TOPIC, LogFamily::Swap);
+        table.insert(*INF_CL_SWAP_TOPIC, LogFamily::Swap);
+        table.insert(*CURVE_TOKEN_EXCHANGE_TOPIC, LogFamily::Swap);
+        table.insert(*CURVE_V2_TOKEN_EXCHANGE_TOPIC, LogFamily::Swap);
+        table.insert(*BALANCER_SWAP_TOPIC, LogFamily::Swap);
+        table.insert(*LB_SWAP_TOPIC, LogFamily::Swap);
+        table.insert(*TRADER_JOE_LB_SWAP_LEGACY_TOPIC, LogFamily::Swap);
+        table.insert(*PENDLE_SWAP_TOPIC, LogFamily::Swap);
+        table.insert(*FLUID_SWAP_TOPIC, LogFamily::Swap);
+        table.insert(*METRIC_SWAP_TOPIC, LogFamily::Swap);
+        table.insert(*SOLIDLY_SWAP_TOPIC, LogFamily::Swap);
+        table.insert(*AAVE_V3_LIQUIDATION_CALL_TOPIC, LogFamily::Liquidation);
+        table.insert(*COMPOUND_V3_ABSORB_TOPIC, LogFamily::Liquidation);
+        table.insert(*COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, LogFamily::Liquidation);
+        table.insert(*MORPHO_BLUE_LIQUIDATE_TOPIC, LogFamily::Liquidation);
+        table.insert(*SILO_V2_LIQUIDATION_CALL_TOPIC, LogFamily::Liquidation);
+        table.insert(*EULER_V2_LIQUIDATE_TOPIC, LogFamily::Liquidation);
+        table.insert(*UNI_V3_FLASH_TOPIC, LogFamily::FlashLoan);
+        table.insert(*AAVE_V3_FLASH_LOAN_TOPIC, LogFamily::FlashLoan);
+        table.insert(*AAVE_V2_FLASH_LOAN_TOPIC, LogFamily::FlashLoan);
+        table.insert(*BALANCER_FLASH_LOAN_TOPIC, LogFamily::FlashLoan);
+        table.insert(*MORPHO_BLUE_FLASH_LOAN_TOPIC, LogFamily::FlashLoan);
+        table.insert(*COMPOUND_V3_BUY_COLLATERAL_TOPIC, LogFamily::BuyCollateral);
+        table.insert(V3_MINT_TOPIC, LogFamily::V3Liquidity);
+        table.insert(V3_BURN_TOPIC, LogFamily::V3Liquidity);
+        table.insert(*jit::V3_COLLECT_TOPIC, LogFamily::V3Liquidity);
+        table.insert(*LB_DEPOSITED_TO_BINS_TOPIC, LogFamily::LbLiquidity);
+        table.insert(*LB_WITHDRAWN_FROM_BINS_TOPIC, LogFamily::LbLiquidity);
+        table.insert(V2_SYNC_TOPIC, LogFamily::V2PairOp);
+        table.insert(*V2_MINT_TOPIC, LogFamily::V2PairOp);
+        table.insert(*V2_BURN_TOPIC, LogFamily::V2PairOp);
+        table.insert(*CHAINLINK_ANSWER_UPDATED_TOPIC, LogFamily::Oracle);
+        table.insert(*AAVE_V3_RESERVE_DATA_UPDATED_TOPIC, LogFamily::Reserve);
+        table.insert(
+            *BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC,
+            LogFamily::RateCache,
+        );
+        table.insert(*GELATO_EXEC_SUCCESS_TOPIC, LogFamily::Keeper);
+        table.insert(*CHAINLINK_UPKEEP_PERFORMED_TOPIC, LogFamily::Keeper);
+        table.insert(*CHAINLINK_LOG_TRIGGERED_TOPIC, LogFamily::Keeper);
+        table.insert(*NOTIFY_REWARD_TOPIC, LogFamily::EpochReward);
+        table
+    })
+}
+
+/// Topic0 dispatch, backed by the static table.
+pub(crate) fn log_family(topic0: B256) -> Option<LogFamily> {
+    topic_families().get(&topic0).copied()
 }
