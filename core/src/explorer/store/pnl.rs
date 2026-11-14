@@ -10,7 +10,6 @@ use alloy::primitives::{Address, U256};
 use crate::explorer::pricing::TokenUsd;
 use crate::explorer::types::{MevEvent, MevKind};
 
-use super::merge_details_json;
 #[cfg(test)]
 use super::SwapRow;
 
@@ -76,10 +75,12 @@ pub fn annotate_event_with_volume(
     native_price_usd: Option<f64>,
     created_at: i64,
 ) -> PersistedOp {
-    // Liquidation P&L: profit ≈ collateral_usd − debt_usd, valued at persist
-    // with hourly prices. Never subtract raw amounts when tokens differ.
+    // P1: parse `ev.details` once into a map and annotate it directly; a single
+    // `to_string` happens at the end for the bind. Non-object details coerce to
+    // an empty map (a non-object can never carry `reasons` anyway).
+    let mut details: serde_json::Map<String, serde_json::Value> =
+        ev.details.as_object().cloned().unwrap_or_default();
     let mut confidence = ev.confidence.as_str();
-    let mut details_json = ev.details.to_string();
     let mut pricing_clamped = false;
     let mut unpriced_residual = false;
     let mut native_unpriced = false;
@@ -92,11 +93,10 @@ pub fn annotate_event_with_volume(
     let profit_usd = if let Some(accounting) = &jit_accounting {
         accounting.valuation.gross_usd.filter(|v| v.is_finite())
     } else if ev.kind == MevKind::Liquidation {
-        let (usd, conf, details) = liquidation_pnl(ev, token_prices);
+        let (usd, conf) = liquidation_pnl(ev, token_prices, &mut details);
         // Persist may only lower confidence. Liquidation P&L is always `O`
         // basis (A19), so it can never promote an inferred event to exact.
         confidence = min_confidence(confidence, conf);
-        details_json = details;
         usd
     } else if !ev.profit_tokens.is_empty() {
         // USD-sum across every positive residual (flash-netting already
@@ -135,19 +135,16 @@ pub fn annotate_event_with_volume(
             total = 0.0;
             unpriced_residual = true;
         }
-        details_json = merge_details_json(
-            &details_json,
-            [(
-                "profit_tokens",
-                serde_json::json!(ev
-                    .profit_tokens
-                    .iter()
-                    .map(|(tok, amt)| serde_json::json!({
-                        "token": format!("{tok:#x}"),
-                        "amount": amt.to_string(),
-                    }))
-                    .collect::<Vec<_>>()),
-            )],
+        details.insert(
+            "profit_tokens".into(),
+            serde_json::json!(ev
+                .profit_tokens
+                .iter()
+                .map(|(tok, amt)| serde_json::json!({
+                    "token": format!("{tok:#x}"),
+                    "amount": amt.to_string(),
+                }))
+                .collect::<Vec<_>>()),
         );
         (total > 0.0).then_some(total)
     } else {
@@ -186,13 +183,13 @@ pub fn annotate_event_with_volume(
         }
     };
     if unpriced_residual {
-        note_pricing_issue(&mut details_json, "MULTI_ASSET_PRICING");
+        note_pricing_issue(&mut details, "MULTI_ASSET_PRICING");
     }
     if native_unpriced {
-        note_pricing_issue(&mut details_json, "NATIVE_UNPRICED");
+        note_pricing_issue(&mut details, "NATIVE_UNPRICED");
     }
     if pricing_clamped {
-        note_pricing_issue(&mut details_json, "pricing_clamped");
+        note_pricing_issue(&mut details, "pricing_clamped");
     }
     // FOT / rebase profit tokens are flagged approximate (recorded amounts are
     // distorted by the token mechanics).
@@ -203,13 +200,8 @@ pub fn annotate_event_with_volume(
         .chain(ev.profit_token)
         .find_map(|t| crate::explorer::pricing::approximate_token(&t))
     {
-        details_json = merge_details_json(
-            &details_json,
-            [
-                ("usd_approximate", serde_json::json!(true)),
-                ("approximate_reason", serde_json::json!(reason)),
-            ],
-        );
+        details.insert("usd_approximate".into(), serde_json::json!(true));
+        details.insert("approximate_reason".into(), serde_json::json!(reason));
     }
     // Gas in USD via native price (gas wei → native → USD). JIT gas is already
     // valued per receipt in its own accounting (all owned txs, counted once).
@@ -257,7 +249,7 @@ pub fn annotate_event_with_volume(
     // USD quote changes nothing downstream — flagging it would claim a gap
     // that does not exist.
     if flash_fee_unpriced && !fee_netted {
-        note_pricing_issue(&mut details_json, "FLASH_FEE_UNPRICED");
+        note_pricing_issue(&mut details, "FLASH_FEE_UNPRICED");
     }
     let fee_for_net = if fee_netted {
         0.0
@@ -275,21 +267,16 @@ pub fn annotate_event_with_volume(
     // reported volume is a floor, not the real notional, so say so instead of
     // silently folding unpriced legs in as zero (mirrors A9's fee mechanism).
     if volume_partial {
-        note_pricing_issue(&mut details_json, "VOLUME_PARTIAL");
+        note_pricing_issue(&mut details, "VOLUME_PARTIAL");
     }
-    let details_value: serde_json::Value = serde_json::from_str(&details_json).unwrap_or_default();
     let reason_present = |name: &str| {
-        details_value
+        details
             .get("reasons")
             .and_then(|r| r.as_array())
             .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(name)))
     };
-    let usd_approximate_flag = i64::from(
-        details_value
-            .get("usd_approximate")
-            .and_then(|v| v.as_bool())
-            == Some(true),
-    );
+    let usd_approximate_flag =
+        i64::from(details.get("usd_approximate").and_then(|v| v.as_bool()) == Some(true));
     let native_unpriced_flag = i64::from(reason_present("NATIVE_UNPRICED"));
     let multi_asset_pricing_flag = i64::from(reason_present("MULTI_ASSET_PRICING"));
     let pricing_clamped_flag = i64::from(reason_present("pricing_clamped"));
@@ -319,7 +306,7 @@ pub fn annotate_event_with_volume(
                 .collect::<Vec<_>>(),
         )
         .ok(),
-        details_json: Some(details_json),
+        details_json: Some(serde_json::Value::Object(details).to_string()),
         created_at,
         excluded_from_net,
         subkind: crate::explorer::types::utility_subkind(&ev.details),
@@ -337,25 +324,35 @@ pub fn annotate_event_with_volume(
 /// (liquidation bonus / market-sale slippage) flagged `LIQ_BONUS_APPROX`, and
 /// same-asset liquidations are flagged `LIQ_SAME_ASSET`. Missing prices fall
 /// back to the collateral display amount with `MULTI_ASSET_PRICING`.
+///
+/// `details` is the clone of the event details that `annotate_event_with_volume`
+/// owns; this function writes in place and never returns a serialized form,
+/// so the single `to_string` at the end of persist is the only serialization
+/// (P1).
 pub(super) fn liquidation_pnl(
     ev: &MevEvent,
     token_prices: &std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
-) -> (Option<f64>, &'static str, String) {
+    details: &mut serde_json::Map<String, serde_json::Value>,
+) -> (Option<f64>, &'static str) {
     use crate::explorer::types::LiquidationDetails;
 
-    let mut details = ev.details.clone();
     // Liquidation is an `O` basis. Only fill the marker when the classifier
     // did not set it; never overwrite an existing basis.
     if details.get("pnl_basis").is_none() {
-        details["pnl_basis"] = serde_json::json!("O");
+        details.insert("pnl_basis".into(), serde_json::json!("O"));
     }
 
     // Benqi seizeTokens left in qi units when exchangeRateStored failed —
     // never price the qiToken address (wrong Llama matches / inflated USD).
-    let reasons_pre = reason_list(&ev.details);
-    if reasons_pre.iter().any(|r| r == "QI_EXCHANGE_RATE_MISSING") {
-        details["profit_usd_method"] = serde_json::json!("skipped_qi_unconverted");
-        return (None, "inferred", details.to_string());
+    if reason_list(&serde_json::Value::Object(details.clone()))
+        .iter()
+        .any(|r| r == "QI_EXCHANGE_RATE_MISSING")
+    {
+        details.insert(
+            "profit_usd_method".into(),
+            serde_json::json!("skipped_qi_unconverted"),
+        );
+        return (None, "inferred");
     }
 
     let liq = LiquidationDetails::from_details(&ev.details);
@@ -374,8 +371,11 @@ pub(super) fn liquidation_pnl(
         None => (None, None, true),
     };
 
-    let mut reasons = reason_list(&details);
-    details["profit_usd_method"] = serde_json::json!("collateral_usd_minus_debt_usd");
+    let mut reasons = reason_list(&serde_json::Value::Object(details.clone()));
+    details.insert(
+        "profit_usd_method".into(),
+        serde_json::json!("collateral_usd_minus_debt_usd"),
+    );
     match (collateral_usd, debt_usd) {
         (Some(c), Some(d)) => {
             reasons.push(
@@ -386,16 +386,16 @@ pub(super) fn liquidation_pnl(
                 }
                 .to_string(),
             );
-            details["reasons"] = serde_json::json!(reasons);
-            (Some(c - d), "inferred", details.to_string())
+            details.insert("reasons".into(), serde_json::json!(reasons));
+            (Some(c - d), "inferred")
         }
         _ => {
             reasons.push("MULTI_ASSET_PRICING".to_string());
             // No applied fallback: we return `None` for `profit_usd`, so any
             // claim of a "fallback" value would overstate the measured profit
             // (A5). The `MULTI_ASSET_PRICING` reason is the only signal.
-            details["reasons"] = serde_json::json!(reasons);
-            (None, "inferred", details.to_string())
+            details.insert("reasons".into(), serde_json::json!(reasons));
+            (None, "inferred")
         }
     }
 }
@@ -413,21 +413,19 @@ fn min_confidence(a: &'static str, b: &'static str) -> &'static str {
 /// Record why a persisted USD figure is incomplete or capped, and mark it
 /// approximate. Reasons stack (`MULTI_ASSET_PRICING`, `NATIVE_UNPRICED`,
 /// `pricing_clamped`) instead of replacing one another.
-pub(super) fn note_pricing_issue(details_json: &mut String, reason: &str) {
-    let mut d: serde_json::Value =
-        serde_json::from_str(details_json).unwrap_or(serde_json::json!({}));
-    let mut reasons = reason_list(&d);
+pub(super) fn note_pricing_issue(
+    details: &mut serde_json::Map<String, serde_json::Value>,
+    reason: &str,
+) {
+    let mut reasons = reason_list(&serde_json::Value::Object(details.clone()));
     if !reasons.iter().any(|r| r == reason) {
         reasons.push(reason.to_string());
     }
-    if let Some(map) = d.as_object_mut() {
-        map.insert("reasons".into(), serde_json::json!(reasons));
-        map.insert("usd_approximate".into(), serde_json::json!(true));
-        if reason == "pricing_clamped" {
-            map.insert("pricing_clamped".into(), serde_json::json!(true));
-        }
+    details.insert("reasons".into(), serde_json::json!(reasons));
+    details.insert("usd_approximate".into(), serde_json::json!(true));
+    if reason == "pricing_clamped" {
+        details.insert("pricing_clamped".into(), serde_json::json!(true));
     }
-    *details_json = d.to_string();
 }
 
 /// Existing `reasons` array from event details (empty when absent).

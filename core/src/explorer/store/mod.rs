@@ -96,22 +96,6 @@ pub struct ExplorerStore {
     conn: Connection,
 }
 
-/// Merge a set of key/value pairs into a `details` JSON string, preserving any
-/// existing fields (used for profit_tokens and FOT/approximate annotations).
-pub(super) fn merge_details_json<const N: usize>(
-    details_json: &str,
-    pairs: [(&str, serde_json::Value); N],
-) -> String {
-    let mut d: serde_json::Value =
-        serde_json::from_str(details_json).unwrap_or(serde_json::json!({}));
-    if let Some(map) = d.as_object_mut() {
-        for (k, v) in pairs {
-            map.insert(k.to_string(), v);
-        }
-    }
-    d.to_string()
-}
-
 impl ExplorerStore {
     /// Shared connection for extension modules (dashboard, paper tables).
     pub fn connection(&self) -> &Connection {
@@ -633,7 +617,9 @@ mod tests {
         prices.insert(collateral, token_usd(2.0, 0));
         prices.insert(debt, token_usd(1.0, 0));
         let ev = liquidation_event(collateral, debt);
-        let (usd, conf, details) = liquidation_pnl(&ev, &prices);
+        let mut details = ev.details.as_object().cloned().unwrap_or_default();
+        let (usd, conf) = liquidation_pnl(&ev, &prices, &mut details);
+        let details = serde_json::to_string(&details).unwrap_or_default();
         // 500 * $2 − 300 * $1 = 700
         assert!((usd.unwrap() - 700.0).abs() < 1e-9);
         assert_eq!(conf, "inferred");
@@ -646,7 +632,9 @@ mod tests {
         let debt = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let prices = std::collections::HashMap::new();
         let ev = liquidation_event(collateral, debt);
-        let (usd, conf, details) = liquidation_pnl(&ev, &prices);
+        let mut details = ev.details.as_object().cloned().unwrap_or_default();
+        let (usd, conf) = liquidation_pnl(&ev, &prices, &mut details);
+        let details = serde_json::to_string(&details).unwrap_or_default();
         // A5: when pricing is incomplete we return `None`, so details must
         // carry no applied-fallback claim; only the `MULTI_ASSET_PRICING`
         // reason marks the figure as incomplete.
@@ -662,7 +650,9 @@ mod tests {
         let mut prices = std::collections::HashMap::new();
         prices.insert(asset, token_usd(1.0, 0));
         let ev = liquidation_event(asset, asset);
-        let (usd, conf, details) = liquidation_pnl(&ev, &prices);
+        let mut details = ev.details.as_object().cloned().unwrap_or_default();
+        let (usd, conf) = liquidation_pnl(&ev, &prices, &mut details);
+        let details = serde_json::to_string(&details).unwrap_or_default();
         assert!((usd.unwrap() - 200.0).abs() < 1e-9);
         // A19: liquidation is `O` basis, so it can never claim `exact`.
         assert_eq!(conf, "inferred");
@@ -678,7 +668,9 @@ mod tests {
         prices.insert(qi, token_usd(10.0, 8));
         let mut ev = liquidation_event(qi, qi);
         ev.details["reasons"] = serde_json::json!(["QI_EXCHANGE_RATE_MISSING"]);
-        let (usd, conf, details) = liquidation_pnl(&ev, &prices);
+        let mut details = ev.details.as_object().cloned().unwrap_or_default();
+        let (usd, conf) = liquidation_pnl(&ev, &prices, &mut details);
+        let details = serde_json::to_string(&details).unwrap_or_default();
         assert!(usd.is_none());
         assert_eq!(conf, "inferred");
         assert!(details.contains("skipped_qi_unconverted"));
