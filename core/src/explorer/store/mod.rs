@@ -641,16 +641,19 @@ mod tests {
     }
 
     #[test]
-    fn liquidation_pnl_missing_price_falls_back() {
+    fn liquidation_pnl_missing_price_is_none_without_applied_fallback() {
         let collateral = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let debt = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let prices = std::collections::HashMap::new();
         let ev = liquidation_event(collateral, debt);
         let (usd, conf, details) = liquidation_pnl(&ev, &prices);
+        // A5: when pricing is incomplete we return `None`, so details must
+        // carry no applied-fallback claim; only the `MULTI_ASSET_PRICING`
+        // reason marks the figure as incomplete.
         assert!(usd.is_none());
         assert_eq!(conf, "inferred");
         assert!(details.contains("MULTI_ASSET_PRICING"));
-        assert!(details.contains("collateral_amount"));
+        assert!(!details.contains("profit_usd_fallback"));
     }
 
     #[test]

@@ -391,7 +391,9 @@ pub(super) fn liquidation_pnl(
         }
         _ => {
             reasons.push("MULTI_ASSET_PRICING".to_string());
-            details["profit_usd_fallback"] = serde_json::json!("collateral_amount");
+            // No applied fallback: we return `None` for `profit_usd`, so any
+            // claim of a "fallback" value would overstate the measured profit
+            // (A5). The `MULTI_ASSET_PRICING` reason is the only signal.
             details["reasons"] = serde_json::json!(reasons);
             (None, "inferred", details.to_string())
         }
