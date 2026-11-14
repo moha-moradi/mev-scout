@@ -153,9 +153,11 @@ pub(super) fn searcher_candidates(tx: &TxInput) -> Vec<Address> {
         *participation.entry(t.from).or_insert(0) += 1;
         *participation.entry(t.to).or_insert(0) += 1;
     }
+    // A6: mint/burn transfers touch `Address::ZERO`; it is never a real
+    // searcher and must not qualify even with ≥2 participations.
     let mut qualified: Vec<Address> = participation
         .into_iter()
-        .filter(|(addr, count)| *count >= 2 && !candidates.contains(addr))
+        .filter(|(addr, count)| *count >= 2 && !addr.is_zero() && !candidates.contains(addr))
         .map(|(addr, _)| addr)
         .collect();
     // HashMap order would shuffle multi-candidate txs between runs.
@@ -223,6 +225,8 @@ pub(super) fn tx_cycle_profit(
 
 #[cfg(test)]
 mod tests {
+    use alloy::primitives::Address;
+
     use super::{resolved_cycle_edges, searcher_candidates, tx_cycle_profit, CycleMiss};
     use crate::explorer::test_fixtures::{
         block, swap, swap_agg, transfer, tx, ATK, MARKET, POOL_A, POOL_B, TOKA, USDC, VICTIM,
@@ -310,5 +314,29 @@ mod tests {
         );
         let input = block(vec![my_tx.clone()]);
         assert_eq!(tx_cycle_profit(&input, &my_tx), Err(CycleMiss::NotClosed));
+    }
+
+    /// A6: mint/burn transfers (`from`/`to` = zero) give `Address::ZERO`
+    /// ≥2 participations, but zero is never a real searcher and must be
+    /// excluded from candidates. A real participant with ≥2 legs still
+    /// qualifies.
+    #[test]
+    fn zero_address_never_a_searcher_candidate() {
+        let t = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![
+                transfer(0, USDC, Address::ZERO, ATK, 100),
+                transfer(1, USDC, Address::ZERO, VICTIM, 100),
+                transfer(2, USDC, VICTIM, POOL_A, 50),
+                transfer(3, USDC, POOL_A, VICTIM, 50),
+            ],
+        );
+        let candidates = searcher_candidates(&t);
+        assert!(!candidates.contains(&Address::ZERO));
+        assert!(candidates.contains(&VICTIM));
+        assert!(candidates.contains(&ATK));
     }
 }
