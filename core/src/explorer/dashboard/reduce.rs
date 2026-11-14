@@ -210,8 +210,17 @@ pub struct OpIndex {
     /// Operation id is appended at row[16]; the original 16 positions are unchanged.
     /// `conf`: 0=exact, 1=inferred, 2=other.
     /// `legs`: `[[pool_id, amm_id], …]` deduped.
-    pub rows: Vec<serde_json::Value>,
+    pub rows: Vec<OpIndexRow>,
 }
+
+/// One row of `OpIndex::rows`. The tuple struct serializes as a JSON array, so the
+/// offline HTML/JS consumer sees the exact same bytes as the old `json!([ ... ])`.
+#[derive(Debug, Clone, Serialize)]
+pub struct OpIndexRow(
+    i64, u32, u32, u32, u32, u32, Option<u32>,
+    u64, u32, Option<f64>, Option<f64>, Option<f64>,
+    Option<f64>, Option<f64>, Vec<u32>, Vec<(u32, u32)>, i64,
+);
 
 /// Full reducer output for the snapshot panels.
 #[derive(Debug, Clone, Serialize)]
@@ -269,7 +278,7 @@ pub fn reduce(
     catalogue_tags: &HashSet<String>,
     max_ops: usize,
     max_evidence: usize,
-) -> ReducedPanels {
+) -> anyhow::Result<ReducedPanels> {
     let unknown_rewritten = ops.iter().filter(|o| o.kind_raw == "unknown").count() as i64;
     let kpi = reduce_kpi(ops, caps);
     let bucket_secs = auto_bucket_secs(window);
@@ -287,7 +296,7 @@ pub fn reduce(
     let strategy_series = reduce_strategy_series(ops, window, bucket_secs);
     let scatter_cap = max_ops.max(2_000);
     let scatter_points = reduce_scatter_points(ops, &details, scatter_cap);
-    let op_index = build_op_index(ops, &details);
+    let op_index = build_op_index(ops, &details)?;
 
     let ops_total = ops.len();
     let emit_ops = ops.len().min(max_ops);
@@ -308,7 +317,7 @@ pub fn reduce(
     let ops_emitted = events.len();
     let evidence_emitted = evidence.len();
     let index_total = op_index.rows.len();
-    ReducedPanels {
+    Ok(ReducedPanels {
         kpi,
         series,
         bucket_secs,
@@ -337,7 +346,7 @@ pub fn reduce(
             index_emitted: index_total,
             index_complete: true,
         },
-    }
+    })
 }
 
 /// Stable kind/subkind key — never collapse utility subkinds.
@@ -478,7 +487,7 @@ fn reduce_scatter_points(
         .collect()
 }
 
-fn conf_code(confidence: &str) -> u64 {
+fn conf_code(confidence: &str) -> u32 {
     match confidence {
         "exact" => 0,
         "inferred" => 1,
@@ -513,7 +522,7 @@ fn op_flags(o: &OpRecord, p: &ParsedDetails) -> u32 {
 }
 
 struct Intern {
-    map: HashMap<String, usize>,
+    map: HashMap<String, u32>,
     vec: Vec<String>,
 }
 
@@ -525,18 +534,22 @@ impl Intern {
         }
     }
 
-    fn get(&mut self, s: &str) -> usize {
+    fn get(&mut self, s: &str) -> anyhow::Result<u32> {
         if let Some(&i) = self.map.get(s) {
-            return i;
+            return Ok(i);
         }
-        let i = self.vec.len();
+        let i = u32::try_from(self.vec.len())
+            .ok_or(anyhow::anyhow!("intern table overflowed u32"))?;
         self.map.insert(s.to_string(), i);
         self.vec.push(s.to_string());
-        i
+        Ok(i)
     }
 }
 
-fn build_op_index(ops: &[OpRecord], details: &[ParsedDetails]) -> OpIndex {
+fn build_op_index(
+    ops: &[OpRecord],
+    details: &[ParsedDetails],
+) -> anyhow::Result<OpIndex> {
     let mut slices = Intern::new();
     let mut actors = Intern::new();
     let mut eoas = Intern::new();
@@ -548,65 +561,62 @@ fn build_op_index(ops: &[OpRecord], details: &[ParsedDetails]) -> OpIndex {
     let mut rows = Vec::with_capacity(ops.len());
 
     for (o, p) in ops.iter().zip(details.iter()) {
-        let slice_id = slices.get(&slice_key(&o.kind, o.subkind.as_deref()));
-        let actor_id = actors.get(&o.competitor());
-        let eoa_id = eoas.get(&o.eoa);
-        let contract_id = o
-            .contract
-            .as_deref()
-            .filter(|c| !c.is_empty())
-            .map(|c| contracts.get(c));
-        let tx_id = tx.get(&o.tx_hash);
-        let tag_ids: Vec<serde_json::Value> = p
+        let slice_id = slices.get(&slice_key(&o.kind, o.subkind.as_deref()))?;
+        let actor_id = actors.get(&o.competitor())?;
+        let eoa_id = eoas.get(&o.eoa)?;
+        let contract_id = match o.contract.as_deref().filter(|c| !c.is_empty()) {
+            Some(c) => Some(contracts.get(c)?),
+            None => None,
+        };
+        let tx_id = tx.get(&o.tx_hash)?;
+        let tag_ids: Vec<u32> = p
             .tags
             .iter()
-            .map(|t| serde_json::json!(tags.get(t)))
-            .collect();
+            .map(|t| tags.get(t))
+            .collect::<Result<Vec<u32>, _>>()?;
 
         let mut seen_legs = HashSet::new();
-        let mut leg_vals = Vec::new();
+        let mut leg_vals: Vec<(u32, u32)> = Vec::new();
         for leg in parse_route(o.route_json.as_deref()) {
             let pool = leg.pool.as_deref().unwrap_or("");
             let amm = leg.amm.as_deref().unwrap_or("");
             if pool.is_empty() && amm.is_empty() {
                 continue;
             }
-            let pid = pools.get(pool);
-            let aid = amms.get(amm);
+            let pid = pools.get(pool)?;
+            let aid = amms.get(amm)?;
             if seen_legs.insert((pid, aid)) {
-                leg_vals.push(serde_json::json!([pid, aid]));
+                leg_vals.push((pid, aid));
             }
         }
 
         let net = if o.excluded_from_net.unwrap_or(false) {
-            serde_json::Value::Null
+            None
         } else {
-            opt_f64_json(o.net_profit_usd)
+            o.net_profit_usd
         };
-        rows.push(serde_json::json!([
-            o.ts,
+        rows.push(OpIndexRow(
+            o.ts as i64,
             slice_id,
             conf_code(&o.confidence),
             op_flags(o, p),
             actor_id,
             eoa_id,
-            contract_id
-                .map(serde_json::Value::from)
-                .unwrap_or(serde_json::Value::Null),
+            contract_id,
             o.block_number,
             tx_id,
             net,
-            opt_f64_json(o.profit_usd),
-            opt_f64_json(o.gas_cost_usd),
-            opt_f64_json(o.volume_usd),
-            opt_f64_json(o.flashloan_fee_usd),
+            o.profit_usd,
+            o.gas_cost_usd,
+            o.volume_usd,
+            o.flashloan_fee_usd,
             tag_ids,
             leg_vals,
             o.id,
-        ]));
+        ));
     }
 
-    OpIndex {
+    Ok(OpIndex {
         slices: slices.vec,
         actors: actors.vec,
         eoas: eoas.vec,
@@ -616,14 +626,7 @@ fn build_op_index(ops: &[OpRecord], details: &[ParsedDetails]) -> OpIndex {
         amms: amms.vec,
         tx: tx.vec,
         rows,
-    }
-}
-
-fn opt_f64_json(v: Option<f64>) -> serde_json::Value {
-    match v {
-        Some(x) => serde_json::json!(x),
-        None => serde_json::Value::Null,
-    }
+    })
 }
 
 /// Pre-parsed `details_json` for one op. The details are parsed exactly once
@@ -1470,12 +1473,54 @@ mod tests {
                 None,
             ),
         ];
-        let idx = build_op_index(&ops, &parsed_details(&ops));
+        let idx = build_op_index(&ops, &parsed_details(&ops)).expect("build_op_index");
         assert_eq!(idx.rows.len(), 2);
         assert!(idx.slices.iter().any(|s| s == "jit"));
         assert!(idx.slices.iter().any(|s| s == "utility/claim_and_sell"));
         assert!(idx.amms.iter().any(|a| a == "v3"));
         assert!(idx.tags.iter().any(|t| t == "flash_arb"));
+    }
+
+    /// The typed row must serialize to exactly the same JSON array the old
+    /// `json!([ ... ])` emitted (offline HTML/JS depends on it byte-for-byte).
+    #[test]
+    fn op_index_rows_serialize_byte_identically_to_the_json_array_layout() {
+        let ops = vec![
+            op(
+                1,
+                1,
+                "jit",
+                None,
+                "exact",
+                Some(1.0),
+                Some(1.0),
+                None,
+                "0xa",
+                None,
+                Some(r#"{"tags":["flash_arb"]}"#),
+                Some(r#"[{"pool":"0xpool","amm":"v3"}]"#),
+            ),
+            op(
+                2,
+                2,
+                "utility",
+                Some("claim_and_sell"),
+                "inferred",
+                None,
+                None,
+                None,
+                "0xb",
+                Some("0xc"),
+                None,
+                None,
+            ),
+        ];
+        let idx = build_op_index(&ops, &parsed_details(&ops)).expect("build_op_index");
+        let rows = serde_json::to_string(&idx.rows).expect("serialize rows");
+        assert_eq!(
+            rows,
+            "[[1,0,0,0,0,0,null,101,0,1.0,1.0,null,1.0,null,[0],[[0,0]],1],[2,1,1,0,1,1,0,102,1,null,null,null,null,null,[],[],2]]",
+        );
     }
 
     fn caps() -> StoreCaps {
@@ -1654,8 +1699,10 @@ mod tests {
         };
         let labels = HashMap::new();
         let catalogue = HashSet::new();
-        let full = reduce(&ops, &caps(), &window, &[], &labels, &catalogue, 100, 100);
-        let trimmed = reduce(&ops, &caps(), &window, &[], &labels, &catalogue, 1, 0);
+        let full = reduce(&ops, &caps(), &window, &[], &labels, &catalogue, 100, 100)
+            .expect("reduce");
+        let trimmed = reduce(&ops, &caps(), &window, &[], &labels, &catalogue, 1, 0)
+            .expect("reduce");
         assert_eq!(full.strategy_economics, trimmed.strategy_economics);
         assert_eq!(full.tag_facets, trimmed.tag_facets);
         let flash = full
@@ -1720,7 +1767,8 @@ mod tests {
             &HashSet::new(),
             100,
             100,
-        );
+        )
+        .expect("reduce");
         let facet = |rows: &[FacetRow], value: &str| {
             rows.iter()
                 .find(|r| r.value == value)
@@ -1751,7 +1799,8 @@ mod tests {
             &HashSet::new(),
             100,
             100,
-        );
+        )
+        .expect("reduce");
         assert_eq!(panels.kpi.ops, 0);
         assert_eq!(panels.kpi.net_usd, 0.0);
         assert!(panels.tag_facets.is_empty());

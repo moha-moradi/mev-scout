@@ -361,7 +361,7 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
         &catalogue_tags,
         opts.max_ops,
         opts.max_evidence,
-    );
+    )?;
 
     // Soft byte budget: drop evidence first, then trim events.
     let budget = opts.budget_mb.saturating_mul(1024 * 1024);
