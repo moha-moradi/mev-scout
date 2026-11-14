@@ -217,9 +217,23 @@ pub struct OpIndex {
 /// offline HTML/JS consumer sees the exact same bytes as the old `json!([ ... ])`.
 #[derive(Debug, Clone, Serialize)]
 pub struct OpIndexRow(
-    i64, u32, u32, u32, u32, u32, Option<u32>,
-    u64, u32, Option<f64>, Option<f64>, Option<f64>,
-    Option<f64>, Option<f64>, Vec<u32>, Vec<(u32, u32)>, i64,
+    i64,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    Option<u32>,
+    u64,
+    u32,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Option<f64>,
+    Vec<u32>,
+    Vec<(u32, u32)>,
+    i64,
 );
 
 /// Full reducer output for the snapshot panels.
@@ -539,17 +553,14 @@ impl Intern {
             return Ok(i);
         }
         let i = u32::try_from(self.vec.len())
-            .ok_or(anyhow::anyhow!("intern table overflowed u32"))?;
+            .map_err(|_| anyhow::anyhow!("intern table overflowed u32"))?;
         self.map.insert(s.to_string(), i);
         self.vec.push(s.to_string());
         Ok(i)
     }
 }
 
-fn build_op_index(
-    ops: &[OpRecord],
-    details: &[ParsedDetails],
-) -> anyhow::Result<OpIndex> {
+fn build_op_index(ops: &[OpRecord], details: &[ParsedDetails]) -> anyhow::Result<OpIndex> {
     let mut slices = Intern::new();
     let mut actors = Intern::new();
     let mut eoas = Intern::new();
@@ -1699,10 +1710,10 @@ mod tests {
         };
         let labels = HashMap::new();
         let catalogue = HashSet::new();
-        let full = reduce(&ops, &caps(), &window, &[], &labels, &catalogue, 100, 100)
-            .expect("reduce");
-        let trimmed = reduce(&ops, &caps(), &window, &[], &labels, &catalogue, 1, 0)
-            .expect("reduce");
+        let full =
+            reduce(&ops, &caps(), &window, &[], &labels, &catalogue, 100, 100).expect("reduce");
+        let trimmed =
+            reduce(&ops, &caps(), &window, &[], &labels, &catalogue, 1, 0).expect("reduce");
         assert_eq!(full.strategy_economics, trimmed.strategy_economics);
         assert_eq!(full.tag_facets, trimmed.tag_facets);
         let flash = full
