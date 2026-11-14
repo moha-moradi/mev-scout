@@ -73,10 +73,15 @@ trader_joe_factories = [
 ]
 # Metric V2 AMM factory (same deterministic address on all chains).
 metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
-# P3.16 / P3.7 / P3.11 — Avalanche-native strategy surfaces.
+# P3.16 / P3.7 — Avalanche-native strategy surfaces.
 savax = "0x2b2C81e08f1Af8835a78Bb2A90AE924ACE0eA4bE" # Benqi StakedAvax
 gmx_event_emitters = ["0xDb17B233827785b5EA1aD91C9bD7D4dC478B9389"] # GMX V2 EventEmitter
-entry_point = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" # ERC-4337 EntryPoint v0.6
+gmx_market_tokens = [
+  "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7", # WAVAX
+  "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", # USDC
+  "0x50b7545627a5162F82A992c33b87aDc75187B218", # WBTC.e
+  "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB", # WETH.e
+] # GMX V2 Avalanche index tokens for ADL-adjacent route linkage
 
 # Benqi qiToken markets → `details.protocol = "benqi"` (plan P0.2 / §24).
 # Compound V2 `LiquidateBorrow` topic0 is shared with Benqi, so the emitting

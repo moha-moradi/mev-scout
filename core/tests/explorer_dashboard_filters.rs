@@ -68,12 +68,12 @@ fn seed_rich(path: &PathBuf) {
         ),
         (
             "utility",
-            Some("bundler"),
+            Some("claim_and_sell"),
             "exact",
             Some(1.0),
             Some(0.8),
             false,
-            r#"{"tags":["bundler","erc4337"]}"#,
+            r#"{"tags":["claim_and_sell","airdrop"]}"#,
             "[]",
         ),
         (

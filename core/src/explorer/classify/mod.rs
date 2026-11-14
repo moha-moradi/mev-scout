@@ -13,8 +13,8 @@
 //! 6. Backrun annotation — tag an emitted `ArbAtomic` that causally harvests a
 //!    prior price move (a `backrun` tag, not a separate kind).
 //! 7. `Utility` covers exact-fingerprint operational executions (keeper,
-//!    airdrop claim-and-sell, ERC-4337 bundler). No residual-inference pass
-//!    exists; a future one gets its own kind, never this bucket.
+//!    airdrop claim-and-sell). No residual-inference pass exists; a future one
+//!    gets its own kind, never this bucket.
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -24,11 +24,11 @@ use crate::explorer::decode;
 use crate::explorer::interest_attr;
 use crate::explorer::profit::ProfitTokenPolicy;
 use crate::explorer::store::OpenPosition;
-use crate::explorer::strategy_tags::{self, ArbTagOpts};
+use crate::explorer::strategy_tags::ArbTagOpts;
 use crate::explorer::types::{
-    AggregatorSignal, BuyCollateralFact, Confidence, EpochRewardFact, GmxEventFact, JitFact,
-    KeeperFact, MevEvent, MevKind, OracleUpdateFact, PnlBasis, RateCacheFact, ReserveDataFact,
-    SwapFact, TransferFact, UserOpFact, V2PairOpFact,
+    BuyCollateralFact, Confidence, EpochRewardFact, GmxEventFact, JitFact, KeeperFact, MevEvent,
+    MevKind, OracleUpdateFact, PnlBasis, RateCacheFact, ReserveDataFact, SwapFact, TransferFact,
+    V2PairOpFact,
 };
 
 mod arb;
@@ -85,10 +85,6 @@ pub struct TxInput {
     pub epoch_rewards: Vec<EpochRewardFact>,
     /// GMX V2 EventEmitter ADL/liq facts (plan P3.7).
     pub gmx_events: Vec<GmxEventFact>,
-    /// ERC-4337 UserOperationEvent facts (plan P3.11).
-    pub user_ops: Vec<UserOpFact>,
-    /// Aggregator/router intent signals (side-channel; survives swap dedup).
-    pub aggregator_signals: Vec<AggregatorSignal>,
 }
 
 /// Registry and configuration inputs shared by every block in a run.
@@ -109,6 +105,8 @@ pub struct BlockContext {
     pub epoch_venue_pools: Arc<HashSet<Address>>,
     /// Optional GMX EventEmitter allowlist; empty = accept any matching name hash.
     pub gmx_event_emitters: Arc<HashSet<Address>>,
+    /// GMX market tokens an ADL-adjacent arb must touch; empty disables the tag.
+    pub gmx_market_tokens: Arc<HashSet<Address>>,
     /// Max tx-index distance for a causal pair (D12).
     pub causal_window_txs: u64,
     /// Minimum relative price move for a causal leg to be material (D12).
@@ -127,6 +125,7 @@ impl Default for BlockContext {
             savax: None,
             epoch_venue_pools: Arc::new(HashSet::new()),
             gmx_event_emitters: Arc::new(HashSet::new()),
+            gmx_market_tokens: Arc::new(HashSet::new()),
             causal_window_txs: legs::CAUSAL_WINDOW_TXS,
             causal_price_min_pct: legs::CAUSAL_PRICE_MIN_PCT,
             jit_pool_fee_bps: jit::POOL_FEE_BPS,
@@ -203,17 +202,7 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
         .iter()
         .flat_map(|t| t.reserve_updates.iter().cloned())
         .collect();
-    let oracle_feeds_in_block: HashSet<Address> =
-        block_oracle_owned.iter().map(|o| o.feed).collect();
     let epoch_notify = input.txs.iter().any(|t| !t.epoch_rewards.is_empty());
-    let epoch_signal = epoch_notify || strategy_tags::near_epoch_boundary(input.ts);
-    let gmx_adl_signal = input.txs.iter().any(|t| {
-        t.gmx_events.iter().any(|g| {
-            (input.ctx.gmx_event_emitters.is_empty()
-                || input.ctx.gmx_event_emitters.contains(&g.emitter))
-                && (g.kind == "adl" || g.kind == "impact" || g.kind == "liquidation")
-        })
-    });
     let epoch_venue_list: Vec<Address> = input.ctx.epoch_venue_pools.iter().copied().collect();
     let block_rate_cache: Vec<RateCacheFact> = input
         .txs
@@ -224,15 +213,16 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
         wrapped_native: input.ctx.wrapped_native,
         savax: input.ctx.savax,
         savax_exchange_rate_wad: input.savax_exchange_rate_wad,
-        epoch_signal,
+        epoch_notify,
         epoch_venue_pools: &epoch_venue_list,
-        gmx_adl_signal,
+        // Per-tx: the arb pass only tags when an ADL appears in this or a
+        // prior tx, never a later one.
+        gmx_adl_signal: false,
         rate_cache_updates: &block_rate_cache,
     };
 
     // ── 1. Liquidation pass (exact, zero-heuristic) ─────────────────────
     let liq_ctx = LiqBlockCtx {
-        oracle_feeds_in_block: &oracle_feeds_in_block,
         block_oracle_owned: &block_oracle_owned,
         block_reserve_owned: &block_reserve_owned,
     };
@@ -242,7 +232,7 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     // ── 1b. Skim pass (exact, UniV2 pair outbound without Swap/Mint/Burn/Sync)
     events.extend(classify_skims(input, &mut drops));
 
-    // ── 2-3. Swap attribution + atomic arb (+ keeper/claim/bundler/upgrade)
+    // ── 2-3. Swap attribution + atomic arb (+ keeper/claim/upgrade)
     let (arb_events, arb_rejects) = classify_arbs(input, &arb_tag_opts);
     events.extend(arb_events);
     rejects.extend(arb_rejects);
@@ -378,8 +368,6 @@ pub struct DecodedTxFacts {
     pub keepers: Vec<KeeperFact>,
     pub epoch_rewards: Vec<EpochRewardFact>,
     pub gmx_events: Vec<GmxEventFact>,
-    pub user_ops: Vec<UserOpFact>,
-    pub aggregator_signals: Vec<AggregatorSignal>,
 }
 
 fn push_swap(facts: &mut DecodedTxFacts, tx_index: u64, log_idx: u64, log: &crate::data::LogData) {
@@ -412,12 +400,8 @@ pub(crate) fn decode_tx_logs_with_aliases(
                         facts.transfers.push(t);
                     }
                 }
-                // Signal before the swap edge so brand survives dedup.
+                // Aggregator topics also emit a swap edge.
                 Some(decode::LogFamily::Aggregator) => {
-                    if let Some(mut sig) = decode::decode_aggregator_signal(log) {
-                        sig.log_index = log_idx;
-                        facts.aggregator_signals.push(sig);
-                    }
                     push_swap(&mut facts, tx_index, log_idx, log);
                 }
                 Some(decode::LogFamily::Swap) => push_swap(&mut facts, tx_index, log_idx, log),
@@ -499,13 +483,6 @@ pub(crate) fn decode_tx_logs_with_aliases(
                         facts.epoch_rewards.push(e);
                     }
                 }
-                Some(decode::LogFamily::UserOp) => {
-                    if let Some(mut u) = decode::decode_user_op(log) {
-                        u.tx_index = tx_index;
-                        u.log_index = log_idx;
-                        facts.user_ops.push(u);
-                    }
-                }
                 None => {}
             }
         }
@@ -527,8 +504,9 @@ pub(crate) fn has_unresolved_tokens(s: &SwapFact) -> bool {
     decode::is_unresolved_token(s.token_in) || decode::is_unresolved_token(s.token_out)
 }
 
-/// Drop a `Utility` event that is not one of the three fingerprints and has
-/// no positive profit amount. The three families stay even at zero profit.
+/// Drop a `Utility` event that is not one of the supported fingerprints and
+/// has no positive profit amount. The supported families stay even at zero
+/// profit.
 pub(crate) fn filter_unresolved(events: Vec<MevEvent>) -> Vec<MevEvent> {
     events
         .into_iter()
@@ -556,8 +534,8 @@ mod tests {
         WNATIVE,
     };
     use crate::explorer::types::{
-        has_backrun_tag, utility_subkind, Confidence, JitFact, KeeperFact, MevKind, UserOpFact,
-        V2PairOpFact, V2PairOpKind,
+        has_backrun_tag, utility_subkind, Confidence, JitFact, KeeperFact, MevKind, V2PairOpFact,
+        V2PairOpKind,
     };
     use crate::types::ChainName;
     use alloy::primitives::{address, b256, Address, U256};
@@ -575,23 +553,13 @@ mod tests {
             fee: None,
             fee_token: None,
         }];
-        let mut bundler_tx = tx(1, ATK, true, vec![], vec![]);
-        bundler_tx.user_ops = vec![UserOpFact {
-            tx_index: 1,
-            log_index: 0,
-            entry_point: ATK,
-            sender: VICTIM,
-            paymaster: Address::ZERO,
-            actual_gas_cost: U256::from(1u64),
-            success: true,
-        }];
-        let out = classify_block(&block(vec![keeper_tx, bundler_tx]));
+        let out = classify_block(&block(vec![keeper_tx]));
         let utilities: Vec<_> = out
             .events
             .iter()
             .filter(|e| e.kind == MevKind::Utility)
             .collect();
-        assert_eq!(utilities.len(), 2, "keeper and bundler must both emit");
+        assert_eq!(utilities.len(), 1, "keeper must emit");
         for ev in utilities {
             let n = ev
                 .details
@@ -599,12 +567,7 @@ mod tests {
                 .and_then(|t| t.as_array())
                 .map(|a| {
                     a.iter()
-                        .filter(|t| {
-                            matches!(
-                                t.as_str(),
-                                Some("keeper") | Some("bundler") | Some("claim_and_sell")
-                            )
-                        })
+                        .filter(|t| matches!(t.as_str(), Some("keeper") | Some("claim_and_sell")))
                         .count()
                 })
                 .unwrap_or(0);
@@ -612,7 +575,7 @@ mod tests {
             assert!(
                 matches!(
                     utility_subkind(&ev.details),
-                    Some("keeper") | Some("bundler") | Some("claim_and_sell")
+                    Some("keeper") | Some("claim_and_sell")
                 ),
                 "untagged Utility is the old mystery bucket: {:?}",
                 ev.details
@@ -1551,6 +1514,40 @@ mod tests {
         assert_eq!(buy.profit_amount, Some(U256::from(100)));
     }
 
+    /// A different Comet market's Absorb must not pair this BuyCollateral.
+    #[test]
+    fn buycollateral_does_not_pair_a_different_market() {
+        let market_a = address!("999900000000000000000000000000000000000a");
+        let market_b = address!("999900000000000000000000000000000000000b");
+        let mut absorb_tx = tx(0, ATK, true, vec![], vec![]);
+        let mut liq = liquidation("compound_v3", ATK, Address::ZERO, Address::ZERO, 0, 300);
+        liq.emitter = market_a;
+        absorb_tx.liquidations = vec![liq];
+        let mut buy_tx = tx(1, ATK, true, vec![], vec![]);
+        buy_tx.buy_collaterals = vec![BuyCollateralFact {
+            tx_index: 1,
+            log_index: 0,
+            protocol: "compound_v3",
+            emitter: market_b,
+            buyer: ATK,
+            collateral_asset: USDC,
+            base_amount: U256::from(90),
+            collateral_amount: U256::from(100),
+        }];
+        let events = classify_block(&block(vec![absorb_tx, buy_tx]));
+        let buy = events
+            .iter()
+            .find(|e| {
+                e.kind == MevKind::Liquidation
+                    && e.details
+                        .get("tags")
+                        .and_then(|t| t.as_array())
+                        .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("buycollateral")))
+            })
+            .expect("buycollateral event");
+        assert_eq!(buy.details["absorb_paired"], serde_json::json!(false));
+    }
+
     /// P0.3 negative: BuyCollateral without a prior Absorb is Inferred + unpaired.
     #[test]
     fn buycollateral_without_absorb_is_inferred() {
@@ -1568,10 +1565,66 @@ mod tests {
         let ev = classify_kind(&block(vec![buy_tx]), MevKind::Liquidation);
         assert_eq!(ev.confidence, Confidence::Inferred);
         assert_eq!(ev.details["absorb_paired"], serde_json::json!(false));
-        assert_eq!(
-            ev.details["reasons"],
-            serde_json::json!(["ABSORB_UNPAIRED"])
+        let reasons = ev.details["reasons"].as_array().unwrap();
+        assert!(reasons
+            .iter()
+            .any(|r| r.as_str() == Some("ABSORB_UNPAIRED")));
+        assert!(reasons
+            .iter()
+            .any(|r| r.as_str() == Some("BASE_PAYMENT_UNRESOLVED")));
+    }
+
+    /// The base token is not in the Compound V3 event; the buyer's payment
+    /// transfer to the Comet identifies it so PnL is not left NULL.
+    #[test]
+    fn buycollateral_infers_base_token_from_payment_transfer() {
+        let market = address!("9999000000000000000000000000000000000009");
+        let mut absorb_tx = tx(0, ATK, true, vec![], vec![]);
+        absorb_tx.liquidations = vec![liquidation(
+            "compound_v3",
+            ATK,
+            Address::ZERO,
+            Address::ZERO,
+            0,
+            300,
+        )];
+        let mut buy_tx = tx(
+            1,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, WNATIVE, ATK, market, 90)],
         );
+        buy_tx.buy_collaterals = vec![BuyCollateralFact {
+            tx_index: 1,
+            log_index: 0,
+            protocol: "compound_v3",
+            emitter: market,
+            buyer: ATK,
+            collateral_asset: USDC,
+            base_amount: U256::from(90),
+            collateral_amount: U256::from(100),
+        }];
+        let events = classify_block(&block(vec![absorb_tx, buy_tx]));
+        let buy = events
+            .iter()
+            .find(|e| {
+                e.kind == MevKind::Liquidation
+                    && e.details
+                        .get("tags")
+                        .and_then(|t| t.as_array())
+                        .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("buycollateral")))
+            })
+            .expect("buycollateral event");
+        assert_eq!(
+            buy.details["debt_asset"],
+            serde_json::json!(format!("{WNATIVE:#x}"))
+        );
+        assert!(!buy.details["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r.as_str() == Some("BASE_PAYMENT_UNRESOLVED")));
     }
 
     #[test]
@@ -1930,7 +1983,10 @@ mod tests {
         let events = classify_block(&block(vec![t0, t1]));
         let ks = kinds(&events);
         assert!(ks.contains(&MevKind::ArbAtomic), "got {ks:?}");
-        assert!(!ks.contains(&MevKind::Jit), "JIT must not double count: {ks:?}");
+        assert!(
+            !ks.contains(&MevKind::Jit),
+            "JIT must not double count: {ks:?}"
+        );
     }
 }
 

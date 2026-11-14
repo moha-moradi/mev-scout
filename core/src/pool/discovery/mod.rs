@@ -8,7 +8,7 @@
 //!
 //! **Boundary:** DEX *router* aggregators (1inch, Odos, 0x, Paraswap, Kyber,
 //! …) are **not** discovery venues — they have no pool state. Their events are
-//! an explorer side-channel (`AggregatorSignal`). Do not add them as
+//! decoded only as explorer swap edges. Do not add them as
 //! `DexType` / factory scanners. Remote "aggregators" in `remote/` means
 //! GeckoTerminal / DexScreener pool lists (TVL sources), not those routers.
 use std::collections::{HashMap, HashSet};

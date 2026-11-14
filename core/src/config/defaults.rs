@@ -55,9 +55,10 @@ pub struct ChainConfig {
     /// GMX V2 EventEmitter contract(s) — plan P3.7 ADL-adjacent arb.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gmx_event_emitters: Option<Vec<Address>>,
-    /// ERC-4337 EntryPoint (plan P3.11); optional allowlist hint.
+    /// GMX V2 market index/long/short tokens. An ADL-adjacent arb must touch
+    /// one of these; empty disables the tag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entry_point: Option<Address>,
+    pub gmx_market_tokens: Option<Vec<Address>>,
     /// Morpho Blue singleton (shared address on ETH/Base/Arb).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub morpho_blue: Option<Address>,
@@ -150,7 +151,7 @@ impl ChainConfig {
             chainlink_feeds,
             savax,
             gmx_event_emitters,
-            entry_point,
+            gmx_market_tokens,
             morpho_blue,
             silo_v2_partial_liquidation,
             euler_v2_evault_factory,

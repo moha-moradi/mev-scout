@@ -1,5 +1,5 @@
 //! Atomic-arb attribution and adjacent Exact fingerprints
-//! (keeper / claim-and-sell / ERC-4337 bundler).
+//! (keeper / claim-and-sell).
 use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, U256};
@@ -20,7 +20,7 @@ use super::{append_tag, has_unresolved_tokens, BlockInput, TxInput};
 
 const CLASSIFY_STRATEGY: &str = "explorer_classify";
 
-/// Swap attribution + atomic arb + keeper/claim/bundler, in that order.
+/// Swap attribution + atomic arb + keeper/claim, in that order.
 pub(super) fn classify_arbs(
     input: &BlockInput,
     arb_tag_opts: &ArbTagOpts<'_>,
@@ -30,7 +30,6 @@ pub(super) fn classify_arbs(
     let claims = classify_claim_and_sell(input, &mut events);
     events.extend(keepers);
     events.extend(claims);
-    events.extend(classify_bundlers(input));
     (events, rejects)
 }
 
@@ -41,7 +40,23 @@ pub(super) fn classify_atomic_arbs(
 ) -> (Vec<MevEvent>, Vec<RejectedCandidate>) {
     let mut events: Vec<MevEvent> = Vec::new();
     let mut rejects: Vec<RejectedCandidate> = Vec::new();
+    let mut seen_gmx_adl = false;
     for tx in &input.txs {
+        // P3.7: an ADL in this or a prior tx can explain a later arb; a later
+        // ADL cannot explain an earlier one. The route must also touch a
+        // configured GMX market token, so a block-level coincidence is not a tag.
+        let adl_seen = seen_gmx_adl
+            || tx.gmx_events.iter().any(|g| {
+                g.kind == "adl"
+                    && (input.ctx.gmx_event_emitters.is_empty()
+                        || input.ctx.gmx_event_emitters.contains(&g.emitter))
+            });
+        seen_gmx_adl = adl_seen;
+        let gmx_route_hit = tx.swaps.iter().any(|s| {
+            input.ctx.gmx_market_tokens.contains(&s.token_in)
+                || input.ctx.gmx_market_tokens.contains(&s.token_out)
+        });
+        let gmx_adl_signal = adl_seen && gmx_route_hit;
         if !tx.success {
             continue;
         }
@@ -350,7 +365,11 @@ pub(super) fn classify_atomic_arbs(
         if is_forwarded {
             tags.push("forwarded_profit");
         }
-        tags.extend(strategy_tags::arb_strategy_tags(&tx.swaps, arb_tag_opts));
+        let tag_opts = ArbTagOpts {
+            gmx_adl_signal,
+            ..*arb_tag_opts
+        };
+        tags.extend(strategy_tags::arb_strategy_tags(&tx.swaps, &tag_opts));
         let mut details = serde_json::json!({
             "mode": "realized",
             "tags": tags,
@@ -533,43 +552,6 @@ pub(super) fn classify_claim_and_sell(
                 tx.to,
             )
         });
-    }
-    events
-}
-
-/// ERC-4337 bundler executions (plan P3.11).
-pub(super) fn classify_bundlers(input: &BlockInput) -> Vec<MevEvent> {
-    let mut events: Vec<MevEvent> = Vec::new();
-    for tx in &input.txs {
-        for uo in &tx.user_ops {
-            if !uo.success {
-                continue;
-            }
-            events.push(MevEvent {
-                profit_token: Some(input.ctx.wrapped_native),
-                profit_amount: Some(uo.actual_gas_cost),
-                details: serde_json::json!({
-                    "protocol": "erc4337",
-                    "tags": ["bundler", "erc4337"],
-                    "sender": format!("{:#x}", uo.sender),
-                    "paymaster": format!("{:#x}", uo.paymaster),
-                    "pnl_basis": PnlBasis::GasCostAsProfit.as_str(),
-                    "pnl": {
-                        "basis": PnlBasis::R.as_str(),
-                        "actual_gas_cost": uo.actual_gas_cost.to_string(),
-                    },
-                }),
-                ..MevEvent::for_tx(
-                    input.block,
-                    input.ts,
-                    tx.tx_index,
-                    tx.tx_hash,
-                    MevKind::Utility,
-                    tx.from,
-                    Some(uo.entry_point),
-                )
-            });
-        }
     }
     events
 }
@@ -933,14 +915,14 @@ mod split_tests {
     use crate::explorer::test_fixtures::{
         block, swap, transfer, tx, ATK, POOL_A, POOL_B, TOKA, USDC, WNATIVE,
     };
-    use crate::explorer::types::{KeeperFact, UserOpFact};
+    use crate::explorer::types::KeeperFact;
 
     fn tag_opts() -> ArbTagOpts<'static> {
         ArbTagOpts {
             wrapped_native: WNATIVE,
             savax: None,
             savax_exchange_rate_wad: None,
-            epoch_signal: false,
+            epoch_notify: false,
             epoch_venue_pools: &[],
             gmx_adl_signal: false,
             rate_cache_updates: &[],
@@ -966,7 +948,7 @@ mod split_tests {
     }
 
     #[test]
-    fn orchestrator_matches_the_four_passes_in_order() {
+    fn orchestrator_matches_the_passes_in_order() {
         let mut keeper_tx = tx(1, ATK, true, vec![], vec![]);
         keeper_tx.keepers = vec![KeeperFact {
             tx_index: 1,
@@ -976,17 +958,7 @@ mod split_tests {
             fee: Some(U256::from(10u64)),
             fee_token: Some(USDC),
         }];
-        let mut bundler_tx = tx(2, ATK, true, vec![], vec![]);
-        bundler_tx.user_ops = vec![UserOpFact {
-            tx_index: 2,
-            log_index: 0,
-            entry_point: POOL_A,
-            sender: ATK,
-            paymaster: Address::ZERO,
-            actual_gas_cost: U256::from(5u64),
-            success: true,
-        }];
-        let input = block(vec![arb_tx(0), keeper_tx, bundler_tx]);
+        let input = block(vec![arb_tx(0), keeper_tx]);
         let opts = tag_opts();
 
         let (orchestrated, rejects) = classify_arbs(&input, &opts);
@@ -996,7 +968,6 @@ mod split_tests {
         let claims = classify_claim_and_sell(&input, &mut manual);
         manual.extend(keepers);
         manual.extend(claims);
-        manual.extend(classify_bundlers(&input));
 
         let signature = |v: &[MevEvent]| -> Vec<(MevKind, u64)> {
             v.iter().map(|e| (e.kind, e.tx_index)).collect()
@@ -1005,11 +976,7 @@ mod split_tests {
         assert_eq!(rejects.len(), manual_rejects.len());
         assert_eq!(
             signature(&orchestrated),
-            vec![
-                (MevKind::ArbAtomic, 0),
-                (MevKind::Utility, 1),
-                (MevKind::Utility, 2),
-            ]
+            vec![(MevKind::ArbAtomic, 0), (MevKind::Utility, 1)]
         );
     }
 
@@ -1038,7 +1005,7 @@ mod split_tests {
     }
 
     #[test]
-    fn keeper_and_bundler_passes_emit_unknown() {
+    fn keeper_pass_emits_utility() {
         let mut keeper_tx = tx(0, ATK, true, vec![], vec![]);
         keeper_tx.keepers = vec![KeeperFact {
             tx_index: 0,
@@ -1048,27 +1015,12 @@ mod split_tests {
             fee: None,
             fee_token: None,
         }];
-        let mut bundler_tx = tx(1, ATK, true, vec![], vec![]);
-        bundler_tx.user_ops = vec![UserOpFact {
-            tx_index: 1,
-            log_index: 0,
-            entry_point: POOL_A,
-            sender: ATK,
-            paymaster: Address::ZERO,
-            actual_gas_cost: U256::from(5u64),
-            success: true,
-        }];
-        let input = block(vec![keeper_tx, bundler_tx]);
+        let input = block(vec![keeper_tx]);
 
         let keepers = classify_keepers(&input);
         assert_eq!(keepers.len(), 1);
         assert_eq!(keepers[0].kind, MevKind::Utility);
         assert_eq!(keepers[0].details["protocol"], "chainlink");
-
-        let bundlers = classify_bundlers(&input);
-        assert_eq!(bundlers.len(), 1);
-        assert_eq!(bundlers[0].kind, MevKind::Utility);
-        assert_eq!(bundlers[0].details["protocol"], "erc4337");
     }
 }
 

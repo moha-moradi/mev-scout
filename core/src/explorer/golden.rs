@@ -137,8 +137,6 @@ fn tx(
         keepers: vec![],
         epoch_rewards: vec![],
         gmx_events: vec![],
-        user_ops: vec![],
-        aggregator_signals: vec![],
     }
 }
 

@@ -507,7 +507,7 @@ pub fn reconcile(
         // closing tx may only trade before Burn.
         let in_swap_window = |log_index: u64| {
             let edge = (tx.tx_index, log_index);
-            (open_tx && edge > mint_edge || !open_tx) && (close_tx && edge < burn_edge || !close_tx)
+            !(open_tx && edge <= mint_edge || close_tx && edge >= burn_edge)
         };
         let mut swap_in = [U256::ZERO; 2];
         let mut swap_out = [U256::ZERO; 2];

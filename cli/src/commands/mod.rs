@@ -11,7 +11,7 @@ mod report;
 
 pub use config::cmd_config;
 pub use discover::cmd_discover;
-pub use explorer::{cmd_backfill, cmd_explorer_report, run_dashboard};
+pub use explorer::{cmd_backfill, cmd_explorer_report, cmd_purge_retired, run_dashboard};
 pub use live::cmd_live;
 pub use report::cmd_report;
 
@@ -76,6 +76,10 @@ impl CliCommand for ExplorerArgs {
             Some(ExplorerCommand::Dashboard(a)) => {
                 let _ = progress;
                 run_dashboard(config, a).await
+            }
+            Some(ExplorerCommand::PurgeRetired(a)) => {
+                let _ = progress;
+                cmd_purge_retired(config, a).await
             }
         }
     }

@@ -1,5 +1,5 @@
 //! Liquidation + Compound V3 BuyCollateral classification passes.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use alloy::primitives::Address;
 
@@ -7,7 +7,7 @@ use crate::explorer::interest_attr;
 use crate::explorer::profit::DeltaLedger;
 use crate::explorer::reject::RejectReason;
 use crate::explorer::types::{
-    Confidence, MevEvent, MevKind, OracleUpdateFact, PnlBasis, ReserveDataFact,
+    Confidence, LiquidationFact, MevEvent, MevKind, OracleUpdateFact, PnlBasis, ReserveDataFact,
 };
 
 use super::drops::DropSink;
@@ -15,7 +15,6 @@ use super::BlockInput;
 
 /// Block-scoped oracle/reserve facts already gathered by `classify_block`.
 pub(super) struct LiqBlockCtx<'a> {
-    pub oracle_feeds_in_block: &'a HashSet<Address>,
     pub block_oracle_owned: &'a [OracleUpdateFact],
     pub block_reserve_owned: &'a [ReserveDataFact],
 }
@@ -27,7 +26,6 @@ pub(super) fn classify_liquidations(
     drops: &mut DropSink,
 ) -> Vec<MevEvent> {
     let mut events: Vec<MevEvent> = Vec::new();
-    let oracle_feeds_in_block = ctx.oracle_feeds_in_block;
     let block_oracle_owned = ctx.block_oracle_owned;
     let block_reserve_owned = ctx.block_reserve_owned;
     // ── 1. Liquidation pass (exact, zero-heuristic) ─────────────────────
@@ -73,14 +71,8 @@ pub(super) fn classify_liquidations(
             if flash_funded {
                 tags.push("flash_loan_liq");
             }
-            // P3.14 — bad-debt / near-insolvent attribution (Morpho badDebtAssets).
-            // Mode-B proxy: nonzero badDebtAssets ⇒ post-liq position is insolvent
-            // (HF collapsed); declared correlational in fixtures.
-            let bad_debt = !liq.bad_debt_assets.is_zero();
-            if bad_debt {
-                tags.push("bad_debt_liq");
-            }
-            let post_liq_insolvent = bad_debt;
+            // Raw Morpho `badDebtAssets` stays as event data for a future live
+            // risk model; it is no longer a strategy tag.
             let (flashloan_fee_wei, flashloan_fee_token) = if flash_funded {
                 primary_flash
                     .map(|fl| (fl.fee.filter(|f| !f.is_zero()), Some(fl.token)))
@@ -88,16 +80,20 @@ pub(super) fn classify_liquidations(
             } else {
                 (None, None)
             };
-            // P1.4: co-block Chainlink poke for a feed mapped to debt/collateral.
+            // P1.4: Chainlink poke in this or a prior tx, before the
+            // liquidation, for a feed mapped to debt/collateral.
             let oracle_poke_block = oracle_poke_for_liq(
-                liq.debt_asset,
-                liq.collateral_asset,
-                oracle_feeds_in_block,
+                liq,
+                tx.tx_index,
+                block_oracle_owned,
                 &input.ctx.chainlink_feeds,
             );
             // P1.4 mode B: pre-poke divergence vs last stored answer (secondary).
             let oracle_pre_poke_divergence_bps = if oracle_poke_block {
                 block_oracle_owned.iter().find_map(|o| {
+                    if !oracle_precedes(o, tx.tx_index, liq.log_index) {
+                        return None;
+                    }
                     let asset = input.ctx.chainlink_feeds.get(&o.feed).copied();
                     let relevant = asset == Some(liq.debt_asset)
                         || asset == Some(liq.collateral_asset)
@@ -112,13 +108,14 @@ pub(super) fn classify_liquidations(
                 None
             };
             // P1.1: interest-accrual cause label (inferred; P&L stays O).
-            let interest_accrued = interest_attr::interest_accrued(
+            let interest_evidence = interest_attr::interest_evidence(
                 liq,
                 block_reserve_owned,
                 block_oracle_owned,
                 &input.ctx.chainlink_feeds,
                 Some(&input.interest_lookback),
             );
+            let interest_accrued = interest_evidence.is_some();
             // P&L basis O: seized − repaid components (USD at persist); flash
             // premium recorded as F component when present.
             let mut details = serde_json::json!({
@@ -134,9 +131,7 @@ pub(super) fn classify_liquidations(
                 "pnl_basis": PnlBasis::O.as_str(),
                 "oracle_poke_block": oracle_poke_block,
                 "interest_accrued": interest_accrued,
-                "bad_debt": bad_debt,
                 "bad_debt_assets": liq.bad_debt_assets.to_string(),
-                "post_liq_insolvent": post_liq_insolvent,
                 "pnl": {
                     "basis": PnlBasis::O.as_str(),
                     "collateral_amount": liq.collateral_amount.to_string(),
@@ -145,6 +140,9 @@ pub(super) fn classify_liquidations(
             });
             if let Some(bps) = oracle_pre_poke_divergence_bps {
                 details["oracle_pre_poke_divergence_bps"] = serde_json::json!(bps);
+            }
+            if let Some(evidence) = &interest_evidence {
+                details["interest_evidence"] = serde_json::json!(evidence);
             }
             if let Some(fl) = primary_flash {
                 details["flash_provider"] = serde_json::json!(fl.protocol);
@@ -199,32 +197,65 @@ pub(super) fn classify_liquidations(
     }
 
     // ── 1a. BuyCollateral discount capture (Compound V3, / P0.3) ────
-    // Mode A: BuyCollateral in a block that also has (or just had) Absorb.
-    // Same-tx or prior-tx Absorb in this block pairs the discount capture.
+    // Mode A: BuyCollateral in a block that also has (or just had) an Absorb
+    // on the *same Comet market*. A different market's Absorb does not pair.
     {
-        let absorb_txs: HashSet<u64> = input
+        let absorb_markets: Vec<(u64, Address)> = input
             .txs
             .iter()
-            .filter(|t| t.liquidations.iter().any(|l| l.protocol == "compound_v3"))
-            .map(|t| t.tx_index)
+            .flat_map(|t| {
+                t.liquidations
+                    .iter()
+                    .filter(|l| l.protocol == "compound_v3")
+                    .map(move |l| (t.tx_index, l.emitter))
+            })
             .collect();
         for tx in &input.txs {
             for buy in &tx.buy_collaterals {
-                let paired = absorb_txs.iter().any(|&idx| idx <= tx.tx_index);
+                let paired = absorb_markets
+                    .iter()
+                    .any(|(idx, market)| *idx <= tx.tx_index && *market == buy.emitter);
+                let buyer = if buy.buyer.is_zero() {
+                    tx.from
+                } else {
+                    buy.buyer
+                };
+                // Compound V3 `BuyCollateral` does not carry the base token.
+                // The buyer's payment transfer to the Comet does; infer it so
+                // persist can value the discount instead of leaving PnL NULL.
+                let base_token = tx
+                    .transfers
+                    .iter()
+                    .find(|t| {
+                        !t.token.is_zero()
+                            && t.token != buy.collateral_asset
+                            && t.to == buy.emitter
+                            && (t.from == buyer || t.from == tx.from)
+                            && t.amount >= buy.base_amount
+                    })
+                    .map(|t| t.token);
                 let mut tags = vec!["buycollateral"];
                 if !tx.flashloans.is_empty() {
                     tags.push("flash_loan_liq");
+                }
+                let mut reasons: Vec<&str> = Vec::new();
+                if !paired {
+                    reasons.push("ABSORB_UNPAIRED");
+                }
+                if base_token.is_none() && !buy.base_amount.is_zero() {
+                    reasons.push("BASE_PAYMENT_UNRESOLVED");
                 }
                 let mut details = serde_json::json!({
                     "protocol": buy.protocol,
                     "buyer": format!("{:#x}", buy.buyer),
                     "collateral_asset": format!("{:#x}", buy.collateral_asset),
-                    "debt_asset": format!("{:#x}", Address::ZERO),
+                    "debt_asset": format!("{:#x}", base_token.unwrap_or(Address::ZERO)),
                     "collateral_amount": buy.collateral_amount.to_string(),
                     "debt_to_cover": buy.base_amount.to_string(),
                     "base_amount": buy.base_amount.to_string(),
                     "absorb_paired": paired,
                     "tags": tags,
+                    "reasons": reasons,
                     "pnl_basis": PnlBasis::O.as_str(),
                     "pnl": {
                         "basis": PnlBasis::O.as_str(),
@@ -233,8 +264,8 @@ pub(super) fn classify_liquidations(
                         "coins_basis": PnlBasis::R.as_str(),
                     },
                 });
-                if !paired {
-                    details["reasons"] = serde_json::json!(["ABSORB_UNPAIRED"]);
+                if let Some(token) = base_token {
+                    details["pnl"]["base_token"] = serde_json::json!(format!("{token:#x}"));
                 }
                 events.push(MevEvent {
                     pools: vec![],
@@ -253,11 +284,7 @@ pub(super) fn classify_liquidations(
                         tx.tx_index,
                         tx.tx_hash,
                         MevKind::Liquidation,
-                        if buy.buyer.is_zero() {
-                            tx.from
-                        } else {
-                            buy.buyer
-                        },
+                        buyer,
                         tx.to,
                     )
                 });
@@ -267,23 +294,30 @@ pub(super) fn classify_liquidations(
     events
 }
 
-/// Co-block Chainlink poke for feeds mapped to the liquidation's assets
-/// (plan P1.4). When the feed map is empty, any in-block AnswerUpdated counts
-/// as a poke (declared correlational in fixtures).
+/// True when an oracle update lands before the liquidation in tx/log order.
+fn oracle_precedes(update: &OracleUpdateFact, liq_tx_index: u64, liq_log_index: u64) -> bool {
+    update.tx_index < liq_tx_index
+        || (update.tx_index == liq_tx_index && update.log_index <= liq_log_index)
+}
+
+/// Chainlink poke before the liquidation for feeds mapped to its assets
+/// (plan P1.4). A later same-block poke cannot explain the liquidation.
 fn oracle_poke_for_liq(
-    debt: Address,
-    collateral: Address,
-    feeds_in_block: &HashSet<Address>,
+    liq: &LiquidationFact,
+    liq_tx_index: u64,
+    updates: &[OracleUpdateFact],
     feed_to_asset: &HashMap<Address, Address>,
 ) -> bool {
-    if feeds_in_block.is_empty() {
-        return false;
-    }
     if feed_to_asset.is_empty() {
-        return true;
+        return updates
+            .iter()
+            .any(|o| oracle_precedes(o, liq_tx_index, liq.log_index));
     }
-    feed_to_asset.iter().any(|(feed, asset)| {
-        feeds_in_block.contains(feed) && (*asset == debt || *asset == collateral)
+    updates.iter().any(|o| {
+        oracle_precedes(o, liq_tx_index, liq.log_index)
+            && feed_to_asset
+                .get(&o.feed)
+                .is_some_and(|a| *a == liq.debt_asset || *a == liq.collateral_asset)
     })
 }
 

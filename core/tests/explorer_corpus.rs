@@ -33,7 +33,6 @@
 //! - block 97782322: 1 Aave V3 flash-loan `liquidation` (searcher 0xd9fffdf0…)
 //! - block 97850836: 1 Benqi `liquidation` (Liquidator helper 0x5ac9bc…)
 //! - block 97783552: 1 long-tail `arb_atomic` (searcher 0xf6d7c920…, Proximity v3)
-//! - block 97505001: 1 ERC-4337 bundler (`unknown`, EntryPoint 0x5ff137d4…)
 //! - block 97781738: 1 claim_and_sell/airdrop (`unknown`, 0x04d9634d…)
 //!
 //! Ethereum seed (backfill 26055651..=26055745, 2026-09-25): 5 `sandwich`
@@ -522,20 +521,6 @@ const CORPUS: &[CorpusCase] = &[
         kind: "arb_atomic",
         min_ops: 1,
         searcher: Some(address!("f6d7c920f6235abab9a9a5a6905ddbcaa1733394")),
-        profit_usd_min: None,
-        profit_usd_max: None,
-    },
-    // Avalanche ERC-4337 bundler in block 97505001: UserOperation via the
-    // EntryPoint 0x5ff137d4… (tags bundler/erc4337, kind unknown — no profit
-    // leg). Pinned seed for the P3.11 scenario.
-    CorpusCase {
-        id: "av-bundler-97505001",
-        chain: ChainName::Avalanche,
-        from_block: 97_505_001,
-        to_block: 97_505_001,
-        kind: "utility",
-        min_ops: 1,
-        searcher: Some(address!("4337003fcd2f56de3977ccb806383e9161628d0e")),
         profit_usd_min: None,
         profit_usd_max: None,
     },
@@ -1031,7 +1016,7 @@ fn strategy_scenario_targets_match_avalanche_corpus_seeds() {
         let kind = match t.label {
             "arb_atomic" | "long_tail" | "flash_arb" | "backrun" => "arb_atomic",
             "liquidation" | "benqi" | "flash_loan_liq" => "liquidation",
-            "bundler" | "claim_and_sell" => "utility",
+            "claim_and_sell" => "utility",
             other => other,
         };
         let hit = CORPUS.iter().any(|c| {

@@ -176,6 +176,8 @@ fn decode_balancer(log: &LogData) -> Option<(Amm, SwapFact)> {
     Some((Amm::Balancer, fact))
 }
 
+/// LB 2.0/2.2 non-legacy `Swap`. This event form does not expose an active bin
+/// id to this decoder, so LB JIT bin-range validation requires the legacy form.
 fn decode_lb(log: &LogData) -> Option<(Amm, SwapFact)> {
     if log.topics.len() < 3 || log.data.len() < 96 {
         return None;
@@ -201,9 +203,13 @@ fn decode_lb_legacy(log: &LogData) -> Option<(Amm, SwapFact)> {
     if log.topics.len() < 3 || log.data.len() < 96 {
         return None;
     }
+    // The legacy LB Swap carries the active bin id as a uint24 in data[0..32].
+    // Right-align its 4 low bytes into i32 (negative bins are sign-extended).
+    let bin = i32::from_be_bytes(log.data[28..32].try_into().ok()?);
     let (in_x, in_y) = unpack_lb_amounts_xy(&log.data[32..64]);
     let (out_x, out_y) = unpack_lb_amounts_xy(&log.data[64..96]);
     let mut fact = blank_swap(Amm::Lb, log.address);
+    fact.tick = Some(bin);
     if !in_x.is_zero() {
         fact.amount_in = in_x;
         fact.amount_out = out_y;

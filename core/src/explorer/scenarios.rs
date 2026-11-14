@@ -25,7 +25,7 @@ use crate::explorer::test_fixtures::{
 };
 use crate::explorer::types::{
     has_backrun_tag, Amm, Confidence, EpochRewardFact, GmxEventFact, JitFact, KeeperFact, MevKind,
-    OracleUpdateFact, ReserveDataFact, UserOpFact,
+    OracleUpdateFact, ReserveDataFact,
 };
 
 // ── Baseline kinds ──────────────────────────────────────────────────────
@@ -100,7 +100,6 @@ fn aggregator_leg_does_not_close_arb_cycle() {
     let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
     assert!(classify_block(&input).is_empty());
 }
-
 
 /// Baseline backrun tag: a large third-party move followed by the searcher's
 /// profitable opposite cycle → an `ArbAtomic` carrying the `backrun` tag, R
@@ -407,7 +406,9 @@ fn p1_1_interest_accrual() {
             vec![],
             vec![transfer(0, USDC, POOL_A, ATK, 500)],
         );
-        t.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
+        let mut liq = liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300);
+        liq.log_index = 3;
+        t.liquidations = vec![liq];
         t.reserve_updates = vec![ReserveDataFact {
             tx_index: 0,
             log_index: 1,
@@ -487,7 +488,9 @@ fn p1_4_oracle_poke_block() {
             vec![],
             vec![transfer(0, USDC, POOL_A, ATK, 500)],
         );
-        t.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
+        let mut liq = liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300);
+        liq.log_index = 2;
+        t.liquidations = vec![liq];
         if with_poke {
             t.oracle_updates = vec![OracleUpdateFact {
                 tx_index: 0,
@@ -504,6 +507,28 @@ fn p1_4_oracle_poke_block() {
     assert_eq!(ev.details["oracle_poke_block"], serde_json::json!(true));
     assert_eq!(pnl_basis(&ev), Some("O"));
     let ev = build(false);
+    assert_eq!(ev.details["oracle_poke_block"], serde_json::json!(false));
+
+    // A poke after the liquidation cannot explain it.
+    let mut late = tx(
+        0,
+        ATK,
+        true,
+        vec![],
+        vec![transfer(0, USDC, POOL_A, ATK, 500)],
+    );
+    let mut liq = liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300);
+    liq.log_index = 1;
+    late.liquidations = vec![liq];
+    late.oracle_updates = vec![OracleUpdateFact {
+        tx_index: 0,
+        log_index: 2,
+        feed,
+        answer: 100,
+    }];
+    let mut input = block(vec![late]);
+    input.ctx.chainlink_feeds = std::sync::Arc::new(HashMap::from([(feed, USDC)]));
+    let ev = classify_kind(&input, MevKind::Liquidation);
     assert_eq!(ev.details["oracle_poke_block"], serde_json::json!(false));
 }
 
@@ -602,7 +627,7 @@ fn p3_1_lb_bin_jit() {
         1,
         MARKET,
         true,
-        vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
+        vec![swap_at_tick(POOL_A, USDC, TOKA, 1000, 100, 8005)],
         vec![],
     );
     let mut t2 = tx(2, ATK, true, vec![], vec![]);
@@ -704,8 +729,9 @@ fn p3_5_curve_imbalance() {
     assert!(!has_tag(std::slice::from_ref(&ev), "curve_imbalance"));
 }
 
-/// P3.7 — GMX V2 ADL-adjacent arb. Positive: a co-block EventEmitter ADL
-/// signal tags the arb. Negative: no GMX signal.
+/// P3.7 — GMX V2 ADL-adjacent arb. Positive: an ADL in the same or a prior
+/// tx and a route touching a configured GMX market token. Negative: no ADL, a
+/// later-tx ADL, or a route that does not touch the GMX market.
 #[test]
 fn p3_7_gmx_adl() {
     let build = |with_gmx: bool| {
@@ -728,41 +754,63 @@ fn p3_7_gmx_adl() {
                 kind: "adl",
             }];
         }
-        classify_kind(&block(vec![t]), MevKind::ArbAtomic)
+        let mut input = block(vec![t]);
+        input.ctx.gmx_market_tokens =
+            std::sync::Arc::new(std::collections::HashSet::from([USDC, TOKA]));
+        classify_kind(&input, MevKind::ArbAtomic)
     };
     let ev = build(true);
     assert!(has_tag(std::slice::from_ref(&ev), "gmx_adl_arb"));
     assert_eq!(pnl_basis(&ev), Some("R"));
     let ev = build(false);
     assert!(!has_tag(std::slice::from_ref(&ev), "gmx_adl_arb"));
-}
 
-/// P3.11 — ERC-4337 bundler execution. Positive: a successful user op →
-/// `bundler` tag with R basis and the actual gas cost. Negative: a reverted
-/// user op is ignored.
-#[test]
-fn p3_11_erc4337_bundler() {
-    let op = |success: bool| UserOpFact {
-        tx_index: 0,
+    // A later-tx ADL cannot explain an earlier arb.
+    let swaps = vec![
+        swap(POOL_A, USDC, TOKA, 100, 200),
+        swap(POOL_B, TOKA, USDC, 200, 110),
+    ];
+    let transfers = vec![
+        transfer(0, USDC, ATK, POOL_A, 100),
+        transfer(1, TOKA, POOL_A, ATK, 200),
+        transfer(2, TOKA, ATK, POOL_B, 200),
+        transfer(3, USDC, POOL_B, ATK, 110),
+    ];
+    let mut gmx_tx = tx(1, ATK, true, vec![], vec![]);
+    gmx_tx.gmx_events = vec![GmxEventFact {
+        tx_index: 1,
         log_index: 0,
-        entry_point: address!("5ff137d4b0fdcd49dca30c7cf57e578a026d2789"),
-        sender: VICTIM,
-        paymaster: Address::ZERO,
-        actual_gas_cost: U256::from(12_000),
-        success,
-    };
-    let mut t = tx(0, ATK, true, vec![], vec![]);
-    t.user_ops = vec![op(true)];
-    let events = classify_block(&block(vec![t]));
-    assert!(has_tag(&events, "bundler"));
-    let ev = event_of(&events, MevKind::Utility);
-    // A19: the bundler books its own gas cost as profit — not a ledger residual.
-    assert_eq!(pnl_basis(ev), Some("gas_cost_as_profit"));
-    assert_eq!(ev.profit_amount, Some(U256::from(12_000)));
+        emitter: address!("db17b233827785b5ea1ad91c9bd7d4dc478b9389"),
+        kind: "adl",
+    }];
+    let mut input = block(vec![tx(0, ATK, true, swaps, transfers), gmx_tx]);
+    input.ctx.gmx_market_tokens =
+        std::sync::Arc::new(std::collections::HashSet::from([USDC, TOKA]));
+    let ev = classify_kind(&input, MevKind::ArbAtomic);
+    assert!(!has_tag(std::slice::from_ref(&ev), "gmx_adl_arb"));
 
-    let mut neg = tx(0, ATK, true, vec![], vec![]);
-    neg.user_ops = vec![op(false)];
-    assert!(!has_tag(&classify_block(&block(vec![neg])), "bundler"));
+    // ADL present but the route does not touch the configured GMX market.
+    let swaps = vec![
+        swap(POOL_A, USDC, TOKA, 100, 200),
+        swap(POOL_B, TOKA, USDC, 200, 110),
+    ];
+    let transfers = vec![
+        transfer(0, USDC, ATK, POOL_A, 100),
+        transfer(1, TOKA, POOL_A, ATK, 200),
+        transfer(2, TOKA, ATK, POOL_B, 200),
+        transfer(3, USDC, POOL_B, ATK, 110),
+    ];
+    let mut t = tx(0, ATK, true, swaps, transfers);
+    t.gmx_events = vec![GmxEventFact {
+        tx_index: 0,
+        log_index: 5,
+        emitter: address!("db17b233827785b5ea1ad91c9bd7d4dc478b9389"),
+        kind: "adl",
+    }];
+    let mut input = block(vec![t]);
+    input.ctx.gmx_market_tokens = std::sync::Arc::new(std::collections::HashSet::from([WNATIVE]));
+    let ev = classify_kind(&input, MevKind::ArbAtomic);
+    assert!(!has_tag(std::slice::from_ref(&ev), "gmx_adl_arb"));
 }
 
 /// P3.12 — rebase / FoT token arb. Positive: a closed cycle touching a
@@ -818,42 +866,9 @@ fn p3_13_claim_and_sell() {
     assert!(!has_tag(&events, "claim_and_sell"));
 }
 
-/// P3.14 — bad-debt / near-insolvent liquidation attribution. Positive:
-/// `badDebtAssets > 0` → `bad_debt_liq` tag, O basis unchanged. Negative:
-/// zero bad debt.
-#[test]
-fn p3_14_bad_debt_liq() {
-    let mut t = tx(
-        0,
-        ATK,
-        true,
-        vec![],
-        vec![transfer(0, USDC, POOL_A, ATK, 500)],
-    );
-    let mut liq = liquidation("morpho_blue", ATK, USDC, WNATIVE, 500, 300);
-    liq.bad_debt_assets = U256::from(10);
-    t.liquidations = vec![liq];
-    let ev = classify_kind(&block(vec![t]), MevKind::Liquidation);
-    assert!(has_tag(std::slice::from_ref(&ev), "bad_debt_liq"));
-    assert_eq!(ev.details["bad_debt"], serde_json::json!(true));
-    assert_eq!(ev.details["post_liq_insolvent"], serde_json::json!(true));
-    assert_eq!(pnl_basis(&ev), Some("O"));
-
-    let mut clean = tx(
-        0,
-        ATK,
-        true,
-        vec![],
-        vec![transfer(0, USDC, POOL_A, ATK, 500)],
-    );
-    clean.liquidations = vec![liquidation("morpho_blue", ATK, USDC, WNATIVE, 500, 300)];
-    let ev = classify_kind(&block(vec![clean]), MevKind::Liquidation);
-    assert!(!has_tag(std::slice::from_ref(&ev), "bad_debt_liq"));
-}
-
 /// P3.15 — Pharaoh / Blackhole epoch-transition arb. Positive: a co-block
-/// `NotifyReward` plus a venue AMM leg (or a Thursday-00:00-UTC timestamp).
-/// Negative: plain V2 route away from the boundary.
+/// `NotifyReward` plus a swap on a registry-matched epoch venue. A timestamp
+/// near Thursday 00:00 UTC is not enough.
 #[test]
 fn p3_15_epoch_transition() {
     let solidly_cycle = |epoch_reward: bool| {
@@ -877,11 +892,42 @@ fn p3_15_epoch_transition() {
                 amount: U256::from(1),
             }];
         }
-        classify_kind(&block(vec![t]), MevKind::ArbAtomic)
+        let mut input = block(vec![t]);
+        input.ctx.epoch_venue_pools =
+            std::sync::Arc::new(std::collections::HashSet::from([POOL_A, POOL_B]));
+        classify_kind(&input, MevKind::ArbAtomic)
     };
     let ev = solidly_cycle(true);
     assert!(has_tag(std::slice::from_ref(&ev), "epoch_transition"));
     assert_eq!(pnl_basis(&ev), Some("R"));
+
+    // NotifyReward absent: venue legs alone are not an epoch signal.
+    let ev = solidly_cycle(false);
+    assert!(!has_tag(std::slice::from_ref(&ev), "epoch_transition"));
+
+    // A single epoch-venue leg is a touch, not an epoch imbalance.
+    let mut s0 = swap(POOL_A, USDC, TOKA, 100, 200);
+    s0.amm = Amm::Solidly;
+    let mut s1 = swap(POOL_B, TOKA, USDC, 200, 110);
+    s1.amm = Amm::Solidly;
+    let transfers = vec![
+        transfer(0, USDC, ATK, POOL_A, 100),
+        transfer(1, TOKA, POOL_A, ATK, 200),
+        transfer(2, TOKA, ATK, POOL_B, 200),
+        transfer(3, USDC, POOL_B, ATK, 110),
+    ];
+    let mut t = tx(0, ATK, true, vec![s0, s1], transfers);
+    t.epoch_rewards = vec![EpochRewardFact {
+        tx_index: 0,
+        log_index: 9,
+        emitter: address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        reward_token: USDC,
+        amount: U256::from(1),
+    }];
+    let mut input = block(vec![t]);
+    input.ctx.epoch_venue_pools = std::sync::Arc::new(std::collections::HashSet::from([POOL_A]));
+    let ev = classify_kind(&input, MevKind::ArbAtomic);
+    assert!(!has_tag(std::slice::from_ref(&ev), "epoch_transition"));
 
     // Timestamp-only path: 2024-01-04 00:00:00 UTC (Thursday) + V3 leg.
     let mut s0 = swap(POOL_A, USDC, TOKA, 100, 200);
@@ -896,8 +942,10 @@ fn p3_15_epoch_transition() {
     ];
     let mut input = block(vec![tx(0, ATK, true, vec![s0, s1], transfers)]);
     input.ts = 1_704_326_400;
+    input.ctx.epoch_venue_pools =
+        std::sync::Arc::new(std::collections::HashSet::from([POOL_A, POOL_B]));
     let ev = classify_kind(&input, MevKind::ArbAtomic);
-    assert!(has_tag(std::slice::from_ref(&ev), "epoch_transition"));
+    assert!(!has_tag(std::slice::from_ref(&ev), "epoch_transition"));
 
     // Negative: V2 route at the default (non-boundary) timestamp.
     let plain = vec![

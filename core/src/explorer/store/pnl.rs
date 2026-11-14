@@ -46,8 +46,9 @@ pub struct PersistedOp {
     pub details_json: Option<String>,
     pub created_at: i64,
     pub excluded_from_net: i64,
-    /// `keeper` | `bundler` | `claim_and_sell` when this row is `Utility`
-    /// (or carries exactly one of those tags). Absent otherwise.
+    /// `keeper` | `claim_and_sell` when this row is `Utility` (or carries
+    /// exactly one of those tags). Absent otherwise; legacy `bundler` values
+    /// remain readable from the stored column.
     pub subkind: Option<&'static str>,
     /// Pricing-quality flags promoted out of `details_json` so reports can
     /// count them without substring scans.
@@ -948,5 +949,34 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("\"pnl_basis\":\"O\""));
+    }
+
+    /// BuyCollateral is valued as collateral_usd − base_paid_usd once the
+    /// classifier resolves the base token from the payment transfer.
+    #[test]
+    fn buycollateral_pnl_uses_inferred_base_token() {
+        let collateral = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let base = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let mut prices = HashMap::new();
+        prices.insert(collateral, token_usd(1.0, 6));
+        prices.insert(base, token_usd(1.0, 18));
+
+        let mut ev = sample_event(700);
+        ev.kind = MevKind::Liquidation;
+        ev.profit_token = Some(collateral);
+        ev.profit_amount = Some(U256::from(100_000_000u64)); // 100 units
+        ev.details = serde_json::json!({
+            "protocol": "compound_v3",
+            "collateral_asset": format!("{collateral:#x}"),
+            "debt_asset": format!("{base:#x}"),
+            "collateral_amount": "100000000",
+            "debt_to_cover": "90000000000000000000",
+            "tags": ["buycollateral"],
+            "pnl_basis": "O",
+        });
+
+        let op = annotate_event_with_volume(&ev, None, false, &prices, Some(1.0), 0);
+        let profit = op.profit_usd.expect("base payment must be priced");
+        assert!((profit - 10.0).abs() < 1e-9, "got {profit}");
     }
 }

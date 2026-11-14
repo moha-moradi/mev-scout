@@ -128,7 +128,6 @@ tr.clickable:hover td, tr.active td { background: rgba(79,209,197,.08); }
   display: inline-block; padding: 2px 8px; border-radius: 999px; font: 11px/1.4 var(--mono);
   background: rgba(96,165,250,.15); color: var(--blue);
 }
-.pill.bundler { background: rgba(79,209,197,.15); color: var(--teal); }
 .pill.arb_atomic, .pill.arbitrage { background: rgba(167,139,250,.18); color: var(--purple); }
 .pill.jit { background: rgba(52,211,153,.15); color: var(--mint); }
 .pill.claim_and_sell { background: rgba(96,165,250,.18); color: var(--blue); }
@@ -288,7 +287,7 @@ pre.raw {
           <h2>Operation mix</h2>
           <div class="chart chart-sm" id="chart-overview-mix"></div>
           <div class="chart chart-gauge" id="chart-overview-priced"></div>
-          <div class="caption">utility subkinds stay split · bundler ≠ MEV strategy</div>
+          <div class="caption">utility subkinds stay split · utility ≠ MEV strategy</div>
         </div>
       </div>
       <div class="grid row2b" style="margin-top:14px">
@@ -450,7 +449,6 @@ pre.raw {
      flags: excluded=1, volume_partial=2, usd_approx=4, native_unpriced=8, multi_asset=16, clamped=32, flash_fee_unpriced=64 */
 
   var SLICE_COLORS = {
-    "utility/bundler": "#4fd1c5",
     "utility/claim_and_sell": "#60a5fa",
     "arb_atomic": "#a78bfa",
     jit: "#34d399",
@@ -475,7 +473,6 @@ pre.raw {
   }
   function sliceLabel(key) {
     var map = {
-      "utility/bundler": "Bundler",
       "utility/claim_and_sell": "Claim & sell",
       "utility/keeper": "Keeper",
       arb_atomic: "Atomic arbitrage",
@@ -531,11 +528,6 @@ pre.raw {
       definition: "A newly claimed or minted token is sold in the same transaction.",
       rules: ["A nonzero transfer from the zero address and a swap selling that token coexist.", "An existing arbitrage is tagged; otherwise a positive sender residual can produce a utility operation."],
       limits: "The fingerprint alone does not prove claim-before-sale ordering. Only attributable, priced income belongs in the economics comparison."
-    },
-    "utility/bundler": {
-      definition: "An account-abstraction bundler executes a user operation.",
-      rules: ["A successful decoded UserOperationEvent is present."],
-      limits: "The recorded actual_gas_cost field is reimbursement/cost evidence, not verified bundler profit. It is excluded from the return-on-cost chart."
     },
     utility: {
       definition: "A supported protocol utility operation, separate from a proven MEV strategy.",
@@ -942,7 +934,7 @@ pre.raw {
     var uj = unmatchedJitCount();
     $("overview-pulse-cap").textContent = (Q.ops_unpriced || 0) + " unpriced ops in stacked counts · USD line uses priced net only"
       + (uj ? (" · " + uj + " JIT outside comparable-cost cohort") : "")
-      + " · Bundler/Claim&sell are utility subkinds";
+      + " · Claim&sell is a utility subkind";
 
     var cMix = chart("chart-overview-mix");
     if (cMix) {

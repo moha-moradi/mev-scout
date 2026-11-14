@@ -14,8 +14,8 @@
 //!
 //! Classification passes (in `classify`), applied per block in priority order:
 //! liquidations, UniV2 `skim()` capture (`Skim`), atomic-arbitrage cycles
-//! (`ArbAtomic`, Exact only), keeper / claim-and-sell / ERC-4337 bundler
-//! (`Utility`, with `subkind`), and narrowly-intersected JIT liquidity (`Jit`).
+//! (`ArbAtomic`, Exact only), keeper / claim-and-sell (`Utility`, with
+//! `subkind`), and narrowly-intersected JIT liquidity (`Jit`).
 //! A causal backrun is an `ArbAtomic` carrying the `backrun` tag, not a separate
 //! kind. Kinds are mutually exclusive by priority (`Liquidation` > `Jit` >
 //! `Skim` > `ArbAtomic` > `Utility`).

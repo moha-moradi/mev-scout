@@ -26,31 +26,35 @@ pub struct InterestLookback {
     pub reserve_updates: Vec<(u64, Address, U256)>,
 }
 
-/// Return true when the liquidation looks interest-driven.
-///
-/// `feed_to_asset` maps Chainlink aggregator → underlying asset. When empty,
-/// any in-block oracle update suppresses the interest flag (conservative).
-/// When `lookback` is present, mode B also requires a prior-window reserve
-/// move with price-flat feeds.
-pub fn interest_accrued(
+/// Auditable cause evidence behind an `interest_accrued` label.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct InterestEvidence {
+    /// `"same_block"` or `"lookback"`.
+    pub mode: &'static str,
+    pub variable_borrow_rate: U256,
+    pub reserve_updates: usize,
+    pub price_flat: bool,
+    /// Span of the reserve updates used by the lookback mode.
+    pub lookback_blocks: Option<u64>,
+}
+
+/// Evidence for the interest-accrual label; `None` when the label does not fire.
+pub fn interest_evidence(
     liq: &LiquidationFact,
     reserves: &[ReserveDataFact],
     oracle_updates: &[OracleUpdateFact],
     feed_to_asset: &HashMap<Address, Address>,
     lookback: Option<&InterestLookback>,
-) -> bool {
+) -> Option<InterestEvidence> {
     let debt = liq.debt_asset;
     let collateral = liq.collateral_asset;
 
-    let same_block = same_block_interest(debt, collateral, reserves, oracle_updates, feed_to_asset);
-    if same_block {
-        return true;
+    if let Some(ev) = same_block_interest(debt, collateral, reserves, oracle_updates, feed_to_asset)
+    {
+        return Some(ev);
     }
 
-    let Some(lb) = lookback else {
-        return false;
-    };
-    lookback_interest(debt, collateral, lb, feed_to_asset)
+    lookback_interest(debt, collateral, lookback?, feed_to_asset)
 }
 
 fn same_block_interest(
@@ -59,19 +63,28 @@ fn same_block_interest(
     reserves: &[ReserveDataFact],
     oracle_updates: &[OracleUpdateFact],
     feed_to_asset: &HashMap<Address, Address>,
-) -> bool {
-    if reserves.is_empty() {
-        return false;
-    }
-    let reserve_hit = if debt.is_zero() {
-        true
+) -> Option<InterestEvidence> {
+    let rate = if debt.is_zero() {
+        reserves
+            .iter()
+            .find(|r| !r.variable_borrow_rate.is_zero())?
+            .variable_borrow_rate
     } else {
-        reserves.iter().any(|r| r.reserve == debt)
+        reserves
+            .iter()
+            .find(|r| r.reserve == debt && !r.variable_borrow_rate.is_zero())?
+            .variable_borrow_rate
     };
-    if !reserve_hit {
-        return false;
+    if price_moved(debt, collateral, oracle_updates, feed_to_asset) {
+        return None;
     }
-    !price_moved(debt, collateral, oracle_updates, feed_to_asset)
+    Some(InterestEvidence {
+        mode: "same_block",
+        variable_borrow_rate: rate,
+        reserve_updates: reserves.len(),
+        price_flat: true,
+        lookback_blocks: None,
+    })
 }
 
 fn lookback_interest(
@@ -79,30 +92,45 @@ fn lookback_interest(
     collateral: Address,
     lb: &InterestLookback,
     feed_to_asset: &HashMap<Address, Address>,
-) -> bool {
-    let reserve_hit = if debt.is_zero() {
-        !lb.reserve_updates.is_empty()
-    } else {
-        lb.reserve_updates.iter().any(|(_, r, _)| *r == debt)
-    };
-    if !reserve_hit {
-        return false;
-    }
-    // Price-flat over the window for mapped feeds.
-    if feed_to_asset.is_empty() {
-        return lb.oracle_updates.is_empty();
-    }
-    let relevant: HashSet<Address> = feed_to_asset
+) -> Option<InterestEvidence> {
+    let mut matching: Vec<&(u64, Address, U256)> = lb
+        .reserve_updates
         .iter()
-        .filter(|(_, asset)| **asset == debt || **asset == collateral)
-        .map(|(feed, _)| *feed)
+        .filter(|(_, r, rate)| (debt.is_zero() || *r == debt) && !rate.is_zero())
         .collect();
-    if relevant.is_empty() {
-        return false;
+    if matching.is_empty() {
+        return None;
     }
-    !lb.oracle_updates
-        .iter()
-        .any(|(_, feed)| relevant.contains(feed))
+    matching.sort_by_key(|(block, _, _)| *block);
+    let first = matching.first()?;
+    let last = matching.last()?;
+
+    // Price-flat over the window for mapped feeds.
+    let price_flat = if feed_to_asset.is_empty() {
+        lb.oracle_updates.is_empty()
+    } else {
+        let relevant: HashSet<Address> = feed_to_asset
+            .iter()
+            .filter(|(_, asset)| **asset == debt || **asset == collateral)
+            .map(|(feed, _)| *feed)
+            .collect();
+        if relevant.is_empty() {
+            return None;
+        }
+        !lb.oracle_updates
+            .iter()
+            .any(|(_, feed)| relevant.contains(feed))
+    };
+    if !price_flat {
+        return None;
+    }
+    Some(InterestEvidence {
+        mode: "lookback",
+        variable_borrow_rate: last.2,
+        reserve_updates: matching.len(),
+        price_flat,
+        lookback_blocks: Some(last.0.saturating_sub(first.0)),
+    })
 }
 
 fn price_moved(
@@ -168,6 +196,16 @@ mod tests {
         }
     }
 
+    fn accrued(
+        liq: &LiquidationFact,
+        reserves: &[ReserveDataFact],
+        oracle: &[OracleUpdateFact],
+        feeds: &HashMap<Address, Address>,
+        lookback: Option<&InterestLookback>,
+    ) -> bool {
+        interest_evidence(liq, reserves, oracle, feeds, lookback).is_some()
+    }
+
     fn reserve(reserve: Address) -> ReserveDataFact {
         ReserveDataFact {
             tx_index: 0,
@@ -189,19 +227,13 @@ mod tests {
     #[test]
     fn interest_when_reserve_updated_and_price_flat() {
         let feeds = HashMap::from([(FEED, DEBT), (OTHER_FEED, COLL)]);
-        assert!(interest_accrued(
-            &liq(),
-            &[reserve(DEBT)],
-            &[],
-            &feeds,
-            None,
-        ));
+        assert!(accrued(&liq(), &[reserve(DEBT)], &[], &feeds, None,));
     }
 
     #[test]
     fn not_interest_when_relevant_feed_pokes() {
         let feeds = HashMap::from([(FEED, DEBT)]);
-        assert!(!interest_accrued(
+        assert!(!accrued(
             &liq(),
             &[reserve(DEBT)],
             &[oracle(FEED)],
@@ -213,14 +245,14 @@ mod tests {
     #[test]
     fn not_interest_without_reserve_update() {
         let feeds = HashMap::from([(FEED, DEBT)]);
-        assert!(!interest_accrued(&liq(), &[], &[], &feeds, None));
+        assert!(!accrued(&liq(), &[], &[], &feeds, None));
     }
 
     #[test]
     fn unrelated_feed_poke_still_interest() {
         let other_asset = address!("1111111111111111111111111111111111111111");
         let feeds = HashMap::from([(FEED, DEBT), (OTHER_FEED, other_asset)]);
-        assert!(interest_accrued(
+        assert!(accrued(
             &liq(),
             &[reserve(DEBT)],
             &[oracle(OTHER_FEED)],
@@ -236,7 +268,7 @@ mod tests {
             oracle_updates: vec![],
             reserve_updates: vec![(10, DEBT, U256::from(2))],
         };
-        assert!(interest_accrued(&liq(), &[], &[], &feeds, Some(&lb)));
+        assert!(accrued(&liq(), &[], &[], &feeds, Some(&lb)));
     }
 
     #[test]
@@ -246,7 +278,22 @@ mod tests {
             oracle_updates: vec![(10, FEED)],
             reserve_updates: vec![(10, DEBT, U256::from(2))],
         };
-        assert!(!interest_accrued(&liq(), &[], &[], &feeds, Some(&lb)));
+        assert!(!accrued(&liq(), &[], &[], &feeds, Some(&lb)));
+    }
+
+    #[test]
+    fn evidence_carries_rate_and_lookback_span() {
+        let feeds = HashMap::from([(FEED, DEBT)]);
+        let lb = InterestLookback {
+            oracle_updates: vec![],
+            reserve_updates: vec![(10, DEBT, U256::from(2)), (20, DEBT, U256::from(3))],
+        };
+        let ev = interest_evidence(&liq(), &[], &[], &feeds, Some(&lb)).unwrap();
+        assert_eq!(ev.mode, "lookback");
+        assert_eq!(ev.variable_borrow_rate, U256::from(3));
+        assert_eq!(ev.reserve_updates, 2);
+        assert_eq!(ev.lookback_blocks, Some(10));
+        assert!(ev.price_flat);
     }
 
     #[test]

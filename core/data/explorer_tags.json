@@ -10,13 +10,10 @@
   "gmx_adl_arb",
   "backrun",
   "flash_loan_liq",
-  "bad_debt_liq",
   "buycollateral",
   "keeper",
   "automation",
   "claim_and_sell",
   "airdrop",
-  "bundler",
-  "erc4337",
   "lb_bin_jit"
 ]

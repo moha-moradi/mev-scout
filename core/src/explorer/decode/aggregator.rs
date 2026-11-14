@@ -3,7 +3,7 @@ use crate::utils::{abi_word_address, topic_address};
 use alloy::primitives::{address, Address, B256, U256};
 
 use crate::data::LogData;
-use crate::explorer::types::{AggregatorSignal, Amm, LegSource, SwapFact};
+use crate::explorer::types::{Amm, LegSource, SwapFact};
 
 use super::sentinels::is_unresolved_token;
 
@@ -15,20 +15,6 @@ use super::sentinels::is_unresolved_token;
 /// data), so token slots stay unresolved for the transfer-pairing fallback.
 pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
     decode_aggregator_inner(log).map(|(_, fact)| (Amm::Aggregator, fact))
-}
-
-/// Side-channel intent signal (brand + amounts). Survives dedup of swap edges.
-pub fn decode_aggregator_signal(log: &LogData) -> Option<AggregatorSignal> {
-    let (brand, fact) = decode_aggregator_inner(log)?;
-    Some(AggregatorSignal {
-        brand,
-        router: fact.pool,
-        token_in: fact.token_in,
-        token_out: fact.token_out,
-        amount_in: fact.amount_in,
-        amount_out: fact.amount_out,
-        log_index: 0,
-    })
 }
 
 fn decode_aggregator_inner(log: &LogData) -> Option<(&'static str, SwapFact)> {

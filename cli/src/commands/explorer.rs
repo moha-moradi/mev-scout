@@ -23,10 +23,12 @@ fn short_addr(s: &str) -> String {
 
 mod backfill;
 pub mod dashboard;
+mod purge;
 mod report;
 
 pub use backfill::cmd_backfill;
 pub use dashboard::cmd_dashboard;
+pub use purge::cmd_purge_retired;
 pub use report::cmd_explorer_report;
 
 /// Run `explorer dashboard` from clap [`crate::cli::DashboardArgs`].

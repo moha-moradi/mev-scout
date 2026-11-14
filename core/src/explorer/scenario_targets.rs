@@ -216,17 +216,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "GMX EventEmitter 0xDb17B233827785b5EA1aD91C9bD7D4dC478B9389 ADL/liq + arb; candidate block 81075048",
-    },
-    StrategyScenarioTarget {
-        id: "P3.11",
-        label: "bundler",
-        syn_test: "p3_11_erc4337_bundler",
-        real: RealSeedStatus::Seeded,
-        seed_from: Some(97_505_001),
-        seed_to: Some(97_505_001),
-        seed_searcher: None,
-        hunt: "EntryPoint 0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789 UserOperationEvent success",
+        hunt: "GMX EventEmitter ADL in the same or a prior tx, then an arb touching a configured gmx_market_tokens index token",
     },
     StrategyScenarioTarget {
         id: "P3.12",
@@ -249,17 +239,6 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         hunt: "Transfer from 0x0 + same-tx swap selling claimed token",
     },
     StrategyScenarioTarget {
-        id: "P3.14",
-        label: "bad_debt_liq",
-        syn_test: "p3_14_bad_debt_liq",
-        // Still SyntheticOnly on Avalanche; Ethereum verified @ 26214788.
-        real: RealSeedStatus::SyntheticOnly,
-        seed_from: None,
-        seed_to: None,
-        seed_searcher: None,
-        hunt: "Morpho badDebtAssets>0 — not on Avalanche; ETH verified @ 26214788",
-    },
-    StrategyScenarioTarget {
         id: "P3.15",
         label: "epoch_transition",
         syn_test: "p3_15_epoch_transition",
@@ -267,7 +246,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "NotifyReward + Pharaoh/Blackhole pool, or Thursday 00:00 UTC ±2h",
+        hunt: "NotifyReward + both cycle legs on registry-matched Pharaoh/Blackhole pools; one touch or a timestamp alone is not enough",
     },
     StrategyScenarioTarget {
         id: "P3.16",
@@ -325,9 +304,10 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), n, "duplicate strategy scenario ids");
-        // 23 rows after the sandwich/frontrun kind retirement; a backrun is now
-        // a tag on baseline.arb, not a separate baseline row.
-        assert!(n >= 23, "expected full baseline+P0–P3 catalogue");
+        // 21 rows after the sandwich/frontrun kind, bundler, and bad-debt tag
+        // retirements; a backrun is now a tag on baseline.arb, not a separate
+        // baseline row.
+        assert!(n >= 21, "expected full baseline+P0–P3 catalogue");
     }
 
     #[test]

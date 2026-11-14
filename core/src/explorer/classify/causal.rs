@@ -101,11 +101,7 @@ fn annotate_backrun(
 
 /// logs-only causal backrun annotation over emitted atomic arbs. Requiring pool
 /// overlap + direction-of-benefit + a closed arb cycle; nothing else qualifies.
-pub(super) fn classify_backruns(
-    input: &BlockInput,
-    events: &mut [MevEvent],
-    drops: &mut DropSink,
-) {
+pub(super) fn classify_backruns(input: &BlockInput, events: &mut [MevEvent], drops: &mut DropSink) {
     let by_pool = pool_legs(input);
     let txs_by_index: HashMap<u64, &TxInput> = input.txs.iter().map(|t| (t.tx_index, t)).collect();
     // Annotation targets: txs the arb pass already classified as ArbAtomic.
@@ -206,7 +202,11 @@ pub(super) fn classify_backruns(
             }
             let Some(a) = move_ else {
                 if !named_miss {
-                    drops.anchor(*btx, RejectReason::NoCounterpartyLeg, "no_prior_opposite_leg");
+                    drops.anchor(
+                        *btx,
+                        RejectReason::NoCounterpartyLeg,
+                        "no_prior_opposite_leg",
+                    );
                 }
                 continue; // not-a-drop: no qualifying counterparty; reason already recorded
             };

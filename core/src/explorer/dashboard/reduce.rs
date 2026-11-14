@@ -1450,7 +1450,7 @@ mod tests {
                 2,
                 2,
                 "utility",
-                Some("bundler"),
+                Some("claim_and_sell"),
                 "inferred",
                 None,
                 None,
@@ -1464,7 +1464,7 @@ mod tests {
         let idx = build_op_index(&ops);
         assert_eq!(idx.rows.len(), 2);
         assert!(idx.slices.iter().any(|s| s == "jit"));
-        assert!(idx.slices.iter().any(|s| s == "utility/bundler"));
+        assert!(idx.slices.iter().any(|s| s == "utility/claim_and_sell"));
         assert!(idx.amms.iter().any(|a| a == "v3"));
         assert!(idx.tags.iter().any(|t| t == "flash_arb"));
     }
@@ -1486,7 +1486,7 @@ mod tests {
 
     /// Numerator and denominator come from the same eligible cohort; known
     /// losses (even excluded_from_net rows) stay in the comparison, while
-    /// bundler gas-as-profit and unverified JIT do not.
+    /// legacy gas-cost-as-profit rows and unverified JIT do not.
     #[test]
     fn strategy_economics_matched_cohort_keeps_losses() {
         let mut loss = op(
@@ -1524,7 +1524,7 @@ mod tests {
                 3,
                 30,
                 "utility",
-                Some("bundler"),
+                Some("keeper"),
                 "exact",
                 Some(5.0),
                 Some(5.0),
@@ -1560,12 +1560,14 @@ mod tests {
         assert!((arb.net_usd.unwrap() - 6.0).abs() < 1e-9);
         assert!((arb.roi_pct.unwrap() - 300.0).abs() < 1e-9);
         assert!((arb.net_per_10.unwrap() - 30.0).abs() < 1e-9);
-        let bundler = rows
+        let gas_as_profit = rows
             .iter()
-            .find(|r| r.slice_key == "utility/bundler")
+            .find(|r| r.slice_key == "utility/keeper")
             .unwrap();
-        assert_eq!(bundler.ops_eligible, 0);
-        assert!(bundler.exclusion_reasons.contains_key("gas_cost_as_profit"));
+        assert_eq!(gas_as_profit.ops_eligible, 0);
+        assert!(gas_as_profit
+            .exclusion_reasons
+            .contains_key("gas_cost_as_profit"));
         let jit = rows.iter().find(|r| r.slice_key == "jit").unwrap();
         assert_eq!(jit.ops_eligible, 0);
         assert!(jit.exclusion_reasons.contains_key("jit_unverified"));

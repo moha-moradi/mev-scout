@@ -96,6 +96,11 @@ pub enum ExplorerCommand {
     /// Opens the DB read-only (never migrates). With `--db`, no live RPC or
     /// `mev-scout.toml` is required.
     Dashboard(DashboardArgs),
+    /// Delete/rewrite historical rows for retired explorer strategies.
+    ///
+    /// Destructive and explicit: `bundler` rows are deleted and the retired
+    /// `bad_debt_liq` tag is stripped from surviving liquidations.
+    PurgeRetired(PurgeRetiredArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -197,6 +202,21 @@ pub struct DashboardArgs {
     /// Rewrite the output every N seconds (atomic). Accepts humantime (`30s`).
     #[arg(long, value_name = "DURATION")]
     pub repeat: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PurgeRetiredArgs {
+    /// Explorer SQLite path (offline). Default: config per-chain path.
+    #[arg(long, value_name = "PATH")]
+    pub db: Option<std::path::PathBuf>,
+
+    /// Report what would be removed without writing.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Confirm the destructive purge (required unless `--dry-run`).
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Args, Debug, Clone)]

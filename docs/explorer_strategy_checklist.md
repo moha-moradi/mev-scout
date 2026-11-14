@@ -2,40 +2,41 @@
 
 Working status for the hunt -> explorer-index -> pin loop. 2026-10-24 re-hunt (current classifier): recent Avalanche window 98415954..=98416254 (301 blocks) and dense window 95681722..=95682322 = 0 frontrun/backrun/skim ops. 2026-10-25 ETH re-hunt (drpc, 26264000..=26264962, 963 blocks): 2 backrun seeds (26264539, 26264858), 0 frontrun, 0 skim — Phase 3 causal seed **pinned**. 2026-10-25 AVAX re-hunt (dwellir archive RPC, 98489000..=98494000, 5001 blocks): 0 frontrun/backrun/skim — confirms causal is ETH-side; skim limited to the 1 V2-like pool in the (near-empty) AVAX scanner cache. (ETH full window 26264000..=26267500 only partially indexed; AVAX full window fully indexed via dwellir.) Classifier not loosened.
 
-Status values: `pending` | `candidate_block` | `verified` | `sparse_cross_chain` | `blocked`
+Status values: `pending` | `coverage_unknown` | `candidate_block` | `verified` | `sparse_cross_chain` | `blocked`
+
+Not-observed is not a deletion signal: a rare strategy may occur a few times a
+month. Retired on 2026-11-14: `P3.11 bundler` (fee business, not searcher MEV)
+and the `bad_debt_liq` tag (risk metadata, not a tradable strategy). Historical
+rows are removed by `mev-scout explorer purge-retired`.
 
 | id | label | priority | status | chain | seed_from | seed_to | notes |
 |----|-------|----------|--------|-------|-----------|---------|-------|
 | baseline.arb | arb_atomic | smoke | verified | avalanche | 95681722 | 95682322 | corpus Seeded |
 | baseline.liquidation | liquidation | smoke | verified | avalanche | 95682033 | 95682033 | corpus Seeded |
-| baseline.sandwich | sandwich | B | pending | - | | | ETH claim 26089508 is not pinned in CORPUS; existing ETH windows 26055651..=26055745 and 26059500..=26059550 |
-| baseline.frontrun | frontrun | A | pending | - | | | not observed; 2026-10-25 ETH re-hunt (963 blk) 0; AVAX 2026-10-25 (5001 blk, 98489000..=98494000) 0 |
 | baseline.backrun | backrun | A | verified | ethereum | 26264539 | 26264858 | ETH re-hunt 2026-10-25 drpc (963 blk): 2 seeds (searcher 0xe8509…, 0xb52dae…); corpus `eth-backrun-*`. A backrun is now an `arb_atomic` op carrying the `backrun` tag (kind retired); the corpus cases assert the tag. |
 | baseline.jit | jit | A | verified | avalanche | 97783274 | 97783274 | Seeded in scenario_targets |
-| baseline.skim | skim | A | pending | - | | | not observed; AVAX 2026-10-25 (5001 blk, 98489000..=98494000, dwellir) 0; ETH re-hunt (963 blk) 0 |
+| baseline.skim | skim | A | coverage_unknown | - | | | 0 hits in the 2026-10-25 hunts; rare on Avalanche, not a deletion signal. |
 | P0.1 | flash_loan_liq | A | verified | avalanche | 97782322 | 97782322 | Aave V3 flash+liq; details.protocol=aave_v3 |
 | P0.2 | benqi | A | verified | avalanche | 97850836 | 97850836 | non-indexed LiquidateBorrow; c_token_underlyings=22 (core+isolated) |
 | polygon.liquidation | liquidation | smoke | verified | polygon | 94430973 | 94431566 | corpus poly-liquidation-*; protocol=aave_v3 |
 | polygon.aave_v2 | liquidation | A | verified | polygon | 95893023 | 95893023 | corpus `poly-aave-v2-95893023`; `aave_v2_pool` pin; searcher `0xd9ff…76c3` |
 | bsc.aave | liquidation | A | verified | bsc | 127706714 | 127706714 | corpus `bsc-aave-127706714`; protocol=aave_v3 (no V2 on BSC); searcher `0xec40d8aa…1118` |
 | bsc.venus | liquidation | A | verified | bsc | 102639252 | 102639252 | corpus `bsc-venus-102639252`; protocol=venus (vUSDT emitter); searcher `0x6898c2c1…e052` |
-| P0.3 | buycollateral | C | pending | ethereum | | | no BuyCollateral in tip 40k |
-| P0.4 | flash_arb | A | pending | avalanche | | | flashes rare; no arb co-hit |
-| P1.1 | interest_accrued | D | sparse_cross_chain | ethereum | 26214788 | 26214788 | Morpho liq flag |
+| P0.3 | buycollateral | C | coverage_unknown | ethereum | | | no seed yet; live-eligible. Base token is inferred from the buyer→Comet payment transfer so PnL is no longer NULL. |
+| P0.4 | flash_arb | A | coverage_unknown | avalanche | | | flash co-hit not observed yet; rare, not a deletion signal. |
+| P1.1 | interest_accrued | D | sparse_cross_chain | ethereum | 26214788 | 26214788 | Morpho liq flag; reserve rate must be non-zero. |
 | P1.3 | long_tail | A | verified | avalanche | 97783552 | 97783552 | Seeded |
-| P1.4 | oracle_poke_block | D | pending | - | | | no co-block poke+liq |
-| P1.5 | keeper | A | pending | - | | | Gelato addrs: 0 hits / 120k |
-| P2.3 | flash_providers | D | pending | - | | | needs multi-provider flash liq |
-| P3.1 | lb_bin_jit | B | pending | avalanche | | | needs address-bound LB hunt |
-| P3.2 | rate_provider_staleness | B | pending | - | | | |
-| P3.5 | curve_imbalance | B | pending | - | | | |
-| P3.7 | gmx_adl_arb | B | pending | avalanche | | | emitter quiet / candidate pruned |
-| P3.11 | bundler | A | verified | avalanche | 97505001 | 97505001 | Seeded |
-| P3.12 | fot_arb|rebase_arb | B | pending | - | | | |
+| P1.4 | oracle_poke_block | D | coverage_unknown | - | | | not observed yet; live-eligible (oracle-latency liq). Poke must precede the liquidation in tx/log order. |
+| P1.5 | keeper | A | coverage_unknown | - | | | 0 hits / 120k; live-eligible, rare, not a deletion signal. |
+| P2.3 | flash_providers | D | coverage_unknown | - | | | needs multi-provider flash liq (rare). |
+| P3.1 | lb_bin_jit | B | coverage_unknown | avalanche | | | no address-bound seed yet; live-eligible. Bin accounting remains explicitly unavailable (PnL NULL, never zero). |
+| P3.2 | rate_provider_staleness | B | coverage_unknown | - | | | rare; not a deletion signal. |
+| P3.5 | curve_imbalance | B | coverage_unknown | - | | | rare; not a deletion signal. |
+| P3.7 | gmx_adl_arb | B | coverage_unknown | avalanche | | | ADL must appear in the same or a prior tx and the route must touch a configured GMX index token (WAVAX/USDC/WBTC.e/WETH.e). |
+| P3.12 | fot_arb|rebase_arb | B | coverage_unknown | - | | | rare; not a deletion signal. |
 | P3.13 | claim_and_sell | B | verified | avalanche | 97781738 | 97781738 | Seeded |
-| P3.14 | bad_debt_liq | C | sparse_cross_chain | ethereum | 26214788 | 26214788 | AVAX SyntheticOnly |
-| P3.15 | epoch_transition | B | pending | - | | | |
-| P3.16 | savax_rate_arb | B | pending | avalanche | | | transfer-only blocks had 0 arb |
+| P3.15 | epoch_transition | B | coverage_unknown | - | | | requires `NotifyReward` and both cycle legs on registry-matched epoch venues; one touch or a timestamp alone is not a signal. |
+| P3.16 | savax_rate_arb | B | coverage_unknown | avalanche | | | transfer-only blocks had 0 arb; rare, not a deletion signal. |
 
 ## Tooling
 

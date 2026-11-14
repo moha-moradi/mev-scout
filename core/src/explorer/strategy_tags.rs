@@ -8,21 +8,9 @@ use alloy::primitives::{Address, U256};
 use crate::explorer::types::{Amm, RateCacheFact, SwapFact, TransferFact};
 use crate::pool::state::pool_types::{is_fee_on_transfer_token, is_rebase_token};
 
-/// Thursday 00:00 UTC epoch length used by Pharaoh / Blackhole ve(3,3).
-pub const EPOCH_SECONDS: u64 = 7 * 24 * 3600;
-/// Half-window around the epoch boundary for co-occurrence tagging (P3.15).
-pub const EPOCH_BOUNDARY_HALF_WINDOW_SECS: u64 = 2 * 3600;
 /// Minimum |pool − exchangeRate| / exchangeRate in bps to tag sAVAX rate arb
 /// when the on-chain exchange rate is available (plan P3.16).
 pub const SAVAX_RATE_DIVERGENCE_BPS: u64 = 5;
-
-/// True when `ts` falls within ±[`EPOCH_BOUNDARY_HALF_WINDOW_SECS`] of a
-/// Thursday 00:00 UTC boundary (Unix epoch weeks land on Thursday).
-pub fn near_epoch_boundary(ts: u64) -> bool {
-    let rem = ts % EPOCH_SECONDS;
-    rem <= EPOCH_BOUNDARY_HALF_WINDOW_SECS
-        || rem >= EPOCH_SECONDS.saturating_sub(EPOCH_BOUNDARY_HALF_WINDOW_SECS)
-}
 
 /// Collect P3 strategy tags for a realized atomic arb route.
 pub fn arb_strategy_tags(swaps: &[SwapFact], opts: &ArbTagOpts<'_>) -> Vec<&'static str> {
@@ -94,17 +82,19 @@ pub fn arb_strategy_tags(swaps: &[SwapFact], opts: &ArbTagOpts<'_>) -> Vec<&'sta
         }
     }
 
-    // P3.15 — Pharaoh / Blackhole epoch-transition arb.
-    if opts.epoch_signal {
-        let venue_hit = if opts.epoch_venue_pools.is_empty() {
-            // No pool registry: Solidly/LB/V3 legs are the Avalanche surface.
-            has_amm(Amm::Solidly) || has_amm(Amm::Lb) || has_amm(Amm::V3)
-        } else {
-            swaps
-                .iter()
-                .any(|s| opts.epoch_venue_pools.contains(&s.pool))
-        };
-        if venue_hit {
+    // P3.15 — Pharaoh / Blackhole epoch-transition arb: a `NotifyReward` in the
+    // block and *both* sides of the cycle trading epoch venues. A single touch
+    // (or a timestamp alone) is not an epoch imbalance.
+    if opts.epoch_notify && !opts.epoch_venue_pools.is_empty() {
+        let mut epoch_pools: Vec<Address> = swaps
+            .iter()
+            .filter(|s| opts.epoch_venue_pools.contains(&s.pool))
+            .map(|s| s.pool)
+            .collect();
+        let legs = epoch_pools.len();
+        epoch_pools.sort_unstable();
+        epoch_pools.dedup();
+        if legs >= 2 && epoch_pools.len() >= 2 {
             tags.push("epoch_transition");
         }
     }
@@ -154,13 +144,14 @@ fn savax_pool_diverges(
     false
 }
 
+#[derive(Clone, Copy)]
 pub struct ArbTagOpts<'a> {
     pub wrapped_native: Address,
     pub savax: Option<Address>,
     /// Benqi `getPooledAvaxByShares(1e18)` at the block (plan P3.16 mode A+B).
     pub savax_exchange_rate_wad: Option<U256>,
-    /// True when the block has NotifyReward and/or is near Thursday 00:00 UTC.
-    pub epoch_signal: bool,
+    /// True when the block carries a `NotifyReward` (P3.15).
+    pub epoch_notify: bool,
     pub epoch_venue_pools: &'a [Address],
     pub gmx_adl_signal: bool,
     /// Same-block Balancer TokenRateCacheUpdated facts (plan P3.2).
@@ -219,7 +210,7 @@ mod tests {
             wrapped_native: WAVAX,
             savax: None,
             savax_exchange_rate_wad: None,
-            epoch_signal: false,
+            epoch_notify: false,
             epoch_venue_pools: &[],
             gmx_adl_signal: false,
             rate_cache_updates: &[],
@@ -284,14 +275,6 @@ mod tests {
         assert!(!arb_strategy_tags(&[s.clone()], &o).contains(&"savax_rate_arb"));
         s.amount_out = U256::from(12u64) * U256::from(10u64.pow(17)); // ~9% high
         assert!(arb_strategy_tags(&[s], &o).contains(&"savax_rate_arb"));
-    }
-
-    #[test]
-    fn epoch_boundary_thursday_window() {
-        // 2024-01-04 00:00:00 UTC = Thursday (1704326400).
-        assert!(near_epoch_boundary(1_704_326_400));
-        assert!(near_epoch_boundary(1_704_326_400 + 1800));
-        assert!(!near_epoch_boundary(1_704_326_400 + 3 * 3600));
     }
 
     #[test]

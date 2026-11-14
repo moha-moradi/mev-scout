@@ -90,7 +90,7 @@ fn dashboard_html_offline_no_config() {
     assert!(html.contains("id=\"view-pools\""));
     assert!(html.contains("id=\"view-analytics\""));
     assert!(html.contains("id=\"view-health\""));
-    assert!(html.contains("Live operations"));
+    assert!(html.contains("Operations"));
     assert!(html.contains("Overview"));
     assert!(!html.contains("Network overview"));
     assert!(!html.contains("id=\"filter-bar\""));

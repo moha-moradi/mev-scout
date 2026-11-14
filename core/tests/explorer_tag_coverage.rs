@@ -27,9 +27,6 @@ fn expected_tags() -> Vec<String> {
         .unwrap_or_else(|e| panic!("core/data/explorer_tags.json: {e}"))
 }
 
-/// Morpho bad-debt is synthetic-only on Avalanche — not required for AVAX coverage.
-const AVAX_SKIP: &[&str] = &["bad_debt_liq"];
-
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "live RPC — set MEV_SCOUT_COVERAGE=1"]
 async fn historical_tag_coverage() -> anyhow::Result<()> {
@@ -105,12 +102,11 @@ async fn historical_tag_coverage() -> anyhow::Result<()> {
     );
 
     let tags = collect_tags(&store)?;
-    let skip: HashSet<&str> = AVAX_SKIP.iter().copied().collect();
     let expected = expected_tags();
     let missing: Vec<&str> = expected
         .iter()
         .map(String::as_str)
-        .filter(|t| !tags.contains(*t) && !skip.contains(t))
+        .filter(|t| !tags.contains(*t))
         .collect();
     let mut present: Vec<_> = tags.iter().cloned().collect();
     present.sort();

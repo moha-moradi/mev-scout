@@ -22,11 +22,13 @@ mod facts;
 mod jit_positions;
 mod labels;
 mod pnl;
+mod purge;
 mod query;
 mod reprice;
 mod schema;
 mod sync;
 
+pub use purge::PurgeReport;
 pub use schema::SCHEMA_HEAD;
 
 use alloy::primitives::{Address, B256, U256};
@@ -75,8 +77,9 @@ pub struct MevOpRow {
     pub details_json: Option<String>,
     pub detector: String,
     pub created_at: u64,
-    /// `keeper` | `bundler` | `claim_and_sell` for a utility op. JSON reports
-    /// carry it; `report_by_kind` still groups on `kind` alone.
+    /// `keeper` | `claim_and_sell` for a utility op. JSON reports carry it;
+    /// `report_by_kind` still groups on `kind` alone. Legacy `bundler` values
+    /// remain readable from the stored column.
     pub subkind: Option<String>,
 }
 

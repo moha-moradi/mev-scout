@@ -27,7 +27,9 @@ use alloy::primitives::{address, Address, B256, U256};
 use rusqlite::Connection;
 
 use mev_scout_core::explorer::profit::ProfitTokenPolicy;
-use mev_scout_core::explorer::types::{has_backrun_tag, Amm, LegSource, MevKind, SwapFact, TransferFact};
+use mev_scout_core::explorer::types::{
+    has_backrun_tag, Amm, LegSource, MevKind, SwapFact, TransferFact,
+};
 use mev_scout_core::explorer::{classify_block, BlockContext, BlockInput, TxInput};
 
 // ── Avalanche C-Chain values (core/data/chains.toml) ──────────────────────────

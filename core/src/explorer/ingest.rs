@@ -74,6 +74,8 @@ pub struct IngestConfig {
     pub chainlink_feeds: HashMap<Address, Address>,
     pub savax: Option<Address>,
     pub gmx_event_emitters: HashSet<Address>,
+    /// GMX market tokens an ADL-adjacent arb must touch (P3.7 route linkage).
+    pub gmx_market_tokens: HashSet<Address>,
     /// Extra tip/fee-recipient sinks merged with each block's coinbase so
     /// forwarded residuals to builders are not counted as searcher PnL.
     pub tip_sink_addresses: HashSet<Address>,
@@ -118,6 +120,12 @@ impl IngestConfig {
             .unwrap_or_default()
             .into_iter()
             .collect();
+        let gmx_market_tokens = chain_config
+            .gmx_market_tokens
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         IngestConfig {
             chain,
             chain_id: chain.chain_id(),
@@ -129,6 +137,7 @@ impl IngestConfig {
             chainlink_feeds,
             savax: chain_config.savax,
             gmx_event_emitters,
+            gmx_market_tokens,
             tip_sink_addresses: HashSet::new(),
             record_rejections: false,
             rpc_batch_blocks: 1,
@@ -258,6 +267,7 @@ fn run_block_context(cfg: &IngestConfig, pools: PoolViews<'_>) -> BlockContext {
         savax: cfg.savax,
         epoch_venue_pools: std::sync::Arc::new(pools.epoch_venue.clone()),
         gmx_event_emitters: std::sync::Arc::new(cfg.gmx_event_emitters.clone()),
+        gmx_market_tokens: std::sync::Arc::new(cfg.gmx_market_tokens.clone()),
         causal_window_txs: cfg.causal_window_txs,
         causal_price_min_pct: cfg.causal_price_min_pct,
         jit_pool_fee_bps: cfg.jit_pool_fee_bps,
@@ -426,8 +436,6 @@ fn decode_successful_txs(
             keepers: facts.keepers,
             epoch_rewards: facts.epoch_rewards,
             gmx_events: facts.gmx_events,
-            user_ops: facts.user_ops,
-            aggregator_signals: facts.aggregator_signals,
         });
     }
     out

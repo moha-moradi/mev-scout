@@ -84,7 +84,11 @@ fn census_kinds_sql_list() -> String {
     kinds.extend(RETIRED_KINDS.iter().map(|s| s.to_string()));
     kinds.sort();
     kinds.dedup();
-    kinds.iter().map(|k| format!("'{k}'")).collect::<Vec<_>>().join(", ")
+    kinds
+        .iter()
+        .map(|k| format!("'{k}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `(kind, precedence)` VALUES rows injected straight from `kind_precedence`,
@@ -509,7 +513,10 @@ fn census_sql_prepares_against_real_schema() -> anyhow::Result<()> {
     // Emittable kinds parse; retired labels deliberately do not (read verbatim).
     for kind in ALL_KINDS {
         MevKind::parse(kind.as_str()).with_context(|| {
-            format!("emittable kind '{}' does not parse as a MevKind", kind.as_str())
+            format!(
+                "emittable kind '{}' does not parse as a MevKind",
+                kind.as_str()
+            )
         })?;
     }
     for kind in RETIRED_KINDS {

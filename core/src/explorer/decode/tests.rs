@@ -371,6 +371,7 @@ fn lb_legacy_swap_decodes_packed_xy() {
     assert_eq!(s.amount_out, U256::from(180_816u64));
     assert_eq!(s.token_in, TOKEN1_SENTINEL);
     assert_eq!(s.token_out, TOKEN0_SENTINEL);
+    assert_eq!(s.tick, Some(0x801a31));
 }
 
 #[test]
@@ -1064,8 +1065,8 @@ fn dispatched_topics_are_unique_and_classified() {
         COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC,
         COMPOUND_V3_BUY_COLLATERAL_TOPIC, EULER_V2_LIQUIDATE_TOPIC, GELATO_EXEC_SUCCESS_TOPIC,
         INF_CL_SWAP_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC, MORPHO_BLUE_LIQUIDATE_TOPIC,
-        NOTIFY_REWARD_TOPIC, SILO_V2_LIQUIDATION_CALL_TOPIC, UNI_V3_FLASH_TOPIC,
-        USER_OPERATION_EVENT_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC, V2_SYNC_TOPIC, V4_SWAP_TOPIC,
+        NOTIFY_REWARD_TOPIC, SILO_V2_LIQUIDATION_CALL_TOPIC, UNI_V3_FLASH_TOPIC, V2_BURN_TOPIC,
+        V2_MINT_TOPIC, V2_SYNC_TOPIC, V4_SWAP_TOPIC,
     };
     use crate::pool::decoders::{
         BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
@@ -1121,7 +1122,6 @@ fn dispatched_topics_are_unique_and_classified() {
         *CHAINLINK_UPKEEP_PERFORMED_TOPIC,
         *CHAINLINK_LOG_TRIGGERED_TOPIC,
         *NOTIFY_REWARD_TOPIC,
-        *USER_OPERATION_EVENT_TOPIC,
     ];
     let mut seen = HashSet::new();
     for topic in topics {
@@ -1131,5 +1131,5 @@ fn dispatched_topics_are_unique_and_classified() {
             "topic0 has no decoder family: {topic}"
         );
     }
-    assert_eq!(seen.len(), 47);
+    assert_eq!(seen.len(), 46);
 }

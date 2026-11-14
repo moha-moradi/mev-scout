@@ -298,13 +298,6 @@ pub static GMX_LIQUIDATE_POSITION_HASH: LazyLock<B256> =
 pub static GMX_POSITION_IMPACT_POOL_DISTRIBUTED_HASH: LazyLock<B256> =
     LazyLock::new(|| keccak256("PositionImpactPoolDistributed"));
 
-/// ERC-4337 EntryPoint v0.6/v0.7
-/// `UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)`
-/// — userOpHash/sender/paymaster indexed (P3.11).
-pub static USER_OPERATION_EVENT_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256("UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)")
-});
-
 // ── Solidly / Velodrome / Aerodrome ─────────────────────────────────
 
 /// Velodrome V2/Aerodrome pool Swap topic (`Swap(address indexed sender,

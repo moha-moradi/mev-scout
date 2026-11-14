@@ -29,7 +29,7 @@ mod transfer;
 #[cfg(test)]
 mod tests;
 
-pub use aggregator::{decode_aggregator_signal, dedup_aggregator_facts};
+pub use aggregator::dedup_aggregator_facts;
 // Topic pins are consumed by `chain::events` tests and decode unit tests.
 #[allow(unused_imports)]
 pub use aggregator::{
@@ -43,7 +43,7 @@ pub use liquidation::{decode_buy_collateral, decode_liquidation, remap_liquidati
 pub use sentinels::{is_unresolved_token, TOKEN0_SENTINEL, TOKEN1_SENTINEL};
 pub use signals::{
     decode_epoch_reward, decode_gmx_event, decode_keeper, decode_oracle_update,
-    decode_rate_cache_update, decode_reserve_data, decode_user_op,
+    decode_rate_cache_update, decode_reserve_data,
 };
 pub use swap::decode_swap;
 pub use transfer::{decode_transfer, decode_v2_pair_op};
@@ -72,7 +72,6 @@ pub(crate) enum LogFamily {
     RateCache,
     Keeper,
     EpochReward,
-    UserOp,
 }
 
 /// Topic0 dispatch. Arm order matches the historical decoder scan.
@@ -86,9 +85,8 @@ pub(crate) fn log_family(topic0: B256) -> Option<LogFamily> {
         COMPOUND_V3_BUY_COLLATERAL_TOPIC, DONASWAP_V3_SWAP_TOPIC, EULER_V2_LIQUIDATE_TOPIC,
         GELATO_EXEC_SUCCESS_TOPIC, INF_CL_SWAP_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC,
         MORPHO_BLUE_LIQUIDATE_TOPIC, NOTIFY_REWARD_TOPIC, SILO_V2_LIQUIDATION_CALL_TOPIC,
-        TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRANSFER_TOPIC, UNI_V3_FLASH_TOPIC,
-        USER_OPERATION_EVENT_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC, V2_SWAP_TOPIC, V2_SYNC_TOPIC,
-        V3_SWAP_TOPIC, V4_SWAP_TOPIC,
+        TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRANSFER_TOPIC, UNI_V3_FLASH_TOPIC, V2_BURN_TOPIC,
+        V2_MINT_TOPIC, V2_SWAP_TOPIC, V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
     };
     use crate::pool::decoders::{
         BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
@@ -160,7 +158,6 @@ pub(crate) fn log_family(topic0: B256) -> Option<LogFamily> {
             Some(LogFamily::Keeper)
         }
         t if t == *NOTIFY_REWARD_TOPIC => Some(LogFamily::EpochReward),
-        t if t == *USER_OPERATION_EVENT_TOPIC => Some(LogFamily::UserOp),
         _ => None,
     }
 }

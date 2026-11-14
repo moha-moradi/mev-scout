@@ -2829,16 +2829,17 @@ Status of each strategy in the MEV Scout codebase:
 - **Planned (Phase N)**: Referenced in `plans/implementation_plan.md` with file path assigned
 - **Not in scope**: Not included in any plan
 
-### 16.1 Coded & Backtested (7 strategies)
+### 16.1 Coded & Backtested (4 strategies)
 
 | # | Strategy | File | Lines | Tests | Backtested? | Live Mode? | Notes |
 |---|----------|------|:---:|:---:|:---:|:---:|-------|
 | 1 | **TwoHopArb** | `core/src/mev/detectors/two_hop.rs` | ~623 | `tests/arbitrage.rs` | Yes | Yes | V2↔V2, V3↔V3, V2↔V3, Curve, Balancer, TraderJoeLB, Pendle. Dedup per block. |
 | 2 | **MultiHopArb** | `core/src/mev/detectors/multi_hop.rs` | ~346 | `tests/arbitrage.rs` | Yes | Yes | BFS depth ≤ 4. Optimal N-hop. Slippage modeling. |
 | 3 | **JIT (V3)** | `core/src/mev/detectors/jit.rs` | ~333 | `tests/sandwich.rs` | Yes | Yes | Mint→Swap→Burn detection. Fee growth tracking. Tick-range overlap. |
-| 4 | **JitArb** | `core/src/mev/detectors/jit_arb.rs` | ~420 | `tests/sandwich.rs` | Yes | Yes | JIT + arbitrage. Proximity-window matching. |
-| 5 | **Sandwich** | `core/src/mev/detectors/sandwich.rs` | ~530 | `tests/sandwich.rs` | Yes | Yes | V2, V3, Curve, Balancer. Front→Victim→Back matching. Re-quote profit. |
-| 6 | **Liquidation** | `core/src/mev/detectors/liquidation.rs` | ~575 | `tests/liquidation.rs` (empty) | Yes | Yes | AAVE V3 reactive + proactive. Reserve cache. Health factor scanning. |
+| 4 | **Backrun** | `core/src/mev/detectors/backrun.rs` | ~300 | `tests/arbitrage.rs` | Yes | Yes | Pre/post state-diff detector; supersedes the plain arb claim for the same path. |
+
+Retired from the live path: `Sandwich`, `JitArb`, and `Liquidation` (no live
+detector). The explorer classifies realized liquidations independently.
 
 **Supporting infrastructure** (all built):
 - **Mempool** (`mempool.rs`): Calldata parsing, V2/V3 exact-in, pending tx effects, eth_call simulation
@@ -2850,7 +2851,7 @@ Status of each strategy in the MEV Scout codebase:
 
 **Recent backtest run** (run `1783523729`, stored in SQLite `run_manifests`):
 - Chain: Polygon | Blocks: 89,878,932–89,879,031 (100 blocks)
-- Strategies: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, liquidation
+- Strategies: two_hop_arb, multi_hop_arb, jit, backrun
 - Result: 0 opportunities detected (range may not have had live opportunities)
 
 ### 16.2 Planned — Phase 0 (Quick Wins)
@@ -2945,7 +2946,7 @@ Remaining strategies: chain-specific extensions, high-competition, niche protoco
 
 | Capability | Status | Details |
 |-----------|--------|---------|
-| **Detection** | 6 strategies coded | TwoHopArb, MultiHopArb, JIT, JitArb, Sandwich, Liquidation |
+| **Detection** | 4 strategies coded | TwoHopArb, MultiHopArb, JIT, Backrun |
 | **Simulation (revm)** | Built | `replay/` module with full revm block replay |
 | **Backtesting** | Active | `scripts/test_backtest.ps1` runs Dune-guided backtests across historical blocks |
 | **Live mode** | Active | `LiveRunner` in `execution/live.rs` processes real blocks + mempool |

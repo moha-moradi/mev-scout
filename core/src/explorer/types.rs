@@ -18,8 +18,8 @@ pub enum MevKind {
     Jit,
     /// UniV2-style `skim`: pair outbound Transfers with no Swap/Mint/Burn/Sync.
     Skim,
-    /// Exact-fingerprint operational execution: keeper, airdrop claim-and-sell,
-    /// or ERC-4337 bundler. Not a residual bucket. The family is `subkind`.
+    /// Exact-fingerprint operational execution: keeper or airdrop
+    /// claim-and-sell. Not a residual bucket. The family is `subkind`.
     Utility,
 }
 
@@ -64,9 +64,10 @@ impl MevKind {
 
 /// The one utility family on a classified event, from `details.tags`.
 ///
-/// `Some` only when exactly one of `keeper`, `bundler`, `claim_and_sell` is
-/// present. Two different families is not a subkind — that would recreate the
-/// old mystery bucket.
+/// `Some` only when exactly one of `keeper`, `claim_and_sell` is present.
+/// Two different families is not a subkind — that would recreate the old
+/// mystery bucket. Legacy `bundler` rows remain readable from the stored
+/// `subkind` column but are no longer produced by the classifier.
 pub fn utility_subkind(details: &serde_json::Value) -> Option<&'static str> {
     let tags = details.get("tags")?.as_array()?;
     let mut found: Option<&'static str> = None;
@@ -76,7 +77,6 @@ pub fn utility_subkind(details: &serde_json::Value) -> Option<&'static str> {
         };
         let sub = match name {
             "keeper" => "keeper",
-            "bundler" => "bundler",
             "claim_and_sell" => "claim_and_sell",
             _ => continue,
         };
@@ -179,8 +179,6 @@ pub struct MevEvent {
     pub confidence: Confidence,
     /// Victim tx hashes (causal backrun).
     pub victim_hashes: Vec<B256>,
-    /// Victim swap size in the pool's traded token (causal backrun), raw units.
-    pub victim_swap_size: Option<U256>,
     /// Kind-specific structured details (liq assets, JIT tick range, notes).
     pub details: serde_json::Value,
 }
@@ -217,7 +215,6 @@ impl MevEvent {
             flashloan_fee_token: None,
             confidence: Confidence::Exact,
             victim_hashes: Vec::new(),
-            victim_swap_size: None,
             details: serde_json::json!({}),
         }
     }
@@ -290,19 +287,6 @@ pub enum Amm {
     Aggregator,
 }
 
-/// Side-channel aggregator intent (survives swap-edge dedup; never enters
-/// arb cycle walks or causal `SwapLeg`s).
-#[derive(Debug, Clone)]
-pub struct AggregatorSignal {
-    pub brand: &'static str,
-    pub router: Address,
-    pub token_in: Address,
-    pub token_out: Address,
-    pub amount_in: U256,
-    pub amount_out: U256,
-    pub log_index: u64,
-}
-
 impl Amm {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -364,7 +348,8 @@ pub struct SwapFact {
     /// until `attach_swap_tokens` resolves the leg.
     pub token_source: LegSource,
     /// Post-swap pool tick for concentrated-liquidity AMMs (V3/V4/Infinity),
-    /// used to validate JIT tick-range overlap. `None` for V2/Curve/Balancer.
+    /// or the active bin id for Liquidity Book `Swap` events. `None` for
+    /// V2/Curve/Balancer and for LB swaps that do not expose a bin id.
     pub tick: Option<i32>,
     /// Flow-ownership attribution: the address that funded the
     /// swap's input leg (the `from` of the nearest inbound transfer to the
@@ -409,7 +394,8 @@ pub struct LiquidationFact {
     pub debt_asset: Address,
     pub collateral_amount: U256,
     pub debt_to_cover: U256,
-    /// Morpho Blue `badDebtAssets` (plan P3.14); zero when the event has none.
+    /// Morpho Blue `badDebtAssets`; zero when the event has none. Raw event
+    /// data for a future live risk model, not a strategy tag.
     pub bad_debt_assets: U256,
 }
 
@@ -438,9 +424,6 @@ pub enum PnlBasis {
     O,
     /// Explicit fee/reward event fields (keeper, flash premium, JIT tip).
     F,
-    /// The tx's own gas cost booked as "profit" (ERC-4337 bundler path):
-    /// never `Exact`.
-    GasCostAsProfit,
 }
 
 impl PnlBasis {
@@ -449,7 +432,6 @@ impl PnlBasis {
             PnlBasis::R => "R",
             PnlBasis::O => "O",
             PnlBasis::F => "F",
-            PnlBasis::GasCostAsProfit => "gas_cost_as_profit",
         }
     }
 
@@ -525,18 +507,6 @@ pub struct GmxEventFact {
     pub kind: &'static str,
 }
 
-/// ERC-4337 EntryPoint `UserOperationEvent` (P3.11).
-#[derive(Debug, Clone)]
-pub struct UserOpFact {
-    pub tx_index: u64,
-    pub log_index: u64,
-    pub entry_point: Address,
-    pub sender: Address,
-    pub paymaster: Address,
-    pub actual_gas_cost: U256,
-    pub success: bool,
-}
-
 /// A decoded V3 concentrated-liquidity Mint/Burn fact, or an LFJ/Pharaoh
 /// Liquidity Book DepositedToBins/WithdrawnFromBins fact (bin ids mapped into
 /// `tick_lower`/`tick_upper` as the inclusive min/max bin id).
@@ -608,7 +578,7 @@ mod kind_contract_tests {
     #[test]
     fn only_the_ledger_residual_basis_is_exact_capable() {
         assert!(PnlBasis::R.is_ledger_residual());
-        for basis in [PnlBasis::O, PnlBasis::F, PnlBasis::GasCostAsProfit] {
+        for basis in [PnlBasis::O, PnlBasis::F] {
             assert!(!basis.is_ledger_residual(), "{:?}", basis);
         }
     }

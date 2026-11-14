@@ -174,14 +174,14 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
         opened_block,
         bin_amm,
     } = pos;
-    // V3: require an in-range tick. LB: any same-pool swap (Swap has no tick).
-    // V3 ranges are half-open: the upper tick is not part of the position.
+    // V3: require an in-range tick (half-open `[lower, upper)`). LB: the
+    // legacy Swap carries the active bin id in `tick`; bins are inclusive.
     let in_range = |s: &SwapFact| {
         if s.pool != pool {
             return false;
         }
         if bin_amm {
-            return true;
+            return s.tick.is_some_and(|k| k >= tick_lower && k <= tick_upper);
         }
         s.tick.is_some_and(|k| k >= tick_lower && k < tick_upper)
     };
@@ -439,5 +439,48 @@ mod pairing_tests {
                 .map(|e| (e.tx_index, &e.details["burn_tx_index"]))
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// LB bins are inclusive and the legacy Swap carries the active bin id.
+    #[test]
+    fn lb_bin_swap_inside_range_pairs() {
+        let bin_fact = |tx_index: u64, is_mint: bool| {
+            let mut j = jit(tx_index, is_mint);
+            j.bin_amm = true;
+            j.tick_lower = 8_000;
+            j.tick_upper = 8_010;
+            j
+        };
+        let mut mint_tx = tx(0, ATK, true, vec![], vec![]);
+        mint_tx.jit.push(bin_fact(0, true));
+        let mut s = swap_at_tick(POOL_A, USDC, TOKA, 1_000, 1_100, 8_005);
+        s.amm = crate::explorer::types::Amm::Lb;
+        let mut burn_tx = tx(1, ATK, true, vec![s], vec![]);
+        burn_tx.jit.push(bin_fact(1, false));
+        let input = block(vec![mint_tx, burn_tx]);
+
+        let mut drops = super::super::drops::DropSink::new(input.block);
+        assert_eq!(classify_jit(&input, &mut drops).len(), 1);
+    }
+
+    #[test]
+    fn lb_bin_swap_outside_range_does_not_pair() {
+        let bin_fact = |tx_index: u64, is_mint: bool| {
+            let mut j = jit(tx_index, is_mint);
+            j.bin_amm = true;
+            j.tick_lower = 8_000;
+            j.tick_upper = 8_010;
+            j
+        };
+        let mut mint_tx = tx(0, ATK, true, vec![], vec![]);
+        mint_tx.jit.push(bin_fact(0, true));
+        let mut s = swap_at_tick(POOL_A, USDC, TOKA, 1_000, 1_100, 9_000);
+        s.amm = crate::explorer::types::Amm::Lb;
+        let mut burn_tx = tx(1, ATK, true, vec![s], vec![]);
+        burn_tx.jit.push(bin_fact(1, false));
+        let input = block(vec![mint_tx, burn_tx]);
+
+        let mut drops = super::super::drops::DropSink::new(input.block);
+        assert!(classify_jit(&input, &mut drops).is_empty());
     }
 }

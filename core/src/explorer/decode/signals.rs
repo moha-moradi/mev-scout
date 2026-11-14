@@ -1,4 +1,4 @@
-//! Oracle, reserve, keeper, epoch, GMX, and ERC-4337 signal decoders.
+//! Oracle, reserve, keeper, epoch, and GMX signal decoders.
 use crate::utils::{abi_word_address, topic_address};
 use alloy::primitives::{B256, U256};
 
@@ -7,12 +7,10 @@ use crate::chain::events::{
     CHAINLINK_ANSWER_UPDATED_TOPIC, CHAINLINK_LOG_TRIGGERED_TOPIC,
     CHAINLINK_UPKEEP_PERFORMED_TOPIC, GELATO_EXEC_SUCCESS_TOPIC, GMX_ADL_STATE_UPDATED_HASH,
     GMX_LIQUIDATE_POSITION_HASH, GMX_POSITION_IMPACT_POOL_DISTRIBUTED_HASH, NOTIFY_REWARD_TOPIC,
-    USER_OPERATION_EVENT_TOPIC,
 };
 use crate::data::LogData;
 use crate::explorer::types::{
     EpochRewardFact, GmxEventFact, KeeperFact, OracleUpdateFact, RateCacheFact, ReserveDataFact,
-    UserOpFact,
 };
 
 /// Decode Chainlink AggregatorV3 `AnswerUpdated` (plan P1.4 / mode A/B).
@@ -184,24 +182,5 @@ pub fn decode_gmx_event(log: &LogData) -> Option<GmxEventFact> {
         log_index: 0,
         emitter: log.address,
         kind,
-    })
-}
-
-/// Decode ERC-4337 EntryPoint `UserOperationEvent` (plan P3.11 /).
-pub fn decode_user_op(log: &LogData) -> Option<UserOpFact> {
-    let topic0 = *log.topics.first()?;
-    if topic0 != *USER_OPERATION_EVENT_TOPIC || log.topics.len() < 4 || log.data.len() < 128 {
-        return None;
-    }
-    // data: nonce, success, actualGasCost, actualGasUsed
-    let success_word = U256::from_be_slice(&log.data[32..64]);
-    Some(UserOpFact {
-        tx_index: 0,
-        log_index: 0,
-        entry_point: log.address,
-        sender: topic_address(log.topics[2]),
-        paymaster: topic_address(log.topics[3]),
-        actual_gas_cost: U256::from_be_slice(&log.data[64..96]),
-        success: !success_word.is_zero(),
     })
 }
