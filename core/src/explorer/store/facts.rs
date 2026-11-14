@@ -6,6 +6,15 @@ use alloy::primitives::{Address, U256};
 use super::pnl::{annotate_event_with_volume, PersistedOp};
 use super::{BlockFactsInput, ExplorerStore, PendingLabels};
 
+fn dedupe_pending_labels(events: &[crate::explorer::types::MevEvent]) -> PendingLabels {
+    events
+        .iter()
+        .map(|ev| (ev.searcher, ev.contract, ev.block))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 impl ExplorerStore {
     /// Persist Chainlink answers for mode-B pre-poke divergence (plan P1.4).
     pub fn record_oracle_answers(
@@ -199,10 +208,7 @@ impl ExplorerStore {
                 )
             })
             .collect();
-        let pending_labels: PendingLabels = events
-            .iter()
-            .map(|ev| (ev.searcher, ev.contract, ev.block))
-            .collect();
+        let pending_labels = dedupe_pending_labels(events);
         let inserted = ops.len();
 
         let tx = self.conn.unchecked_transaction()?;
@@ -398,5 +404,70 @@ impl ExplorerStore {
             }
         }
         Ok(inserted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::explorer::test_fixtures::{ATK, POOL_A, USDC, VICTIM};
+    use crate::explorer::types::{Confidence, MevEvent, MevKind};
+    use alloy::primitives::{B256, U256};
+
+    fn event(
+        block: u64,
+        searcher: Address,
+        contract: Option<Address>,
+    ) -> MevEvent {
+        MevEvent {
+            block,
+            ts: 1_700_000_000,
+            tx_index: 0,
+            tx_hash: B256::from([0u8; 32]),
+            kind: MevKind::ArbAtomic,
+            searcher,
+            contract,
+            pools: vec![POOL_A],
+            profit_token: Some(USDC),
+            profit_amount: Some(U256::from(1)),
+            profit_tokens: vec![],
+            profit_usd: None,
+            gas_cost_wei: U256::from(1),
+            flashloan_fee_wei: None,
+            flashloan_fee_token: None,
+            confidence: Confidence::Exact,
+            victim_hashes: vec![],
+            details: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn dedupe_pending_labels_collapses_repeated_tuples() {
+        let a = event(100, ATK, Some(VICTIM));
+        let b = event(100, ATK, Some(VICTIM));
+        let c = event(100, ATK, None);
+        let d = event(100, VICTIM, Some(USDC));
+        let out = dedupe_pending_labels(&[a, b, c, d]);
+
+        // Two identical (searcher, contract, block) ops become one label tuple;
+        // the distinct tuples remain, in deterministic (sorted) order.
+        assert_eq!(out.len(), 3);
+        assert!(
+            out.iter()
+                .all(|(eoa, _, block)| *block == 100 && (*eoa == ATK || *eoa == VICTIM))
+        );
+        assert!(out.windows(2).all(|w| w[0] <= w[1]));
+    }
+
+    #[test]
+    fn dedupe_pending_labels_keeps_distinct_blocks_and_searchers() {
+        let a = event(100, ATK, Some(VICTIM));
+        let a2 = a.clone();
+        let b = event(200, ATK, Some(VICTIM));
+        let c = event(100, VICTIM, None);
+        let out = dedupe_pending_labels(&[a, b, c, a2]);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[2].1, None);
     }
 }
