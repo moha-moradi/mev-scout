@@ -278,16 +278,25 @@ pub fn reduce(
     let actors = reduce_actors(ops, labels, caps);
     let pools = reduce_pools(ops);
     let tokens = reduce_tokens(ops);
-    let (tag_facets, reason_facets, untagged_ops) = reduce_facets(ops, catalogue_tags);
+    let details: Vec<ParsedDetails> = ops
+        .iter()
+        .map(|o| ParsedDetails::from_details(o.details_json.as_deref()))
+        .collect();
+    let (tag_facets, reason_facets, untagged_ops) = reduce_facets(ops, &details, catalogue_tags);
     let strategy_economics = reduce_strategy_economics(ops);
     let strategy_series = reduce_strategy_series(ops, window, bucket_secs);
     let scatter_cap = max_ops.max(2_000);
-    let scatter_points = reduce_scatter_points(ops, scatter_cap);
-    let op_index = build_op_index(ops);
+    let scatter_points = reduce_scatter_points(ops, &details, scatter_cap);
+    let op_index = build_op_index(ops, &details);
 
     let ops_total = ops.len();
     let emit_ops = ops.len().min(max_ops);
-    let events: Vec<EventRow> = ops.iter().take(emit_ops).map(event_row).collect();
+    let events: Vec<EventRow> = ops
+        .iter()
+        .zip(details.iter())
+        .take(emit_ops)
+        .map(|(o, p)| event_row(o, p))
+        .collect();
     let evidence_n = emit_ops.min(max_evidence);
     let evidence: Vec<OpEvidence> = ops
         .iter()
@@ -439,30 +448,32 @@ fn reduce_strategy_series(
         .collect()
 }
 
-fn reduce_scatter_points(ops: &[OpRecord], max_points: usize) -> Vec<ScatterPoint> {
+fn reduce_scatter_points(
+    ops: &[OpRecord],
+    details: &[ParsedDetails],
+    max_points: usize,
+) -> Vec<ScatterPoint> {
     ops.iter()
+        .zip(details.iter())
         .take(max_points)
-        .map(|o| {
-            let volume_partial = details_has_token(o.details_json.as_deref(), "VOLUME_PARTIAL");
-            ScatterPoint {
-                id: o.id,
-                tx_hash: o.tx_hash.clone(),
-                ts: o.ts,
-                slice_key: slice_key(&o.kind, o.subkind.as_deref()),
-                confidence: o.confidence.clone(),
-                tags: details_tags(o.details_json.as_deref()),
-                net_profit_usd: if o.excluded_from_net.unwrap_or(false) {
-                    None
-                } else {
-                    o.net_profit_usd
-                },
-                volume_usd: o.volume_usd,
-                volume_partial,
-                priced: o.profit_usd.is_some(),
-                eoa: o.eoa.clone(),
-                contract: o.contract.clone(),
-                block_number: o.block_number,
-            }
+        .map(|(o, p)| ScatterPoint {
+            id: o.id,
+            tx_hash: o.tx_hash.clone(),
+            ts: o.ts,
+            slice_key: slice_key(&o.kind, o.subkind.as_deref()),
+            confidence: o.confidence.clone(),
+            tags: p.tags.clone(),
+            net_profit_usd: if o.excluded_from_net.unwrap_or(false) {
+                None
+            } else {
+                o.net_profit_usd
+            },
+            volume_usd: o.volume_usd,
+            volume_partial: p.has_token("VOLUME_PARTIAL"),
+            priced: o.profit_usd.is_some(),
+            eoa: o.eoa.clone(),
+            contract: o.contract.clone(),
+            block_number: o.block_number,
         })
         .collect()
 }
@@ -475,12 +486,12 @@ fn conf_code(confidence: &str) -> u64 {
     }
 }
 
-fn op_flags(o: &OpRecord) -> u32 {
+fn op_flags(o: &OpRecord, p: &ParsedDetails) -> u32 {
     let mut f = 0u32;
     if o.excluded_from_net.unwrap_or(false) {
         f |= FLAG_EXCLUDED_FROM_NET;
     }
-    if details_has_token(o.details_json.as_deref(), "VOLUME_PARTIAL") {
+    if p.has_token("VOLUME_PARTIAL") {
         f |= FLAG_VOLUME_PARTIAL;
     }
     if o.usd_approximate.unwrap_or(false) {
@@ -525,7 +536,7 @@ impl Intern {
     }
 }
 
-fn build_op_index(ops: &[OpRecord]) -> OpIndex {
+fn build_op_index(ops: &[OpRecord], details: &[ParsedDetails]) -> OpIndex {
     let mut slices = Intern::new();
     let mut actors = Intern::new();
     let mut eoas = Intern::new();
@@ -536,7 +547,7 @@ fn build_op_index(ops: &[OpRecord]) -> OpIndex {
     let mut tx = Intern::new();
     let mut rows = Vec::with_capacity(ops.len());
 
-    for o in ops {
+    for (o, p) in ops.iter().zip(details.iter()) {
         let slice_id = slices.get(&slice_key(&o.kind, o.subkind.as_deref()));
         let actor_id = actors.get(&o.competitor());
         let eoa_id = eoas.get(&o.eoa);
@@ -546,7 +557,8 @@ fn build_op_index(ops: &[OpRecord]) -> OpIndex {
             .filter(|c| !c.is_empty())
             .map(|c| contracts.get(c));
         let tx_id = tx.get(&o.tx_hash);
-        let tag_ids: Vec<serde_json::Value> = details_tags(o.details_json.as_deref())
+        let tag_ids: Vec<serde_json::Value> = p
+            .tags
             .iter()
             .map(|t| serde_json::json!(tags.get(t)))
             .collect();
@@ -575,7 +587,7 @@ fn build_op_index(ops: &[OpRecord]) -> OpIndex {
             o.ts,
             slice_id,
             conf_code(&o.confidence),
-            op_flags(o),
+            op_flags(o, p),
             actor_id,
             eoa_id,
             contract_id
@@ -614,41 +626,76 @@ fn opt_f64_json(v: Option<f64>) -> serde_json::Value {
     }
 }
 
-fn details_tags(details_json: Option<&str>) -> Vec<String> {
-    let Some(raw) = details_json.filter(|s| !s.is_empty()) else {
-        return Vec::new();
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return Vec::new();
-    };
-    v.get("tags")
-        .and_then(|t| t.as_array())
-        .map(|arr| {
-            let mut seen = HashSet::new();
-            arr.iter()
-                .filter_map(|x| x.as_str().filter(|s| !s.trim().is_empty()))
-                .filter(|s| seen.insert(*s))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+/// Pre-parsed `details_json` for one op. The details are parsed exactly once
+/// per op in `reduce` and this struct is passed to every consumer, so no
+/// repeated JSON parsing happens (P2). Malformed or empty JSON yields an empty
+/// struct — the old substring fallback on bad JSON is dropped.
+struct ParsedDetails {
+    /// `details.tags`, deduped in first-appearance order.
+    tags: Vec<String>,
+    /// `details.reasons`, deduped in first-appearance order.
+    reasons: Vec<String>,
+    /// Union of every string in `tags`, `reasons`, and `pricing_issues`; the
+    /// set "does `needle` appear in details" checks against.
+    tokens: HashSet<String>,
+    /// `details.pnl_basis`, when present.
+    pnl_basis: Option<String>,
 }
 
-fn details_has_token(details_json: Option<&str>, needle: &str) -> bool {
-    let Some(raw) = details_json.filter(|s| !s.is_empty()) else {
-        return false;
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
-        return raw.contains(needle);
-    };
-    for key in ["tags", "reasons", "pricing_issues"] {
-        if let Some(arr) = v.get(key).and_then(|x| x.as_array()) {
-            if arr.iter().any(|x| x.as_str() == Some(needle)) {
-                return true;
-            }
+impl ParsedDetails {
+    fn empty() -> Self {
+        Self {
+            tags: Vec::new(),
+            reasons: Vec::new(),
+            tokens: HashSet::new(),
+            pnl_basis: None,
         }
     }
-    false
+
+    fn from_details(details_json: Option<&str>) -> Self {
+        let Some(raw) = details_json.filter(|s| !s.is_empty()) else {
+            return Self::empty();
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return Self::empty();
+        };
+        let mut tags = Vec::new();
+        let mut reasons = Vec::new();
+        let mut seen_tags = HashSet::new();
+        let mut seen_reasons = HashSet::new();
+        let mut tokens = HashSet::new();
+        for key in ["tags", "reasons", "pricing_issues"] {
+            if let Some(arr) = v.get(key).and_then(|x| x.as_array()) {
+                for x in arr {
+                    let Some(s) = x.as_str() else { continue };
+                    if s.trim().is_empty() {
+                        continue;
+                    }
+                    tokens.insert(s.to_string());
+                    if key == "tags" && seen_tags.insert(s.to_string()) {
+                        tags.push(s.to_string());
+                    }
+                    if key == "reasons" && seen_reasons.insert(s.to_string()) {
+                        reasons.push(s.to_string());
+                    }
+                }
+            }
+        }
+        Self {
+            tags,
+            reasons,
+            tokens,
+            pnl_basis: v
+                .get("pnl_basis")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        }
+    }
+
+    /// Replaces the old `details_has_token` (substring fallback removed).
+    fn has_token(&self, needle: &str) -> bool {
+        self.tokens.contains(needle)
+    }
 }
 
 fn reduce_kpi(ops: &[OpRecord], caps: &StoreCaps) -> KpiPanel {
@@ -1077,6 +1124,7 @@ fn reduce_tokens(ops: &[OpRecord]) -> Vec<TokenRow> {
 
 fn reduce_facets(
     ops: &[OpRecord],
+    details: &[ParsedDetails],
     catalogue: &HashSet<String>,
 ) -> (Vec<FacetRow>, Vec<FacetRow>, i64) {
     fn bump(map: &mut HashMap<String, (i64, f64, f64)>, key: &str, o: &OpRecord) {
@@ -1095,30 +1143,16 @@ fn reduce_facets(
     let mut tags: HashMap<String, (i64, f64, f64)> = HashMap::new();
     let mut reasons: HashMap<String, (i64, f64, f64)> = HashMap::new();
     let mut untagged_ops = 0;
-    for o in ops {
-        let op_tags = details_tags(o.details_json.as_deref());
-        if op_tags.is_empty() {
+    for (o, p) in ops.iter().zip(details.iter()) {
+        if p.tags.is_empty() {
             untagged_ops += 1;
         }
-        for t in &op_tags {
+        for t in &p.tags {
             bump(&mut tags, t, o);
         }
-        // Facets need only the details arrays, not routes or enriched evidence.
-        if let Some(details) = o
-            .details_json
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-        {
-            if let Some(arr) = details.get("reasons").and_then(|v| v.as_array()) {
-                let mut seen = HashSet::new();
-                for r in arr
-                    .iter()
-                    .filter_map(|v| v.as_str())
-                    .filter(|s| seen.insert(*s))
-                {
-                    bump(&mut reasons, r, o);
-                }
-            }
+        // Facets need only the details arrays, which `ParsedDetails` pre-extracted.
+        for r in &p.reasons {
+            bump(&mut reasons, r, o);
         }
     }
     let to_rows = |map: HashMap<String, (i64, f64, f64)>, cat: &HashSet<String>| {
@@ -1142,17 +1176,7 @@ fn reduce_facets(
     )
 }
 
-fn event_row(o: &OpRecord) -> EventRow {
-    let details = o
-        .details_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
-    let pnl_basis = details.as_ref().and_then(|v| {
-        v.get("pnl_basis")
-            .and_then(|b| b.as_str())
-            .map(str::to_string)
-    });
-    let tags = details_tags(o.details_json.as_deref());
+fn event_row(o: &OpRecord, p: &ParsedDetails) -> EventRow {
     EventRow {
         id: o.id,
         block_number: o.block_number,
@@ -1172,8 +1196,8 @@ fn event_row(o: &OpRecord) -> EventRow {
         volume_usd: o.volume_usd,
         detector: o.detector.clone(),
         excluded_from_net: o.excluded_from_net.unwrap_or(false),
-        pnl_basis,
-        tags,
+        pnl_basis: p.pnl_basis.clone(),
+        tags: p.tags.clone(),
     }
 }
 
@@ -1406,7 +1430,7 @@ mod tests {
             Some(r#"{"tags":["VOLUME_PARTIAL"]}"#),
             None,
         )];
-        let pts = reduce_scatter_points(&ops, 100);
+        let pts = reduce_scatter_points(&ops, &parsed_details(&ops), 100);
         assert_eq!(pts.len(), 1);
         assert_eq!(pts[0].eoa, "0xeoa7");
         assert_eq!(pts[0].contract.as_deref(), Some("0xcontract"));
@@ -1446,7 +1470,7 @@ mod tests {
                 None,
             ),
         ];
-        let idx = build_op_index(&ops);
+        let idx = build_op_index(&ops, &parsed_details(&ops));
         assert_eq!(idx.rows.len(), 2);
         assert!(idx.slices.iter().any(|s| s == "jit"));
         assert!(idx.slices.iter().any(|s| s == "utility/claim_and_sell"));
@@ -1467,6 +1491,12 @@ mod tests {
             has_ops_natural_key: false,
             tables: vec![],
         }
+    }
+
+    fn parsed_details(ops: &[OpRecord]) -> Vec<ParsedDetails> {
+        ops.iter()
+            .map(|o| ParsedDetails::from_details(o.details_json.as_deref()))
+            .collect()
     }
 
     /// Numerator and denominator come from the same eligible cohort; known
