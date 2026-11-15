@@ -212,7 +212,14 @@ pub fn has_closed_cycle(edges: &[(Address, Address, Address)]) -> bool {
     find_closed_cycle(edges).is_some()
 }
 
-/// First closed walk: `(anchor_token, tokens_on_walk)`.
+/// Hard cap on the number of edges in a closed walk. Atomic arbs are short
+/// (usually 2–4 hops); the cap keeps DFS bounded on dense token graphs while
+/// still admitting longer multi-hop routes.
+const MAX_CYCLE_EDGES: usize = 8;
+
+/// First closed walk: `(anchor_token, tokens_on_walk)`. The walk is
+/// deterministic for a given edge order and at most [`MAX_CYCLE_EDGES`] edges
+/// long.
 ///
 /// `anchor` is the token the walk returns to (`edges[start].token_in`).
 /// Walk tokens are every `token_in` / `token_out` on the used edges.
@@ -287,7 +294,7 @@ fn dfs_cycle(
             }
             found = Some((start, tokens));
         }
-    } else {
+    } else if depth + 1 < MAX_CYCLE_EDGES {
         for e in 0..edges.len() {
             if !used[e] && edges[e].0 == next {
                 if let Some(walk) = dfs_cycle(edges, start_edge, e, used, depth + 1) {
@@ -422,6 +429,81 @@ mod tests {
         // Acyclic edge set (no path back to start) is rejected.
         let no_cycle = vec![(a, b, p1), (b, c, p2)];
         assert!(!has_closed_cycle(&no_cycle));
+    }
+
+    #[test]
+    fn cycle_search_is_depth_bounded() {
+        assert!(has_closed_cycle(&ring(MAX_CYCLE_EDGES)));
+        assert!(
+            !has_closed_cycle(&ring(MAX_CYCLE_EDGES + 1)),
+            "a cycle longer than MAX_CYCLE_EDGES must not be walked"
+        );
+        // Acyclic chain of ten edges terminates without finding a cycle.
+        let chain: Vec<_> = (0..10)
+            .map(|i| (token(i, 0xC0), token(i + 1, 0xC0), token(i, 0xD0)))
+            .collect();
+        assert!(!has_closed_cycle(&chain));
+    }
+
+    #[test]
+    fn walk_tokens_cover_only_the_selected_cycle() {
+        let (a, b, c, d) = (token(1, 0), token(2, 0), token(3, 0), token(4, 0));
+        let edges = [
+            (a, b, token(1, 1)),
+            (b, a, token(2, 1)),
+            (a, c, token(3, 1)), // decorative branch: never returns to a
+            (c, d, token(4, 1)),
+        ];
+        let (anchor, tokens) = find_closed_cycle(&edges).expect("cycle");
+        assert_eq!(anchor, a);
+        let mut got: Vec<_> = tokens.into_iter().collect();
+        got.sort_unstable();
+        let mut want = vec![a, b];
+        want.sort_unstable();
+        assert_eq!(got, want, "unused edges must not leak into walk_tokens");
+    }
+
+    #[test]
+    fn cycle_selection_is_deterministic() {
+        let (a, b, c, d) = (token(1, 0), token(2, 0), token(3, 0), token(4, 0));
+        let edges = [
+            (a, b, token(1, 1)),
+            (b, a, token(2, 1)),
+            (c, d, token(3, 1)),
+            (d, c, token(4, 1)),
+        ];
+        let first = sorted_cycle(&edges);
+        for _ in 0..8 {
+            assert_eq!(sorted_cycle(&edges), first);
+        }
+    }
+
+    fn token(i: u8, salt: u8) -> Address {
+        let mut a = [0u8; 20];
+        a[0] = salt;
+        a[1] = i;
+        Address::from(a)
+    }
+
+    /// Token ring: edge `i` goes `i -> i+1` over its own pool.
+    fn ring(n: usize) -> Vec<(Address, Address, Address)> {
+        (0..n)
+            .map(|i| {
+                (
+                    token(i as u8, 0xA0),
+                    token(((i + 1) % n) as u8, 0xA0),
+                    token(i as u8, 0xB0),
+                )
+            })
+            .collect()
+    }
+
+    fn sorted_cycle(edges: &[(Address, Address, Address)]) -> Option<(Address, Vec<Address>)> {
+        find_closed_cycle(edges).map(|(anchor, tokens)| {
+            let mut v: Vec<_> = tokens.into_iter().collect();
+            v.sort_unstable();
+            (anchor, v)
+        })
     }
 
     #[test]
