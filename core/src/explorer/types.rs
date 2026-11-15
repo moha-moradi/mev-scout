@@ -164,9 +164,14 @@ pub struct MevEvent {
     pub profit_token: Option<Address>,
     /// Net profit amount of `profit_token` (pre-gas), raw integer units.
     pub profit_amount: Option<U256>,
-    /// All positive post-netting residuals, `(token, net)` in
-    /// deterministic order. Persist USD-sums across these while
+    /// Tokens whose USD is summed at persist time, `(token, net)` in
+    /// deterministic order. Persist USD-sums across exactly these entries while
     /// `profit_token`/`profit_amount` remain the display-primary pair.
+    ///
+    /// For arbs this holds the selected profit token only; other positive
+    /// residuals live in `details.other_residuals` and are deliberately not
+    /// summed, so unrelated inbound flow cannot inflate the arb's USD. `Skim`
+    /// may carry several tokens.
     pub profit_tokens: Vec<(Address, U256)>,
     /// USD value of the profit when pricing was available.
     pub profit_usd: Option<f64>,
@@ -572,6 +577,19 @@ mod kind_contract_tests {
         // Old DB rows are rewritten on migration; the alias keeps stale CLI
         // flags and corpus strings readable.
         assert_eq!(MevKind::parse("unknown"), Some(MevKind::Utility));
+    }
+
+    #[test]
+    fn retired_kinds_are_never_emitted() {
+        // The schema CHECK constraints still accept these labels for old DBs,
+        // but no `MevKind` may ever write them again.
+        for legacy in ["sandwich", "frontrun", "backrun", "jit_arb"] {
+            assert!(
+                MevKind::ALL.iter().all(|k| k.as_str() != legacy),
+                "{legacy} is legacy-only and must not be emittable"
+            );
+            assert_eq!(MevKind::parse(legacy), None);
+        }
     }
 
     #[test]

@@ -7,7 +7,9 @@
 //! made" (pattern classification over realized transactions + profit
 //! attribution from token balance deltas).
 //!
-//! Pipeline: `ingest` (block+receipt fetch, reorg-aware) → `decode` (swaps,
+//! Pipeline: `ingest` (block+receipt fetch; block hashes are stored for reorg
+//! detection, but the backfill path treats its range as finalized and never
+//! unwinds) → `decode` (swaps,
 //! transfers, liquidation facts) → `classify` (per-block pattern passes) →
 //! `profit` (balance-delta accounting, gas, USD) → `store` (SQLite facts) →
 //! `query` (revenue-report / index CLI surface).

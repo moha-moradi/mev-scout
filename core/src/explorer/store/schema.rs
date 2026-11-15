@@ -187,6 +187,8 @@ fn migrate_v8_utility_subkind(conn: &Connection) -> anyhow::Result<()> {
           tx_index INTEGER,
           tx_hash TEXT NOT NULL,
           ts INTEGER NOT NULL,
+          -- legacy-only: 'sandwich','frontrun','backrun','jit_arb' appear only
+          -- in old DBs; new code never writes them (see types::MevKind).
           kind TEXT NOT NULL CHECK(kind IN
             ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','skim','utility')),
           eoa TEXT NOT NULL,
@@ -416,6 +418,8 @@ const SCHEMA_V1: &str = "
               tx_index INTEGER,
               tx_hash TEXT NOT NULL,
               ts INTEGER NOT NULL,
+              -- legacy-only: 'sandwich','frontrun','backrun','jit_arb' appear
+              -- only in old DBs; new code never writes them (see types::MevKind).
               kind TEXT NOT NULL CHECK(kind IN
                 ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','skim','unknown')),
               eoa TEXT NOT NULL,
@@ -732,6 +736,8 @@ impl ExplorerStore {
               tx_index INTEGER,
               tx_hash TEXT NOT NULL,
               ts INTEGER NOT NULL,
+              -- legacy-only: 'sandwich','frontrun','backrun','jit_arb' appear
+              -- only in old DBs; new code never writes them (see types::MevKind).
               kind TEXT NOT NULL CHECK(kind IN
                 ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','skim','unknown')),
               eoa TEXT NOT NULL,
@@ -918,6 +924,8 @@ mod tests {
                    tx_index INTEGER,
                    tx_hash TEXT NOT NULL,
                    ts INTEGER NOT NULL,
+                   -- legacy-only: 'sandwich','frontrun','backrun','jit_arb'
+                   -- appear only in old DBs; new code never writes them.
                    kind TEXT NOT NULL CHECK(kind IN
                      ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','skim','unknown')),
                    eoa TEXT NOT NULL,

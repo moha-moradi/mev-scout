@@ -327,7 +327,9 @@ pub(super) fn classify_atomic_arbs(
 
         // Anchor-token profit when the cycle returns the surplus in the start
         // token; otherwise the priority token that retained it. Extra positive
-        // residuals stay in details, not profit_tokens (USD-sum).
+        // residuals go to `details.other_residuals` and are intentionally kept
+        // out of `profit_tokens`, which persist USD-sums as-is (see
+        // `MevEvent::profit_tokens`).
         let profit_tokens: Vec<(Address, U256)> = vec![(profit_token, amount)];
         let other_positives: Vec<serde_json::Value> = ledger
             .positive_tokens(searcher)

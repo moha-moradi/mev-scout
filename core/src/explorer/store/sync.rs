@@ -76,6 +76,11 @@ impl ExplorerStore {
     }
     /// Remove classified blocks >= fork block (reorg unwind).
     ///
+    /// API is ready but has no production consumer: the only indexing path
+    /// (`run_range` backfill) assumes its range is finalized. A live indexing
+    /// path must compare [`Self::block_hash`] before inserting and call this
+    /// on a mismatch.
+    ///
     /// All deletes run in one transaction: a crash mid-unwind must never leave
     /// `mev_ops`/`transfers`/`txs` inconsistent with `blocks_classified`.
     /// `opportunities` and `paper_sessions`/`paper_fills` are deliberately NOT
@@ -139,6 +144,8 @@ impl ExplorerStore {
         Ok(())
     }
     /// Stored block hash for reorg detection.
+    ///
+    /// No production caller compares it yet; see [`Self::unwind_from`].
     pub fn block_hash(&self, block: u64) -> anyhow::Result<Option<String>> {
         let v = self
             .conn
