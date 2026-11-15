@@ -191,16 +191,17 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     let mut events: Vec<MevEvent> = Vec::new();
     let mut rejects: Vec<crate::explorer::RejectedCandidate> = Vec::new();
 
-    // Block-wide oracle / reserve facts (P1.1 / P1.4 co-block checks).
-    let block_oracle_owned: Vec<OracleUpdateFact> = input
+    // Block-wide oracle / reserve facts (P1.1 / P1.4 co-block checks). Borrow
+    // the per-tx facts instead of cloning them into block-wide vectors.
+    let block_oracle: Vec<&OracleUpdateFact> = input
         .txs
         .iter()
-        .flat_map(|t| t.oracle_updates.iter().cloned())
+        .flat_map(|t| t.oracle_updates.iter())
         .collect();
-    let block_reserve_owned: Vec<ReserveDataFact> = input
+    let block_reserve: Vec<&ReserveDataFact> = input
         .txs
         .iter()
-        .flat_map(|t| t.reserve_updates.iter().cloned())
+        .flat_map(|t| t.reserve_updates.iter())
         .collect();
     let epoch_reward_tokens: Vec<Address> = input
         .txs
@@ -210,10 +211,10 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
         .map(|e| e.reward_token)
         .collect();
     let epoch_venue_list: Vec<Address> = input.ctx.epoch_venue_pools.iter().copied().collect();
-    let block_rate_cache: Vec<RateCacheFact> = input
+    let block_rate_cache: Vec<&RateCacheFact> = input
         .txs
         .iter()
-        .flat_map(|t| t.rate_cache_updates.iter().cloned())
+        .flat_map(|t| t.rate_cache_updates.iter())
         .collect();
     let arb_tag_opts = ArbTagOpts {
         wrapped_native: input.ctx.wrapped_native,
@@ -229,8 +230,8 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
 
     // ── 1. Liquidation pass (exact, zero-heuristic) ─────────────────────
     let liq_ctx = LiqBlockCtx {
-        block_oracle_owned: &block_oracle_owned,
-        block_reserve_owned: &block_reserve_owned,
+        block_oracle: &block_oracle,
+        block_reserve: &block_reserve,
     };
     let mut drops = drops::DropSink::new(input.block);
     events.extend(classify_liquidations(input, &liq_ctx, &mut drops));

@@ -41,8 +41,8 @@ pub struct InterestEvidence {
 /// Evidence for the interest-accrual label; `None` when the label does not fire.
 pub fn interest_evidence(
     liq: &LiquidationFact,
-    reserves: &[ReserveDataFact],
-    oracle_updates: &[OracleUpdateFact],
+    reserves: &[&ReserveDataFact],
+    oracle_updates: &[&OracleUpdateFact],
     feed_to_asset: &HashMap<Address, Address>,
     lookback: Option<&InterestLookback>,
 ) -> Option<InterestEvidence> {
@@ -60,8 +60,8 @@ pub fn interest_evidence(
 fn same_block_interest(
     debt: Address,
     collateral: Address,
-    reserves: &[ReserveDataFact],
-    oracle_updates: &[OracleUpdateFact],
+    reserves: &[&ReserveDataFact],
+    oracle_updates: &[&OracleUpdateFact],
     feed_to_asset: &HashMap<Address, Address>,
 ) -> Option<InterestEvidence> {
     let rate = if debt.is_zero() {
@@ -136,7 +136,7 @@ fn lookback_interest(
 fn price_moved(
     debt: Address,
     collateral: Address,
-    oracle_updates: &[OracleUpdateFact],
+    oracle_updates: &[&OracleUpdateFact],
     feed_to_asset: &HashMap<Address, Address>,
 ) -> bool {
     if feed_to_asset.is_empty() {
@@ -198,8 +198,8 @@ mod tests {
 
     fn accrued(
         liq: &LiquidationFact,
-        reserves: &[ReserveDataFact],
-        oracle: &[OracleUpdateFact],
+        reserves: &[&ReserveDataFact],
+        oracle: &[&OracleUpdateFact],
         feeds: &HashMap<Address, Address>,
         lookback: Option<&InterestLookback>,
     ) -> bool {
@@ -227,19 +227,16 @@ mod tests {
     #[test]
     fn interest_when_reserve_updated_and_price_flat() {
         let feeds = HashMap::from([(FEED, DEBT), (OTHER_FEED, COLL)]);
-        assert!(accrued(&liq(), &[reserve(DEBT)], &[], &feeds, None,));
+        let r = reserve(DEBT);
+        assert!(accrued(&liq(), &[&r], &[], &feeds, None));
     }
 
     #[test]
     fn not_interest_when_relevant_feed_pokes() {
         let feeds = HashMap::from([(FEED, DEBT)]);
-        assert!(!accrued(
-            &liq(),
-            &[reserve(DEBT)],
-            &[oracle(FEED)],
-            &feeds,
-            None,
-        ));
+        let r = reserve(DEBT);
+        let o = oracle(FEED);
+        assert!(!accrued(&liq(), &[&r], &[&o], &feeds, None));
     }
 
     #[test]
@@ -252,13 +249,9 @@ mod tests {
     fn unrelated_feed_poke_still_interest() {
         let other_asset = address!("1111111111111111111111111111111111111111");
         let feeds = HashMap::from([(FEED, DEBT), (OTHER_FEED, other_asset)]);
-        assert!(accrued(
-            &liq(),
-            &[reserve(DEBT)],
-            &[oracle(OTHER_FEED)],
-            &feeds,
-            None,
-        ));
+        let r = reserve(DEBT);
+        let o = oracle(OTHER_FEED);
+        assert!(accrued(&liq(), &[&r], &[&o], &feeds, None));
     }
 
     #[test]

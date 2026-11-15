@@ -13,10 +13,11 @@ use crate::explorer::types::{
 use super::drops::DropSink;
 use super::BlockInput;
 
-/// Block-scoped oracle/reserve facts already gathered by `classify_block`.
+/// Block-scoped oracle/reserve facts already gathered by `classify_block`,
+/// borrowed from the block inputs so the hot path does not clone them.
 pub(super) struct LiqBlockCtx<'a> {
-    pub block_oracle_owned: &'a [OracleUpdateFact],
-    pub block_reserve_owned: &'a [ReserveDataFact],
+    pub block_oracle: &'a [&'a OracleUpdateFact],
+    pub block_reserve: &'a [&'a ReserveDataFact],
 }
 
 /// Passes 1 + 1a: exact liquidations and BuyCollateral discount capture.
@@ -26,8 +27,8 @@ pub(super) fn classify_liquidations(
     drops: &mut DropSink,
 ) -> Vec<MevEvent> {
     let mut events: Vec<MevEvent> = Vec::new();
-    let block_oracle_owned = ctx.block_oracle_owned;
-    let block_reserve_owned = ctx.block_reserve_owned;
+    let block_oracle = ctx.block_oracle;
+    let block_reserve = ctx.block_reserve;
     // ── 1. Liquidation pass (exact, zero-heuristic) ─────────────────────
     // Mode A: flash-loan atomic liq when same tx has FlashLoanFact
     // + LiquidationFact → tag `flash_loan_liq` (plan P0.1 / P2.3 routing).
@@ -82,15 +83,11 @@ pub(super) fn classify_liquidations(
             };
             // P1.4: Chainlink poke in this or a prior tx, before the
             // liquidation, for a feed mapped to debt/collateral.
-            let oracle_poke_block = oracle_poke_for_liq(
-                liq,
-                tx.tx_index,
-                block_oracle_owned,
-                &input.ctx.chainlink_feeds,
-            );
+            let oracle_poke_block =
+                oracle_poke_for_liq(liq, tx.tx_index, block_oracle, &input.ctx.chainlink_feeds);
             // P1.4 mode B: pre-poke divergence vs last stored answer (secondary).
             let oracle_pre_poke_divergence_bps = if oracle_poke_block {
-                block_oracle_owned.iter().find_map(|o| {
+                block_oracle.iter().find_map(|o| {
                     if !oracle_precedes(o, tx.tx_index, liq.log_index) {
                         return None;
                     }
@@ -110,8 +107,8 @@ pub(super) fn classify_liquidations(
             // P1.1: interest-accrual cause label (inferred; P&L stays O).
             let interest_evidence = interest_attr::interest_evidence(
                 liq,
-                block_reserve_owned,
-                block_oracle_owned,
+                block_reserve,
+                block_oracle,
                 &input.ctx.chainlink_feeds,
                 Some(&input.interest_lookback),
             );
@@ -305,7 +302,7 @@ fn oracle_precedes(update: &OracleUpdateFact, liq_tx_index: u64, liq_log_index: 
 fn oracle_poke_for_liq(
     liq: &LiquidationFact,
     liq_tx_index: u64,
-    updates: &[OracleUpdateFact],
+    updates: &[&OracleUpdateFact],
     feed_to_asset: &HashMap<Address, Address>,
 ) -> bool {
     if feed_to_asset.is_empty() {

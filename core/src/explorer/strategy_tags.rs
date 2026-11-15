@@ -170,8 +170,9 @@ pub struct ArbTagOpts<'a> {
     pub epoch_reward_tokens: &'a [Address],
     pub epoch_venue_pools: &'a [Address],
     pub gmx_adl_signal: bool,
-    /// Same-block Balancer TokenRateCacheUpdated facts (plan P3.2).
-    pub rate_cache_updates: &'a [RateCacheFact],
+    /// Same-block Balancer TokenRateCacheUpdated facts (plan P3.2), borrowed
+    /// from the block inputs rather than cloned.
+    pub rate_cache_updates: &'a [&'a RateCacheFact],
 }
 
 /// P3.13 — same-tx airdrop/claim mint (Transfer from zero) sold via a swap.
@@ -259,7 +260,8 @@ mod tests {
             pool: POOL,
             rate: U256::from(1),
         }];
-        o.rate_cache_updates = &updates;
+        let refs = [&updates[0]];
+        o.rate_cache_updates = &refs;
         let tags = arb_strategy_tags(&[s0, s1], &o);
         assert!(!tags.contains(&"rate_provider_staleness"));
     }
