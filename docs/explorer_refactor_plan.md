@@ -97,7 +97,7 @@
 | T0.1 | ✅ | baseline در پیام commitهای `d2561bb`/`ed00418` ثبت شد (546 تست lib سبز، clippy پاک) |
 | A1 | ✅ | لیکوییدیشن هرگز `exact` نیست؛ `min_confidence` + `pnl_basis = "O"` |
 | A2 | ✅ | `resolved_cycle_edges` مشترک arb/legs؛ فقط حداقلِ مجازِ پلن |
-| A3 | 🟡 | گام ۱ (bound = ۸ + deterministic) انجام شد؛ گام ۲ (انتخاب سودآورترین cycle) منتظر benchmark frozen |
+| A3 | 🟡 | گام ۱ (bound = ۸ + deterministic) انجام شد. گام ۲ (انتخاب سودآورترین cycle) پیشنهاد نمی‌شود: benchmark نشان داد recall سربه‌سر است و این گام فقط انتساب/اعداد را عوض می‌کند. |
 | A4 | ✅ | قرارداد مستند + `details.other_residuals_usd` فقط برای audit؛ گزینهٔ کامل رد شد |
 | A5 | ✅ | ادعای fallback حذف شد؛ `MULTI_ASSET_PRICING` تنها سیگنال است |
 | A6 | ✅ | `Address::ZERO` از `searcher_candidates` حذف شد |
@@ -107,7 +107,7 @@
 | P3 | ✅ | `OpIndexRow` تایپ‌دار (۱۷ عنصر، آرایه حفظ شد) |
 | P4 | ✅ | HashMap استاتیک topic0 + تست پوشش ۴۷ topic |
 | P5 | ✅ | chunk ۵۰تایی + concurrency ۴؛ باگ E0515 هم رفع شد |
-| P6 | ✅ | قیمت native همان ساعت بلاک + cache ساعتی؛ fallback با `NATIVE_PRICE_APPROX` |
+| P6 | ✅ | قیمت native همان ساعت بلاک + cache ساعتی؛ fallback با `NATIVE_PRICE_APPROX`. در benchmark: صفر op تقریبی. |
 | P7a | ✅ | `EXISTS` |
 | P7b | ✅ | `LEFT JOIN` داخل CTE (invariant جدول `blocks` حفظ شد) |
 | P7c | ⛔ رد | `route_json` برای انتساب op دقیق‌تر از `swaps` است؛ با تصمیم مالک رد شد |
@@ -119,9 +119,26 @@
 | R1 | ✅ | خطای persist در pipelined → warn/skip/refill |
 | R3 | 🟡 | فقط کامنت (wiring انجام نشد) |
 
-> فقط `A3` گام ۲ باز است و به اجرای benchmark روی پنجرهٔ frozen
-> `99833048..=99836394` با RPC کامل نیاز دارد. `P7c`، `M3` و `R2` طبق
-> تصمیم مالک اجرا نمی‌شوند.
+> فقط `A3` گام ۲ باز است و اجرای آن پیشنهاد نمی‌شود. `P7c`، `M3` و `R2`
+> طبق تصمیم مالک اجرا نمی‌شوند. تصمیم نهایی A3 گام ۲ با مالک است.
+
+### نتیجهٔ benchmark پس از A3 گام ۱ + P6 (۲۰۲۶-۱۱-۱۵)
+
+پنجرهٔ frozen `99833048..=99836394`، ۳٬۳۴۷ بلاک، RPC کامل، DB از snapshot
+قبل از اجرا بازسازی شد. فایل‌های نتیجه: `results/compare_after_a3_p6_fixed.json`،
+`results/index_after_a3_p6_fixed.log`.
+
+| سنجه | baseline (Nov 10) | این اجرا | تفسیر |
+|---|---|---|---|
+| recall arb (mevlive) | ۴۷/۴۷ | **۴۷/۴۷** | بدون افت؛ A3 bound و P6 روی تشخیص اثر منفی نداشتند |
+| arb_atomic ops | ۱۰۸ | **۱۰۸** | بدون تغییر |
+| utility ops | ۴۴ | ۰ | کلاسیفایر legacy bundler بعد از baseline حذف شد (commit `6401d54`) |
+| JIT ops | ۱۵ | ۴ | settled-JIT accounting بعد از baseline اضافه شد (`7837074`/`85439f0`/`feb4542`) |
+| ops با `NATIVE_PRICE_APPROX` | — | **۰** | quote تاریخی همان ساعت از Llama گرفته شد (۷.۸۲ دلار) |
+
+نکتهٔ ابزاری: هارنس `results/_reindex_compare.py` در `clear_window` جداول
+`jit_blocks`/`jit_open_positions`/`oracle_answers`/`reserve_rates` را پاک نمی‌کند؛
+برای rerun روی DB استفاده‌شده باید از snapshot تمیز شروع کرد.
 
 ---
 
