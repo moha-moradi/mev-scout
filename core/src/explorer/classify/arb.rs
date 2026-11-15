@@ -677,6 +677,17 @@ fn forwarded_recipient(
             .collect();
         holders.sort();
         holders.dedup();
+        // A positive holder financed by a third party is a bystander (a
+        // victim, fee address, or inventory hop), not the forwarded payee.
+        // Drop those *before* requiring a single recipient: one such holder
+        // must not hide the one funder-fed payee.
+        holders.retain(|recipient| {
+            let inbound: Vec<&TransferFact> = transfers
+                .iter()
+                .filter(|t| t.token == *token && t.to == *recipient && !t.amount.is_zero())
+                .collect();
+            !inbound.is_empty() && inbound.iter().all(|t| funders.contains(&t.from))
+        });
         if holders.len() != 1 {
             continue;
         }
@@ -685,19 +696,16 @@ fn forwarded_recipient(
         if swaps.iter().any(|s| s.owner == Some(recipient)) {
             continue;
         }
-        let inbound: Vec<&TransferFact> = transfers
-            .iter()
-            .filter(|t| t.token == *token && t.to == recipient && !t.amount.is_zero())
-            .collect();
-        if inbound.is_empty() || !inbound.iter().all(|t| funders.contains(&t.from)) {
-            continue;
-        }
         if tip_sinks.contains(&recipient) {
             return ForwardedLookup::TipSink;
         }
         // Prefer the contract (`to`) as forwarded_from when it sent; else EOA.
         let forwarded_from = to
-            .filter(|c| inbound.iter().any(|t| t.from == *c))
+            .filter(|c| {
+                transfers.iter().any(|t| {
+                    t.token == *token && t.to == recipient && t.from == *c && !t.amount.is_zero()
+                })
+            })
             .unwrap_or(from);
         if forwarded_from.is_zero() {
             continue;
@@ -1059,6 +1067,8 @@ mod attribution_tests {
     const POOL_C: Address = address!("3000000000000000000000000000000000000003");
     const BENEFICIARY: Address = address!("b000000000000000000000000000000000000001");
     const MINOR_BENEFICIARY: Address = address!("b000000000000000000000000000000000000002");
+    const BYSTANDER: Address = address!("d000000000000000000000000000000000000001");
+    const OTHER_PAYEE: Address = address!("d000000000000000000000000000000000000002");
     const TIP_RECIPIENT: Address = address!("c000000000000000000000000000000000000001");
     const FUNDER: Address = address!("5000000000000000000000000000000000000005");
 
@@ -1149,6 +1159,83 @@ mod attribution_tests {
         assert!(ev.details["tags"]
             .as_array()
             .is_some_and(|tags| tags.iter().any(|t| t.as_str() == Some("forwarded_profit"))));
+    }
+
+    /// A positive holder financed by an unrelated third party is a bystander,
+    /// not the forwarded payee: it must not hide the single funder-fed payee
+    /// (holdout regression: profit split between a payee and a fee address).
+    #[test]
+    fn third_party_holder_does_not_hide_forwarded_payee() {
+        let mut input = block(vec![tx_to(
+            0,
+            ATK,
+            EXEC,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, WNATIVE, 200, 50),
+                swap(POOL_C, WNATIVE, USDC, 40, 100),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, EXEC, 200),
+                transfer(2, TOKA, EXEC, POOL_B, 200),
+                transfer(3, WNATIVE, POOL_B, EXEC, 50),
+                transfer(4, WNATIVE, EXEC, BENEFICIARY, 10),
+                transfer(5, WNATIVE, EXEC, POOL_C, 40),
+                transfer(6, USDC, POOL_C, ATK, 100),
+                // Bystander: positive WNATIVE funded by a third party.
+                transfer(7, WNATIVE, FUNDER, BYSTANDER, 7),
+            ],
+        )]);
+        input.ctx.profit_policy.priority.push(WNATIVE);
+
+        let (ev, _) = arb_event(&input);
+        assert_eq!(ev.searcher, BENEFICIARY);
+        assert_eq!(ev.profit_token, Some(WNATIVE));
+        assert_eq!(ev.profit_amount, Some(U256::from(10u64)));
+        assert_eq!(ev.confidence, Confidence::Inferred);
+        assert!(ev.details["tags"]
+            .as_array()
+            .is_some_and(|tags| tags.iter().any(|t| t.as_str() == Some("forwarded_profit"))));
+    }
+
+    /// Two funder-fed payees keep the conservative rejection: no single
+    /// recipient can be attributed.
+    #[test]
+    fn two_funder_fed_payees_still_reject() {
+        let mut input = block(vec![tx_to(
+            0,
+            ATK,
+            EXEC,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, WNATIVE, 200, 50),
+                swap(POOL_C, WNATIVE, USDC, 40, 100),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, EXEC, 200),
+                transfer(2, TOKA, EXEC, POOL_B, 200),
+                transfer(3, WNATIVE, POOL_B, EXEC, 50),
+                transfer(4, WNATIVE, EXEC, BENEFICIARY, 5),
+                transfer(5, WNATIVE, EXEC, OTHER_PAYEE, 5),
+                transfer(6, WNATIVE, EXEC, POOL_C, 40),
+                transfer(7, USDC, POOL_C, ATK, 100),
+            ],
+        )]);
+        input.ctx.profit_policy.priority.push(WNATIVE);
+
+        let out = classify_block(&input);
+        assert!(
+            !out.events.iter().any(|e| e.kind == MevKind::ArbAtomic),
+            "two funder-fed payees must not be attributed to one"
+        );
+        assert!(out
+            .rejects
+            .iter()
+            .any(|r| r.reject_reason == "net_zero_searcher"));
     }
 
     /// Multi-router route: the searcher contract funds the first leg and the
