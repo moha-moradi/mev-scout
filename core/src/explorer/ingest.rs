@@ -917,7 +917,7 @@ pub async fn warm_quotes_for_tokens(
         let chain = cfg.chain;
         let mut collected = HashMap::new();
         let mut stream = futures::stream::iter(llama_token_chunks(&missing))
-            .map(|chunk| pricing::fetch_prices_llama(chain, ts, &chunk))
+            .map(|chunk| async move { pricing::fetch_prices_llama(chain, ts, &chunk).await })
             .buffer_unordered(LLAMA_CONCURRENCY);
         while let Some(result) = stream.next().await {
             match result {
