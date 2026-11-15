@@ -76,10 +76,11 @@ impl ExplorerStore {
     }
     /// Remove classified blocks >= fork block (reorg unwind).
     ///
-    /// API is ready but has no production consumer: the only indexing path
-    /// (`run_range` backfill) assumes its range is finalized. A live indexing
-    /// path must compare [`Self::block_hash`] before inserting and call this
-    /// on a mismatch.
+    /// Production callers reach this through [`Self::reconcile_block_hash`],
+    /// which the ingest path invokes before indexing a block whose stored hash
+    /// differs from the fetched canonical hash. The range backfill itself does
+    /// not proactively scan for reorgs (it treats its range as finalized), but
+    /// re-indexing a changed block never keeps stale facts or a stale hash.
     ///
     /// All deletes run in one transaction: a crash mid-unwind must never leave
     /// `mev_ops`/`transfers`/`txs` inconsistent with `blocks_classified`.
@@ -145,7 +146,7 @@ impl ExplorerStore {
     }
     /// Stored block hash for reorg detection.
     ///
-    /// No production caller compares it yet; see [`Self::unwind_from`].
+    /// Compared by [`Self::reconcile_block_hash`] before a re-index.
     pub fn block_hash(&self, block: u64) -> anyhow::Result<Option<String>> {
         let v = self
             .conn
@@ -157,6 +158,23 @@ impl ExplorerStore {
             .map(Some)
             .unwrap_or(None);
         Ok(v)
+    }
+
+    /// Compare the stored hash for `block` with the canonical hash and unwind
+    /// from it when they differ.
+    ///
+    /// Returns `true` when stale facts were removed (the block is now
+    /// unclassified and will be re-indexed). A missing row or a matching hash
+    /// is a no-op. Hex comparison is case-insensitive; both writers currently
+    /// use `{:#x}`, but an external canonical source may not.
+    pub fn reconcile_block_hash(&self, block: u64, canonical_hash: &str) -> anyhow::Result<bool> {
+        match self.block_hash(block)? {
+            Some(stored) if !stored.eq_ignore_ascii_case(canonical_hash) => {
+                self.unwind_from(block)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 }
 
@@ -215,6 +233,43 @@ mod tests {
         store.unwind_from(100).unwrap();
         assert!(!store.block_classified(100).unwrap());
         assert_eq!(rejected_count(&store, 100), 0);
+    }
+
+    #[test]
+    fn reconcile_block_hash_unwinds_only_on_mismatch() {
+        use alloy::primitives::B256;
+
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let stored = format!("{:#x}", B256::repeat_byte(0x11));
+        store
+            .conn
+            .execute(
+                "INSERT INTO blocks
+                   (block_number, block_hash, ts, base_fee_gwei, tx_count, indexed_at)
+                 VALUES(?1, ?2, 0, NULL, 0, 0)",
+                rusqlite::params![100i64, stored.clone()],
+            )
+            .unwrap();
+        store.mark_block_classified(100, 3).unwrap();
+
+        // Same hash: keep the block and its facts.
+        assert!(!store.reconcile_block_hash(100, &stored).unwrap());
+        assert!(store.block_classified(100).unwrap());
+        assert_eq!(
+            store.block_hash(100).unwrap().as_deref(),
+            Some(stored.as_str())
+        );
+
+        // Changed hash: unwind from the fork block so the block is re-indexed
+        // instead of silently keeping the abandoned-chain facts.
+        let canonical = format!("{:#x}", B256::repeat_byte(0x22));
+        assert!(store.reconcile_block_hash(100, &canonical).unwrap());
+        assert!(!store.block_classified(100).unwrap());
+        assert_eq!(store.block_hash(100).unwrap(), None);
+        assert_eq!(store.unclassified_blocks(100, 100).unwrap(), vec![100]);
+
+        // Missing row is a no-op and must not remove later blocks.
+        assert!(!store.reconcile_block_hash(100, &canonical).unwrap());
     }
 
     #[test]

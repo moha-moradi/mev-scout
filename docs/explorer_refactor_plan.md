@@ -101,7 +101,7 @@
 | A4 | ✅ | قرارداد مستند + `details.other_residuals_usd` فقط برای audit؛ گزینهٔ کامل رد شد |
 | A5 | ✅ | ادعای fallback حذف شد؛ `MULTI_ASSET_PRICING` تنها سیگنال است |
 | A6 | ✅ | `Address::ZERO` از `searcher_candidates` حذف شد |
-| A7/R2 | 🟡 | فقط doc (پیش‌فرض امن)؛ `unwind_from` هنوز مصرف‌کنندهٔ production ندارد |
+| A7/R2 | ✅ | hash guard وصل شد: `reconcile_block_hash` قبل از persist در `index_block`/`index_block_fetched`؛ بلاک با hash متفاوت unwind و دوباره index می‌شود. اسکن فعال reorg در range عمداً نیست (range finalized فرض می‌شود). |
 | P1 | ✅ | annotate روی Map، تک `to_string` |
 | P2 | ✅ | `ParsedDetails` یک‌بار per op؛ fallback زیررشته حذف شد |
 | P3 | ✅ | `OpIndexRow` تایپ‌دار (۱۷ عنصر، آرایه حفظ شد) |
@@ -117,9 +117,10 @@
 | M3 | ⛔ رد | هم‌پوشان با A2؛ یکسان‌سازی کامل ریسک تغییر رفتار داشت |
 | M4 | ✅ | کامنت legacy روی CHECKها + تست drift |
 | R1 | ✅ | خطای persist در pipelined → warn/skip/refill |
-| R3 | 🟡 | فقط کامنت (wiring انجام نشد) |
+| R3 | ✅ | hash تکراری در `blocks` دیگر stale نمی‌ماند؛ `reconcile_block_hash` قبل از `INSERT OR IGNORE` ردیف قدیمی را unwind می‌کند |
 
-> `P7c`، `M3`، `R2` و گام ۲ از `A3` طبق تصمیم مالک / شاهد عددی اجرا نمی‌شوند.
+> `P7c`، `M3` و گام ۲ از `A3` طبق تصمیم مالک / شاهد عددی اجرا نمی‌شوند. `A7/R2`
+> با یک گارد hash در مسیر re-index بسته شد؛ اسکن فعال reorg در backfill وجود ندارد.
 
 ### سنجش A3 گام ۲ (۲۰۲۶-۱۱-۱۵)
 
@@ -453,25 +454,26 @@ profit token را از دست نمی‌دهد. انتخاب «سودآورتری
 **فایل‌ها:** `core/src/explorer/mod.rs`، `core/src/explorer/ingest.rs`،
 `core/src/explorer/store/sync.rs`، `core/src/explorer/store/facts.rs`.
 
-**وضعیت فعلی:**
-- doc در `mod.rs` (حدود خط ۱۰) و `ingest.rs` (حدود خط ۶) ادعای «reorg-aware via
-  stored block hashes» دارد.
-- اما `unwind_from` / `block_hash` فقط در تست‌ها صدا زده می‌شوند. تنها مسیر
-  production، `cli/src/commands/explorer/backfill.rs` است که همهٔ بلاک‌ها را
-  finalized فرض می‌کند.
-- `insert_block_facts` از `INSERT OR IGNORE INTO blocks` استفاده می‌کند
-  (`facts.rs` حدود خط ۲۱۱)، پس reorg با همان شماره، hash قدیمی را نگه می‌دارد.
+**وضعیت اجرا:** گارد reorg پیاده شد. `reconcile_block_hash` قبل از persist در
+`index_block`/`index_block_fetched` صدا زده می‌شود؛ اگر hash ذخیره‌شده با hash
+کانونیکال متفاوت باشد، `unwind_from` همان بلاک (و بلاک‌های بعد) را پاک می‌کند و
+بلاک دوباره index می‌شود. اسکن فعال reorg در `run_range` وجود ندارد چون range
+همچنان finalized فرض می‌شود و مسیر live جداگانه‌ای در کد نیست.
 
-**تغییر موردنیاز (پیش‌فرض امن):**
-1. doc را اصلاح کنید: «hash ذخیره می‌شود، اما unwind در مسیر backfill اجرا
-   نمی‌شود چون rangeها finalized فرض می‌شوند. برای live indexing باید
-   `unwind_from` را وصل کرد.»
-2. در `unwind_from`/`block_hash` doc بنویسید «API آماده است، مصرف‌کنندهٔ
-   production ندارد».
-3. **گزینهٔ کامل (نیاز به هماهنگی):** در مسیر live (اگر وجود دارد) قبل از
-   index هر بلاک، `block_hash(number)` را با hash فعلی مقایسه کنید؛ اگر
-   متفاوت بود `unwind_from(number)` را صدا بزنید. توجه: فقط explorer DB، نه
-   scanner cache.
+**وضعیت قبلی (تاریخی):**
+- `unwind_from` / `block_hash` فقط در تست‌ها صدا زده می‌شدند.
+- `insert_block_facts` از `INSERT OR IGNORE INTO blocks` استفاده می‌کرد، پس
+  reorg با همان شماره hash قدیمی را نگه می‌داشت.
+
+**تغییر انجام‌شده:**
+1. `unwind_from`/`block_hash` doc به واقعیت جدید به‌روز شد (مصرف‌کنندهٔ production
+   دارد).
+2. `ExplorerStore::reconcile_block_hash` اضافه شد: مقایسهٔ case-insensitive و
+   unwind در صورت mismatch.
+3. `index_block` در شاخهٔ classified و `index_block_fetched` قبل از هر read/persist
+   گارد را صدا می‌زنند. خطای header lookup در `index_block` فقط warn می‌شود تا
+   skip فعلی به error تبدیل نشود.
+4. `INSERT OR IGNORE` تغییر نکرد؛ گارد بیرون از تراکنش insert است.
 
 **دام‌ها:**
 - `blocks_classified` گیت idempotency است؛ اگر hash عوض شد ولی
@@ -989,36 +991,32 @@ let pending_labels: PendingLabels = events
 
 **فایل:** `core/src/explorer/store/facts.rs` (حدود خط ۲۱۱).
 
-**وضعیت:** `INSERT OR IGNORE INTO blocks` اگر بلاک با همان شماره وجود داشته
-باشد، hash جدید را نادیده می‌گیرد. چون `unwind_from` در production صدا زده
-نمی‌شود، این می‌تواند hash قدیمی را نگه دارد.
+**وضعیت اجرا:** `reconcile_block_hash` قبل از `insert_block_facts` اجرا می‌شود
+(بیرون از تراکنش insert) و ردیف stale را unwind می‌کند؛ `INSERT OR IGNORE`
+فقط برای scheduling تکراری همان بلاک کانونیکال مانده است. تست:
+`reconcile_block_hash_unwinds_only_on_mismatch`.
 
-**تغییر موردنیاز (پیش‌فرض امن):**
-- این تسک را با `A7/R2` ترکیب کنید. اگر reorg wiring انجام نشد، فقط یک
-  کامنت در `facts.rs` بگذارید: «stale hash possible; see A7.»
-- اگر wiring انجام شد، قبل از insert:
-  ```rust
-  if let Some(existing) = self.block_hash(block_number)? {
-      if existing != format!("{block_hash:#x}") {
-          self.unwind_from(block_number)?;
-      }
-  }
-  ```
-  **هشدار:** این کار داخل تراکنش `insert_block_facts` نباشد؛ `unwind_from`
-  خودش تراکنش دارد. قبل از شروع تراکنش انجام دهید.
+**وضعیت قبلی (تاریخی):** `INSERT OR IGNORE INTO blocks` با hash تکراری، hash
+قدیمی را نگه می‌داشت چون `unwind_from` مصرف‌کنندهٔ production نداشت.
+
+**تغییر انجام‌شده:**
+- این تسک با `A7/R2` ترکیب شد. `reconcile_block_hash` قبل از insert (بیرون از
+  تراکنش `insert_block_facts`) اجرا می‌شود و در صورت mismatch، `unwind_from`
+  را صدا می‌زند. `INSERT OR IGNORE` دست‌نخورده ماند.
 
 **معیار پذیرش:** مستندسازی یا تست reorg.
 
 ---
 
-## فاز ۵ — تصمیم‌های محصولی (اجرا نکنید مگر تأیید شود)
+## فاز ۵ — تصمیم‌های محصولی (وضعیت نهایی)
 
-- `A3` (انتخاب cycle سودآور)
-- `A4` (گسترش `profit_tokens` — پیش‌فرض فقط doc)
-- `P6` (قیمت native تاریخی)
-- `R2` (wiring واقعی reorg)
+- `A3` (انتخاب cycle سودآور): گام ۱ اجرا شد؛ گام ۲ با شاهد عددی رد شد (گام ۱ می‌ماند).
+- `A4` (گسترش `profit_tokens`): گزینهٔ امن (doc + audit) اجرا شد؛ گسترش کامل رد شد.
+- `P6` (قیمت native تاریخی): گزینهٔ کامل اجرا شد (quote همان ساعت + fallback علامت‌دار).
+- `R2` (wiring reorg): گارد hash در مسیر re-index اجرا شد؛ اسکن فعال reorg در backfill
+  وجود ندارد چون مسیر live جداگانه‌ای در کد نیست.
 
-برای این‌ها در commit message بنویسید: «behavior change, needs product sign-off».
+برای تغییرهای عددی آینده در commit message بنویسید: «behavior change, needs product sign-off».
 
 ---
 

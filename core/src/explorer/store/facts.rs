@@ -215,11 +215,11 @@ impl ExplorerStore {
 
         let tx = self.conn.unchecked_transaction()?;
         {
-            // `OR IGNORE` keeps the first hash seen for a block number. With no
-            // reorg wiring in the backfill path, a re-indexed block can leave a
-            // stale hash behind; that is safe today only because
-            // `blocks_classified` is the idempotency gate (the block is not
-            // re-indexed at all).
+            // `OR IGNORE` keeps the first hash seen for a block number. Ingest
+            // reconciles the stored hash with the fetched canonical hash before
+            // reaching this insert (`reconcile_block_hash`), so a re-indexed
+            // reorged block has already removed the stale row. `OR IGNORE`
+            // remains for duplicate scheduling of the same canonical block.
             let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO blocks
                    (block_number, block_hash, ts, base_fee_gwei, tx_count, indexed_at)

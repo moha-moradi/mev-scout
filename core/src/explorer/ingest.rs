@@ -328,11 +328,39 @@ pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBl
         native_prices,
     } = req;
     if store.block_classified(block_number)? {
-        debug!(block = block_number, "already classified, skipping");
-        return Ok(IndexedBlock {
-            block: block_number,
-            ops: 0,
-        });
+        // A classified block is normally skipped. Re-check the canonical hash
+        // first so a live caller can re-index a reorged block instead of
+        // silently keeping the abandoned-chain facts. A failed header lookup
+        // keeps the old skip semantics (the backfill treats finalized blocks
+        // as done), so this never turns a skip into an error.
+        match rpc.get_block_hash(block_number).await {
+            Ok(canonical) => {
+                if store.reconcile_block_hash(block_number, &format!("{canonical:#x}"))? {
+                    warn!(
+                        block = block_number,
+                        "reorg: stored hash differs from the canonical hash; \
+                         unwound stale facts and re-indexing"
+                    );
+                } else {
+                    debug!(block = block_number, "already classified, skipping");
+                    return Ok(IndexedBlock {
+                        block: block_number,
+                        ops: 0,
+                    });
+                }
+            }
+            Err(e) => {
+                warn!(
+                    block = block_number,
+                    error = %e,
+                    "reorg hash check failed; keeping the classified block skipped"
+                );
+                return Ok(IndexedBlock {
+                    block: block_number,
+                    ops: 0,
+                });
+            }
+        }
     }
 
     let bundle = fetch_block_bundle(rpc, block_number).await?;
@@ -528,6 +556,17 @@ pub async fn index_block_fetched(
         native_prices,
     } = input;
     let (block_data, txs, receipts) = bundle;
+    // Reorg guard for callers that already have the bundle (both backfill
+    // paths): if the stored hash for this height changed, remove the stale
+    // facts before they mix with the new block. This also replaces the
+    // `INSERT OR IGNORE` stale-hash window (R3).
+    if store.reconcile_block_hash(block_number, &format!("{:#x}", block_data.hash))? {
+        warn!(
+            block = block_number,
+            "reorg: stored hash differs from the fetched hash; \
+             unwound stale facts before re-indexing"
+        );
+    }
     let native = match native_price {
         Some(usd) => ResolvedNativePrice {
             usd: Some(usd),
@@ -1248,6 +1287,12 @@ fn settle_pipelined_persist(
 /// current price is used and the op is flagged `NATIVE_PRICE_APPROX`. A
 /// per-block persist failure is logged and skipped (recorded in
 /// `skipped_blocks`) instead of aborting the whole range.
+///
+/// Reorg behavior: the range is not proactively scanned for forks, but every
+/// block that is actually (re-)indexed is hashed-checked. If the stored hash
+/// differs from the fetched canonical hash, `unwind_from` removes that block
+/// and all later facts before the new block is persisted, so a re-run heals a
+/// reorg instead of mixing two chains.
 pub async fn run_range(
     rpc: &RpcClient,
     store: &ExplorerStore,
