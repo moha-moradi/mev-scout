@@ -73,6 +73,7 @@ pub fn annotate_event_with_volume(
     volume_partial: bool,
     token_prices: &HashMap<Address, TokenUsd>,
     native_price_usd: Option<f64>,
+    native_price_approximate: bool,
     created_at: i64,
 ) -> PersistedOp {
     // P1: parse `ev.details` once into a map and annotate it directly; a single
@@ -99,10 +100,11 @@ pub fn annotate_event_with_volume(
         confidence = min_confidence(confidence, conf);
         usd
     } else if !ev.profit_tokens.is_empty() {
-        // USD-sum across every positive residual (flash-netting already
-        // cleaned the ledger in 2.2) with realized-rate fallback for unpriced
-        // tokens. A missing quote is not zero: the sum is partial and marked
-        // approximate instead of being stored as a complete figure.
+        // Contract (see `MevEvent::profit_tokens`): USD is summed across the
+        // selected tokens only, not across every residual — arbs keep their
+        // other positives in `details.other_residuals`. Flash netting already
+        // cleaned the ledger in 2.2. A missing quote is not zero: the sum is
+        // partial and marked approximate instead of being stored as complete.
         let mut total = 0.0f64;
         for (tok, amt) in &ev.profit_tokens {
             if *tok == crate::explorer::profit::NATIVE_MARKER {
@@ -185,8 +187,13 @@ pub fn annotate_event_with_volume(
     if unpriced_residual {
         note_pricing_issue(&mut details, "MULTI_ASSET_PRICING");
     }
+    annotate_other_residuals_usd(&mut details, token_prices, native_price_usd);
     if native_unpriced {
         note_pricing_issue(&mut details, "NATIVE_UNPRICED");
+    } else if native_price_approximate && native_price_usd.is_some() {
+        // Gas / native residual USD used a fallback quote (current or nearby
+        // hour) instead of the block hour's own historical price.
+        note_pricing_issue(&mut details, "NATIVE_PRICE_APPROX");
     }
     if pricing_clamped {
         note_pricing_issue(&mut details, "pricing_clamped");
@@ -322,8 +329,9 @@ pub fn annotate_event_with_volume(
 /// debt value, both priced at persist time. Liquidations are `O` basis (A19),
 /// so they are never `exact`: cross-asset liquidations are an approximation
 /// (liquidation bonus / market-sale slippage) flagged `LIQ_BONUS_APPROX`, and
-/// same-asset liquidations are flagged `LIQ_SAME_ASSET`. Missing prices fall
-/// back to the collateral display amount with `MULTI_ASSET_PRICING`.
+/// same-asset liquidations are flagged `LIQ_SAME_ASSET`. Missing prices leave
+/// `profit_usd` `None` with `MULTI_ASSET_PRICING`; no fallback value is applied
+/// (a collateral-based fallback would overstate the measured profit).
 ///
 /// `details` is the clone of the event details that `annotate_event_with_volume`
 /// owns; this function writes in place and never returns a serialized form,
@@ -400,6 +408,63 @@ pub(super) fn liquidation_pnl(
     }
 }
 
+/// Audit-only USD value of `details.other_residuals` — arb residuals that are
+/// deliberately kept out of `profit_tokens`, so they never inflate
+/// `profit_usd`. Priced strictly from the in-scope quotes; any unpriced entry
+/// marks the figure partial. The total is never added to a profit column.
+fn annotate_other_residuals_usd(
+    details: &mut serde_json::Map<String, serde_json::Value>,
+    token_prices: &HashMap<Address, TokenUsd>,
+    native_price_usd: Option<f64>,
+) {
+    let Some(rows) = details.get("other_residuals").and_then(|v| v.as_array()) else {
+        return;
+    };
+    let mut total = 0.0f64;
+    let mut priced = 0usize;
+    let mut unpriced = false;
+    for row in rows {
+        let token = row
+            .get("token")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<Address>().ok());
+        let amount = row
+            .get("amount")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<U256>().ok());
+        let (Some(token), Some(amount)) = (token, amount) else {
+            unpriced = true;
+            continue;
+        };
+        if token == crate::explorer::profit::NATIVE_MARKER {
+            match native_price_usd {
+                Some(np) => {
+                    total += crate::explorer::pricing::wei_to_usd(amount, np);
+                    priced += 1;
+                }
+                None => unpriced = true,
+            }
+            continue;
+        }
+        match token_prices.get(&token) {
+            Some(p) => {
+                total += crate::explorer::pricing::token_amount_to_usd(amount, p);
+                priced += 1;
+            }
+            None => unpriced = true,
+        }
+    }
+    if priced > 0 && total.is_finite() {
+        details.insert("other_residuals_usd".into(), serde_json::json!(total));
+    }
+    if unpriced {
+        details.insert(
+            "other_residuals_usd_partial".into(),
+            serde_json::json!(true),
+        );
+    }
+}
+
 /// Confidence lattice: `inferred` is the floor. Persist-time annotation may
 /// lower `exact` to `inferred`, never raise.
 fn min_confidence(a: &'static str, b: &'static str) -> &'static str {
@@ -465,6 +530,7 @@ pub fn annotate_event(
         partial,
         token_prices,
         native_price_usd,
+        false,
         created_at,
     )
 }
@@ -1023,8 +1089,90 @@ mod tests {
             "pnl_basis": "O",
         });
 
-        let op = annotate_event_with_volume(&ev, None, false, &prices, Some(1.0), 0);
+        let op = annotate_event_with_volume(&ev, None, false, &prices, Some(1.0), false, 0);
         let profit = op.profit_usd.expect("base payment must be priced");
         assert!((profit - 10.0).abs() < 1e-9, "got {profit}");
+    }
+
+    #[test]
+    fn approximate_native_price_flags_the_op() {
+        let mut ev = sample_event(800);
+        // Keep the profit side empty so only the native approximation decides
+        // the flag (an unpriced residual also marks the op approximate).
+        ev.profit_token = None;
+        ev.profit_amount = None;
+        let prices = HashMap::new();
+        let exact = annotate_event_with_volume(&ev, None, false, &prices, Some(1.0), false, 0);
+        assert_eq!(exact.usd_approximate, 0);
+        assert!(!exact
+            .details_json
+            .as_deref()
+            .is_some_and(|d| d.contains("NATIVE_PRICE_APPROX")));
+
+        let approx = annotate_event_with_volume(&ev, None, false, &prices, Some(1.0), true, 0);
+        assert_eq!(approx.usd_approximate, 1);
+        assert!(approx
+            .details_json
+            .as_deref()
+            .is_some_and(|d| d.contains("NATIVE_PRICE_APPROX")));
+    }
+
+    #[test]
+    fn other_residuals_usd_is_audited_but_not_summed() {
+        let anchor = address!("4444000000000000000000000000000000000004");
+        let r1 = address!("6666000000000000000000000000000000000006");
+        let r2 = address!("7777000000000000000000000000000000000007");
+        let mut ev = sample_event(900);
+        ev.profit_token = Some(anchor);
+        ev.profit_amount = Some(U256::from(10));
+        ev.profit_tokens = vec![(anchor, U256::from(10))];
+        ev.details = serde_json::json!({
+            "other_residuals": [
+                {"token": format!("{r1:#x}"), "amount": "5"},
+                {"token": format!("{r2:#x}"), "amount": "7"},
+            ]
+        });
+        let prices = HashMap::from([
+            (anchor, token_usd(1.0, 0)),
+            (r1, token_usd(2.0, 0)),
+            (r2, token_usd(3.0, 0)),
+        ]);
+        let op = annotate_event_with_volume(&ev, None, false, &prices, Some(1.0), false, 0);
+        assert!((op.profit_usd.expect("profit") - 10.0).abs() < 1e-9);
+        let details = op.details_json.expect("details");
+        assert!(
+            details.contains("\"other_residuals_usd\":31.0"),
+            "got {details}"
+        );
+        assert!(!details.contains("other_residuals_usd_partial"));
+    }
+
+    #[test]
+    fn other_residuals_usd_marks_unpriced_partial() {
+        let anchor = address!("4444000000000000000000000000000000000004");
+        let r1 = address!("6666000000000000000000000000000000000006");
+        let missing = address!("8888000000000000000000000000000000000008");
+        let mut ev = sample_event(901);
+        ev.profit_token = Some(anchor);
+        ev.profit_amount = Some(U256::from(10));
+        ev.profit_tokens = vec![(anchor, U256::from(10))];
+        ev.details = serde_json::json!({
+            "other_residuals": [
+                {"token": format!("{r1:#x}"), "amount": "5"},
+                {"token": format!("{missing:#x}"), "amount": "9"},
+            ]
+        });
+        let prices = HashMap::from([(anchor, token_usd(1.0, 0)), (r1, token_usd(2.0, 0))]);
+        let op = annotate_event_with_volume(&ev, None, false, &prices, Some(1.0), false, 0);
+        assert!((op.profit_usd.expect("profit") - 10.0).abs() < 1e-9);
+        let details = op.details_json.expect("details");
+        assert!(
+            details.contains("\"other_residuals_usd\":10.0"),
+            "got {details}"
+        );
+        assert!(
+            details.contains("other_residuals_usd_partial"),
+            "got {details}"
+        );
     }
 }

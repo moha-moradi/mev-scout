@@ -3,7 +3,8 @@
 //! Consumes the same `get_block_and_receipts_batch` path the scanner uses,
 //! decodes logs into explorer facts, runs the classifier, and persists into
 //! the explorer store. Idempotent per block (checkpoints in
-//! `blocks_classified`); reorg-aware via stored block hashes; confirmation
+//! `blocks_classified`); block hashes are stored for reorg detection, but the
+//! backfill path treats its range as finalized and never unwinds; confirmation
 //! lag applied before indexing.
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -33,11 +34,16 @@ pub type BlockBundle = (BlockData, Vec<TxData>, Vec<ReceiptData>);
 #[derive(Debug)]
 pub struct FetchedBlockInput<'a> {
     pub block_number: u64,
+    /// Override for the native price. `None` resolves it from the block's own
+    /// timestamp hour (historical), which is what backfill wants.
     pub native_price: Option<f64>,
     pub token_prices: Option<HashMap<Address, TokenUsd>>,
     pub bundle: BlockBundle,
     /// Run-scoped classification context, shared across the whole backfill.
     pub ctx: &'a BlockContext,
+    /// Run-scoped hourly memo so a missing historical quote is retried once
+    /// per hour, not once per block.
+    pub native_prices: &'a mut NativePriceMemo,
 }
 
 /// Block range and concurrency for [`run_range`].
@@ -199,6 +205,20 @@ impl SavaxRateCache {
     }
 }
 
+/// Native-token USD for one hour, plus whether it is only an approximation.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedNativePrice {
+    pub usd: Option<f64>,
+    /// True when no exact-hour historical quote existed and a nearby or
+    /// current quote was used instead.
+    pub approximate: bool,
+}
+
+/// Run-scoped memo for [`native_price_at`], keyed by hour. Keeps a failing
+/// historical lookup from re-hitting the network on every block of that hour.
+#[derive(Debug, Default)]
+pub struct NativePriceMemo(HashMap<u64, ResolvedNativePrice>);
+
 /// Profit-token priority: the chain's stable majors (from `chains.toml`) then
 /// wrapped native. An empty chain list falls through to the largest-delta
 /// selection in `select_profit_token`.
@@ -238,8 +258,8 @@ pub struct IndexedBlock {
 pub struct RangeOutcome {
     pub blocks_processed: u64,
     pub ops: u64,
-    /// Blocks whose chunk fetch failed after retries and were skipped, sorted
-    /// ascending. A re-run of the same range fills the gap via
+    /// Blocks whose fetch or persist failed after retries and were skipped,
+    /// sorted ascending. A re-run of the same range fills the gap via
     /// `unclassified_blocks`.
     pub skipped_blocks: Vec<u64>,
 }
@@ -282,10 +302,12 @@ pub struct IndexBlockRequest<'a> {
     pub pools: PoolViews<'a>,
     pub ctx: &'a BlockContext,
     pub block_number: u64,
+    /// Override for the native price; `None` resolves it per block timestamp.
     pub native_price: Option<f64>,
     pub token_prices: Option<HashMap<Address, TokenUsd>>,
     pub savax_rates: &'a mut SavaxRateCache,
     pub qi_rates: &'a mut crate::explorer::benqi_liq::QiRateCache,
+    pub native_prices: &'a mut NativePriceMemo,
 }
 
 /// Fetch one block + receipts, decode, classify, persist. Idempotent: an
@@ -303,6 +325,7 @@ pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBl
         token_prices,
         savax_rates,
         qi_rates,
+        native_prices,
     } = req;
     if store.block_classified(block_number)? {
         debug!(block = block_number, "already classified, skipping");
@@ -324,6 +347,7 @@ pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBl
             token_prices,
             bundle,
             ctx,
+            native_prices,
         },
         savax_rates,
         qi_rates,
@@ -501,8 +525,16 @@ pub async fn index_block_fetched(
         token_prices,
         bundle,
         ctx,
+        native_prices,
     } = input;
     let (block_data, txs, receipts) = bundle;
+    let native = match native_price {
+        Some(usd) => ResolvedNativePrice {
+            usd: Some(usd),
+            approximate: false,
+        },
+        None => native_price_at(cfg, store, block_data.timestamp, native_prices).await?,
+    };
     let base_fee_gwei = block_data.base_fee_per_gas.map(|b| b as f64 / 1e9);
     let DecodedTxs {
         tx_inputs,
@@ -637,7 +669,7 @@ pub async fn index_block_fetched(
         }
     };
     // Wrapped-native USD = CoinGecko native price (mevlive Price column parity).
-    if let Some(np) = native_price {
+    if let Some(np) = native.usd {
         if !cfg.wrapped_native.is_zero() {
             token_prices.entry(cfg.wrapped_native).or_insert(TokenUsd {
                 usd: np,
@@ -661,7 +693,8 @@ pub async fn index_block_fetched(
                 swaps: &swap_rows,
                 transfers: &transfer_rows,
                 events: &events,
-                native_price_usd: native_price,
+                native_price_usd: native.usd,
+                native_price_approximate: native.approximate,
                 token_prices: &token_prices,
                 jit_journal: Some(JitJournalInput {
                     block: &journal,
@@ -1049,6 +1082,10 @@ pub fn event_tokens(events: &[MevEvent]) -> Vec<Address> {
 }
 
 /// Native-token USD price with hourly store cache (CoinGecko, then Llama).
+///
+/// The fetched quote is *current*; this is the fallback for
+/// [`native_price_at`] when no historical quote exists, never the primary
+/// source for backfilled blocks.
 pub async fn native_price_cached(
     cfg: &IngestConfig,
     store: &ExplorerStore,
@@ -1091,6 +1128,88 @@ pub async fn native_price_cached(
     }
 }
 
+/// Native-token USD for the hour of `ts`, cached in `prices`.
+///
+/// A historical (Llama) quote makes backfilled gas/native USD correct for the
+/// block's own hour. When no exact-hour quote is available, a nearby cached
+/// quote or the current price is used and marked `approximate`; the fallback is
+/// never written under the historical hour, so it cannot masquerade as history.
+async fn native_price_at(
+    cfg: &IngestConfig,
+    store: &ExplorerStore,
+    ts: u64,
+    memo: &mut NativePriceMemo,
+) -> anyhow::Result<ResolvedNativePrice> {
+    let hour = pricing::hour_bucket(ts);
+    if let Some(cached) = memo.0.get(&hour) {
+        return Ok(*cached);
+    }
+    let marker = Address::ZERO; // native keyed at ZERO in the price table
+    let wrapped_cached = if cfg.wrapped_native.is_zero() {
+        None
+    } else {
+        store.price_quote_at(cfg.wrapped_native, hour)?
+    };
+    if let Some((usd, _, observed)) = store.price_quote_at(marker, hour)?.or(wrapped_cached) {
+        let resolved = ResolvedNativePrice {
+            usd: Some(usd),
+            approximate: observed != hour,
+        };
+        memo.0.insert(hour, resolved);
+        return Ok(resolved);
+    }
+    if !cfg.wrapped_native.is_zero() {
+        match pricing::fetch_prices_llama(cfg.chain, ts, &[cfg.wrapped_native]).await {
+            Ok(prices) => {
+                if let Some((usd, _)) = prices.get(&cfg.wrapped_native).copied() {
+                    if usd.is_finite() && usd > 0.0 {
+                        store.put_price(marker, hour, usd, "llama")?;
+                        store.put_price(cfg.wrapped_native, hour, usd, "llama")?;
+                        let resolved = ResolvedNativePrice {
+                            usd: Some(usd),
+                            approximate: false,
+                        };
+                        memo.0.insert(hour, resolved);
+                        return Ok(resolved);
+                    }
+                }
+                warn!(
+                    hour,
+                    "historical native quote unusable; falling back to the current price"
+                );
+            }
+            Err(e) => warn!(
+                hour,
+                error = %e,
+                "historical native price fetch failed; falling back to the current price"
+            ),
+        }
+    }
+    let now_hour = pricing::hour_bucket(crate::utils::epoch_secs());
+    let usd = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+    let resolved = ResolvedNativePrice {
+        usd,
+        // The current quote is exact for the current hour only.
+        approximate: usd.is_some() && hour != now_hour,
+    };
+    memo.0.insert(hour, resolved);
+    Ok(resolved)
+}
+
+/// Book-keep one pipelined persist attempt: `Ok` counts the block, `Err`
+/// records it as skipped so a re-run fills the gap. Callers still advance the
+/// cursor for both arms.
+fn settle_pipelined_persist(
+    block: u64,
+    result: anyhow::Result<IndexedBlock>,
+    skipped: &mut BTreeSet<u64>,
+) -> anyhow::Result<IndexedBlock> {
+    if result.is_err() {
+        skipped.insert(block);
+    }
+    result
+}
+
 /// Historical / range backfill: index every block in `[from_block, to_block]`
 /// (inclusive), clamped to `head − confirmations`. Idempotent via
 /// `blocks_classified` and gap-resumable — an interrupted backfill can be
@@ -1104,9 +1223,11 @@ pub async fn native_price_cached(
 /// the report has nothing to show for those windows.
 ///
 /// Everything in the range is treated as finalized once it lags
-/// `confirmations`. Token profit USD is priced historically (Llama keyed by
-/// the block's timestamp inside `index_block`); native/gas USD uses the current
-/// native price (a close approximation for ≤30d windows).
+/// `confirmations`. Profit and native/gas USD are priced at the block's own
+/// timestamp hour (Llama). When the historical native quote is missing the
+/// current price is used and the op is flagged `NATIVE_PRICE_APPROX`. A
+/// per-block persist failure is logged and skipped (recorded in
+/// `skipped_blocks`) instead of aborting the whole range.
 pub async fn run_range(
     rpc: &RpcClient,
     store: &ExplorerStore,
@@ -1143,7 +1264,6 @@ pub async fn run_range(
     let total = end - from_block + 1;
     let missing = store.unclassified_blocks(from_block, end)?;
     let mut outcome = RangeOutcome::default();
-    let mut native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
     let t0 = std::time::Instant::now();
     let mut last_emit = t0;
     // Emit every concurrency stride or ~1s wall-clock, whichever comes first.
@@ -1181,6 +1301,10 @@ pub async fn run_range(
 
     let mut savax_rates = SavaxRateCache::default();
     let mut qi_rates = crate::explorer::benqi_liq::QiRateCache::default();
+    // Native USD is resolved per block from its own timestamp hour, so
+    // backfilled gas is priced historically. The memo bounds failed lookups to
+    // one per hour.
+    let mut native_prices = NativePriceMemo::default();
     // Blocks dropped because their fetch/index failed after retries. Both the
     // serial and pipelined paths record them so a re-run fills the gap.
     let mut skipped: BTreeSet<u64> = BTreeSet::new();
@@ -1190,9 +1314,6 @@ pub async fn run_range(
     let chunk = cfg.rpc_batch_blocks.max(1).min(cap);
     if cap <= 1 {
         for &block in &missing {
-            if block.saturating_sub(from_block) % 256 == 0 {
-                native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
-            }
             let indexed = match index_block(IndexBlockRequest {
                 rpc,
                 store,
@@ -1200,10 +1321,11 @@ pub async fn run_range(
                 pools,
                 ctx: &ctx,
                 block_number: block,
-                native_price,
+                native_price: None,
                 token_prices: None,
                 savax_rates: &mut savax_rates,
                 qi_rates: &mut qi_rates,
+                native_prices: &mut native_prices,
             })
             .await
             {
@@ -1285,31 +1407,44 @@ pub async fn run_range(
                 continue;
             }
             if let Some(bundle) = ready.remove(&need) {
-                if need.saturating_sub(from_block) % 256 == 0 {
-                    native_price =
-                        native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+                let indexed = settle_pipelined_persist(
+                    need,
+                    index_block_fetched(
+                        rpc,
+                        store,
+                        cfg,
+                        pools,
+                        FetchedBlockInput {
+                            block_number: need,
+                            native_price: None,
+                            token_prices: None,
+                            bundle,
+                            ctx: &ctx,
+                            native_prices: &mut native_prices,
+                        },
+                        &mut savax_rates,
+                        &mut qi_rates,
+                    )
+                    .await,
+                    &mut skipped,
+                );
+                match indexed {
+                    Ok(indexed) => {
+                        outcome.blocks_processed += 1;
+                        outcome.ops += indexed.ops as u64;
+                    }
+                    Err(e) => warn!(
+                        block = need,
+                        error = %e,
+                        "backfill block failed after retries; skipping \
+                         (re-run the same range later to fill the gap)"
+                    ),
                 }
-                let indexed = index_block_fetched(
-                    rpc,
-                    store,
-                    cfg,
-                    pools,
-                    FetchedBlockInput {
-                        block_number: need,
-                        native_price,
-                        token_prices: None,
-                        bundle,
-                        ctx: &ctx,
-                    },
-                    &mut savax_rates,
-                    &mut qi_rates,
-                )
-                .await?;
-                outcome.blocks_processed += 1;
-                outcome.ops += indexed.ops as u64;
                 next_persist += 1;
                 let done = need - from_block + 1;
                 emit_progress(done, outcome.ops, done == total);
+                // Refill exactly like the fetch branches: a skipped persist
+                // must not let the pipeline drain and bail out as stalled.
                 while next_spawn < missing.len() && inflight.len() < posts {
                     spawn_one(&mut next_spawn, &mut inflight)?;
                 }
@@ -1374,6 +1509,22 @@ mod tests {
     use alloy::primitives::U256;
 
     #[test]
+    fn pipelined_persist_failure_marks_block_skipped() {
+        let mut skipped = BTreeSet::new();
+        let failed = settle_pipelined_persist(42, Err(anyhow::anyhow!("disk full")), &mut skipped);
+        assert!(failed.is_err());
+        assert!(skipped.contains(&42), "failed block must be gap-resumable");
+
+        let indexed =
+            settle_pipelined_persist(43, Ok(IndexedBlock { block: 43, ops: 3 }), &mut skipped);
+        assert_eq!(indexed.expect("ok").ops, 3);
+        assert!(
+            !skipped.contains(&43),
+            "successful block must not be skipped"
+        );
+    }
+
+    #[test]
     fn blocking_store_is_inline_outside_a_runtime() {
         assert_eq!(blocking_store(|| 7), 7);
     }
@@ -1381,6 +1532,51 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn blocking_store_runs_on_a_multi_thread_runtime() {
         assert_eq!(blocking_store(|| 7), 7);
+    }
+
+    fn avalanche_cfg() -> IngestConfig {
+        let chains = crate::config::defaults::default_chains();
+        IngestConfig::from_chain(ChainName::Avalanche, &chains["avalanche"])
+    }
+
+    #[tokio::test]
+    async fn native_price_at_uses_exact_hour_cache() {
+        let store = ExplorerStore::open_in_memory().expect("store");
+        let ts = 1_700_000_000u64;
+        let hour = pricing::hour_bucket(ts);
+        store
+            .put_price(Address::ZERO, hour, 31.5, "llama")
+            .expect("cache price");
+        let got = native_price_at(
+            &avalanche_cfg(),
+            &store,
+            ts,
+            &mut NativePriceMemo::default(),
+        )
+        .await
+        .expect("resolve");
+        assert_eq!(got.usd, Some(31.5));
+        assert!(!got.approximate, "exact-hour quote is not approximate");
+    }
+
+    #[tokio::test]
+    async fn native_price_at_marks_a_nearby_hour_as_approximate() {
+        let store = ExplorerStore::open_in_memory().expect("store");
+        let ts = 1_700_000_000u64;
+        let hour = pricing::hour_bucket(ts);
+        store
+            .put_price(Address::ZERO, hour - 1, 29.0, "llama")
+            .expect("cache price");
+        let got = native_price_at(
+            &avalanche_cfg(),
+            &store,
+            ts,
+            &mut NativePriceMemo::default(),
+        )
+        .await
+        .expect("resolve");
+        assert_eq!(got.usd, Some(29.0));
+        assert!(got.approximate, "a quote from another hour must be flagged");
     }
 
     #[test]

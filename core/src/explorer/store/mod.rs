@@ -161,6 +161,9 @@ pub struct BlockFactsInput<'a> {
     pub transfers: &'a [TransferRow],
     pub events: &'a [MevEvent],
     pub native_price_usd: Option<f64>,
+    /// True when `native_price_usd` is a fallback (current/nearby quote) rather
+    /// than the block hour's own historical quote.
+    pub native_price_approximate: bool,
     pub token_prices: &'a std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
     /// Receipt-local LP journal + open-position update, committed with the facts.
     pub jit_journal: Option<JitJournalInput<'a>>,
@@ -366,6 +369,7 @@ mod tests {
                 transfers: &[],
                 events: p.events,
                 native_price_usd: Some(0.75),
+                native_price_approximate: false,
                 token_prices: p.token_prices,
                 jit_journal: None,
             })
@@ -998,6 +1002,7 @@ mod tests {
                     transfers: &[],
                     events: std::slice::from_ref(&ev),
                     native_price_usd,
+                    native_price_approximate: false,
                     token_prices: &prices,
                     jit_journal: None,
                 })
@@ -1726,6 +1731,7 @@ mod tests {
                 transfers: &[],
                 events: &[],
                 native_price_usd: None,
+                native_price_approximate: false,
                 token_prices: &prices,
                 jit_journal: Some(JitJournalInput {
                     block: journal,

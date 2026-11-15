@@ -173,6 +173,7 @@ impl ExplorerStore {
             transfers,
             events,
             native_price_usd,
+            native_price_approximate,
             token_prices,
             jit_journal,
         } = facts;
@@ -204,6 +205,7 @@ impl ExplorerStore {
                     partial,
                     token_prices,
                     native_price_usd,
+                    native_price_approximate,
                     now,
                 )
             })
@@ -213,6 +215,11 @@ impl ExplorerStore {
 
         let tx = self.conn.unchecked_transaction()?;
         {
+            // `OR IGNORE` keeps the first hash seen for a block number. With no
+            // reorg wiring in the backfill path, a re-indexed block can leave a
+            // stale hash behind; that is safe today only because
+            // `blocks_classified` is the idempotency gate (the block is not
+            // re-indexed at all).
             let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO blocks
                    (block_number, block_hash, ts, base_fee_gwei, tx_count, indexed_at)
