@@ -97,7 +97,7 @@
 | T0.1 | ✅ | baseline در پیام commitهای `d2561bb`/`ed00418` ثبت شد (546 تست lib سبز، clippy پاک) |
 | A1 | ✅ | لیکوییدیشن هرگز `exact` نیست؛ `min_confidence` + `pnl_basis = "O"` |
 | A2 | ✅ | `resolved_cycle_edges` مشترک arb/legs؛ فقط حداقلِ مجازِ پلن |
-| A3 | 🟡 | گام ۱ (bound = ۸ + deterministic) انجام شد. گام ۲ (انتخاب سودآورترین cycle) پیشنهاد نمی‌شود: benchmark نشان داد recall سربه‌سر است و این گام فقط انتساب/اعداد را عوض می‌کند. |
+| A3 | ✅ | گام ۱ (bound = ۸ + deterministic) انجام و با benchmark تأیید شد. گام ۲ با شاهد رد می‌شود: ۱۰۸ arb، ۱۷ مورد multi-cycle (۱۵.۷٪)، اما در **۰** مورد `profit_token` خارج از cycle اول بود؛ تغییر فقط reject ladder را در همان ۱۷ مورد جابه‌جا می‌کند. |
 | A4 | ✅ | قرارداد مستند + `details.other_residuals_usd` فقط برای audit؛ گزینهٔ کامل رد شد |
 | A5 | ✅ | ادعای fallback حذف شد؛ `MULTI_ASSET_PRICING` تنها سیگنال است |
 | A6 | ✅ | `Address::ZERO` از `searcher_candidates` حذف شد |
@@ -119,8 +119,25 @@
 | R1 | ✅ | خطای persist در pipelined → warn/skip/refill |
 | R3 | 🟡 | فقط کامنت (wiring انجام نشد) |
 
-> فقط `A3` گام ۲ باز است و اجرای آن پیشنهاد نمی‌شود. `P7c`، `M3` و `R2`
-> طبق تصمیم مالک اجرا نمی‌شوند. تصمیم نهایی A3 گام ۲ با مالک است.
+> `P7c`، `M3`، `R2` و گام ۲ از `A3` طبق تصمیم مالک / شاهد عددی اجرا نمی‌شوند.
+
+### سنجش A3 گام ۲ (۲۰۲۶-۱۱-۱۵)
+
+اسکریپت read-only: `results/_a3_cycle_diag.py` (روی `route_json` همین DB، بازسازی
+دقیق `resolved_cycle_edges` و همان DFS).
+
+| سنجه | مقدار |
+|---|---|
+| arb ops بررسی‌شده | ۱۰۸ |
+| op با بیش از یک cycle متمایز | ۱۷ (۱۵.۷٪) |
+| op که cycle اول `profit_token` را ندارد | **۰** |
+| op که cycle دیگری `profit_token` دارد | ۰ |
+| بیشترین edge resolved در یک tx | ۱۳ |
+
+نتیجه: وجود چند cycle در برخی txها واقعی است، ولی انتخاب فعلی «اولین cycle» هرگز
+profit token را از دست نمی‌دهد. انتخاب «سودآورترین» فقط در همان ۱۷ مورد
+`walk_tokens` (و در نتیجه rejectهای `OpenInventory`) را عوض می‌کند و oracle
+فعلی (tx-hash در mevlive) نمی‌تواند درستی آن را بسنجد؛ پس پیاده‌سازی نمی‌شود.
 
 ### نتیجهٔ benchmark پس از A3 گام ۱ + P6 (۲۰۲۶-۱۱-۱۵)
 
