@@ -158,6 +158,34 @@ profit token را از دست نمی‌دهد. انتخاب «سودآورتری
 `jit_blocks`/`jit_open_positions`/`oracle_answers`/`reserve_rates` را پاک نمی‌کند؛
 برای rerun روی DB استفاده‌شده باید از snapshot تمیز شروع کرد.
 
+### Holdout benchmark (پنجرهٔ دوم، ۲۰۲۶-۱۱-۱۵)
+
+پنجرهٔ `100356443..=100359656` (Nov 15، 03:00–04:00 UTC)، ۳٬۲۱۴ بلاک،
+ground truth مستقل: `results/mevlive_holdout_2026-11-15_meta.json` (۵۱ arb).
+هارنس با `MEV_META`/`MEV_ARBS` اجرا شد؛ نتیجه در
+`results/compare_holdout_a3_p6.json`.
+
+| سنجه | مقدار |
+|---|---|
+| recall arb | **۴۴/۵۱** |
+| arb_atomic ops | ۱۱۱ |
+| ops با `NATIVE_PRICE_APPROX` | **۰** (یک ساعت قیمتی، ۷.۱۰ دلار) |
+| skip/failed block | ۰ |
+
+هر ۷ مورد miss با `net_zero_searcher` رد شده‌اند و **ربطی به A3/P6 ندارند**:
+- در هر ۷ tx یک cycle بستهٔ ۲–۳ edge با ≥۲ pool وجود دارد (با MAX=8 و MAX=64
+  یکسان)، پس bound گام ۱ مقصر نیست.
+- net توکن‌ها برای `tx.from` و `tx.to` صفر است و سود بین **چند** آدرس
+  غیرکاندید (فورواردر/گیرندهٔ fee) تقسیم شده؛ `forwarded_recipient` در
+  `arb.rs` فقط وقتی hit می‌دهد که دقیقاً **یک** holder مثبت وجود داشته باشد.
+- این همان باکت شناخته‌شدهٔ «forwarded profit» در audit قبلی است؛ تصمیم
+  محافظه‌کارانهٔ فعلی، نه رگرسیون این refactor.
+
+**Follow-up پیشنهادی (خارج از این پلن):** گسترش `forwarded_recipient` به
+چند گیرندهٔ تأمین‌شده توسط `from`/`to` (+ tag/detail برای split) و سنجش دوباره
+روی همین holdout با شرط حفظ 47/47 روی پنجرهٔ frozen. نیازمند تأیید محصول چون
+می‌تواند OUR-ONLY ops را زیاد کند.
+
 ---
 
 ## فاز ۰ — Baseline و ابزار
