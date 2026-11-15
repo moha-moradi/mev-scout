@@ -90,6 +90,39 @@
 | R1 | skip خطای persist در pipelined | 4 | بله (backfill کامل‌تر) | — |
 | R3 | رفتار hash تکراری در `blocks` | 4 | فقط doc/با A7 | A7 |
 
+### وضعیت اجرا — ۲۰۲۶-۱۱-۱۵
+
+| ID | وضعیت | یادداشت |
+|---|---|---|
+| T0.1 | ✅ | baseline در پیام commitهای `d2561bb`/`ed00418` ثبت شد (546 تست lib سبز، clippy پاک) |
+| A1 | ✅ | لیکوییدیشن هرگز `exact` نیست؛ `min_confidence` + `pnl_basis = "O"` |
+| A2 | ✅ | `resolved_cycle_edges` مشترک arb/legs؛ فقط حداقلِ مجازِ پلن |
+| A3 | 🟡 | گام ۱ (bound = ۸ + deterministic) انجام شد؛ گام ۲ (انتخاب سودآورترین cycle) منتظر benchmark frozen |
+| A4 | ✅ | قرارداد مستند + `details.other_residuals_usd` فقط برای audit؛ گزینهٔ کامل رد شد |
+| A5 | ✅ | ادعای fallback حذف شد؛ `MULTI_ASSET_PRICING` تنها سیگنال است |
+| A6 | ✅ | `Address::ZERO` از `searcher_candidates` حذف شد |
+| A7/R2 | 🟡 | فقط doc (پیش‌فرض امن)؛ `unwind_from` هنوز مصرف‌کنندهٔ production ندارد |
+| P1 | ✅ | annotate روی Map، تک `to_string` |
+| P2 | ✅ | `ParsedDetails` یک‌بار per op؛ fallback زیررشته حذف شد |
+| P3 | ✅ | `OpIndexRow` تایپ‌دار (۱۷ عنصر، آرایه حفظ شد) |
+| P4 | ✅ | HashMap استاتیک topic0 + تست پوشش ۴۷ topic |
+| P5 | ✅ | chunk ۵۰تایی + concurrency ۴؛ باگ E0515 هم رفع شد |
+| P6 | ✅ | قیمت native همان ساعت بلاک + cache ساعتی؛ fallback با `NATIVE_PRICE_APPROX` |
+| P7a | ✅ | `EXISTS` |
+| P7b | ✅ | `LEFT JOIN` داخل CTE (invariant جدول `blocks` حفظ شد) |
+| P7c | ⛔ رد | `route_json` برای انتساب op دقیق‌تر از `swaps` است؛ با تصمیم مالک رد شد |
+| P7d | ✅ | `BTreeSet` روی `pending_labels` |
+| M1 | ✅ | facts به‌صورت reference؛ بدون clone |
+| M2 | ✅ | `merge_details_json` حذف شد (همراه P1) |
+| M3 | ⛔ رد | هم‌پوشان با A2؛ یکسان‌سازی کامل ریسک تغییر رفتار داشت |
+| M4 | ✅ | کامنت legacy روی CHECKها + تست drift |
+| R1 | ✅ | خطای persist در pipelined → warn/skip/refill |
+| R3 | 🟡 | فقط کامنت (wiring انجام نشد) |
+
+> فقط `A3` گام ۲ باز است و به اجرای benchmark روی پنجرهٔ frozen
+> `99833048..=99836394` با RPC کامل نیاز دارد. `P7c`، `M3` و `R2` طبق
+> تصمیم مالک اجرا نمی‌شوند.
+
 ---
 
 ## فاز ۰ — Baseline و ابزار
