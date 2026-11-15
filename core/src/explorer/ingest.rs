@@ -1145,15 +1145,27 @@ async fn native_price_at(
         return Ok(*cached);
     }
     let marker = Address::ZERO; // native keyed at ZERO in the price table
+    let native_cached = store.price_quote_at(marker, hour)?;
     let wrapped_cached = if cfg.wrapped_native.is_zero() {
         None
     } else {
         store.price_quote_at(cfg.wrapped_native, hour)?
     };
-    if let Some((usd, _, observed)) = store.price_quote_at(marker, hour)?.or(wrapped_cached) {
+    // Only an exact-hour quote is authoritative. `price_quote_at` also returns
+    // the nearest earlier quote within 24h, which must not suppress the
+    // historical fetch for this hour.
+    let exact = native_cached
+        .as_ref()
+        .filter(|(_, _, observed)| *observed == hour)
+        .or_else(|| {
+            wrapped_cached
+                .as_ref()
+                .filter(|(_, _, observed)| *observed == hour)
+        });
+    if let Some((usd, _, _)) = exact {
         let resolved = ResolvedNativePrice {
-            usd: Some(usd),
-            approximate: observed != hour,
+            usd: Some(*usd),
+            approximate: false,
         };
         memo.0.insert(hour, resolved);
         return Ok(resolved);
@@ -1185,15 +1197,23 @@ async fn native_price_at(
             ),
         }
     }
-    let now_hour = pricing::hour_bucket(crate::utils::epoch_secs());
-    let usd = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
-    let resolved = ResolvedNativePrice {
-        usd,
-        // The current quote is exact for the current hour only.
-        approximate: usd.is_some() && hour != now_hour,
+    let fallback = match native_cached.or(wrapped_cached) {
+        Some((usd, _, observed)) => ResolvedNativePrice {
+            usd: Some(usd),
+            approximate: observed != hour,
+        },
+        None => {
+            let now_hour = pricing::hour_bucket(crate::utils::epoch_secs());
+            let usd = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+            ResolvedNativePrice {
+                usd,
+                // The current quote is exact for the current hour only.
+                approximate: usd.is_some() && hour != now_hour,
+            }
+        }
     };
-    memo.0.insert(hour, resolved);
-    Ok(resolved)
+    memo.0.insert(hour, fallback);
+    Ok(fallback)
 }
 
 /// Book-keep one pipelined persist attempt: `Ok` counts the block, `Err`
@@ -1568,7 +1588,13 @@ mod tests {
             .put_price(Address::ZERO, hour - 1, 29.0, "llama")
             .expect("cache price");
         let got = native_price_at(
-            &avalanche_cfg(),
+            &{
+                // No wrapped native => no historical fetch; the nearby quote
+                // is the only fallback.
+                let mut cfg = avalanche_cfg();
+                cfg.wrapped_native = Address::ZERO;
+                cfg
+            },
             &store,
             ts,
             &mut NativePriceMemo::default(),
@@ -1577,6 +1603,29 @@ mod tests {
         .expect("resolve");
         assert_eq!(got.usd, Some(29.0));
         assert!(got.approximate, "a quote from another hour must be flagged");
+    }
+
+    #[tokio::test]
+    async fn native_price_at_prefers_the_exact_hour_over_a_nearby_one() {
+        let store = ExplorerStore::open_in_memory().expect("store");
+        let ts = 1_700_000_000u64;
+        let hour = pricing::hour_bucket(ts);
+        store
+            .put_price(Address::ZERO, hour - 1, 29.0, "llama")
+            .expect("nearby price");
+        store
+            .put_price(Address::ZERO, hour, 31.5, "llama")
+            .expect("exact price");
+        let got = native_price_at(
+            &avalanche_cfg(),
+            &store,
+            ts,
+            &mut NativePriceMemo::default(),
+        )
+        .await
+        .expect("resolve");
+        assert_eq!(got.usd, Some(31.5));
+        assert!(!got.approximate);
     }
 
     #[test]
