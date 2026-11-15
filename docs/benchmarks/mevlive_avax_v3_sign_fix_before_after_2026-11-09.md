@@ -28,6 +28,10 @@ fixes (`8361872`) + the multi-recipient attribution fix:
 | profit token matches mevlive | **47 / 47** |
 | median profit error | **0.40%** (p90 1.04%) |
 
+On current HEAD the op total is **112** (108 `arb_atomic` + 4 `jit`) because the
+legacy `utility` bundler classifier was removed after this run; the 47/47 recall
+is unchanged. See the recall doc's 2026-11-15 re-validation.
+
 See [`mevlive_avax_arb_recall_2026-11-09.md`](./mevlive_avax_arb_recall_2026-11-09.md)
 for the full accuracy breakdown and the two remaining bundled-route outliers.
 

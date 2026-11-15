@@ -69,6 +69,31 @@ large gross deltas are not large net deltas.
 This is the frozen window used to derive the fixes; 47/47 is a recall floor, not
 independent validation. Re-run on a fresh holdout window before generalizing.
 
+## Re-validation after A3 step 1 + P6 (2026-11-15)
+
+Same frozen window with a rebuilt DB and full RPC coverage. Artifacts:
+`results/compare_after_a3_p6_fixed.json`, `results/index_after_a3_p6_fixed.log`.
+
+| Metric | 2026-11-10 baseline | 2026-11-15 re-run |
+|---|---:|---:|
+| mevlive arbs matched | 47 / 47 | **47 / 47** |
+| missed | 0 | **0** |
+| our `arb_atomic` | 108 | **108** |
+| our `jit` | 15 | **4** |
+| our `utility` | 44 | **0** |
+| our total ops | 167 | **112** |
+| ops with `NATIVE_PRICE_APPROX` | — | **0** |
+
+The non-arb deltas are post-baseline code changes, not detection drift: the
+legacy bundler classifier was removed (`6401d54`) and settled-JIT accounting
+changed (`7837074` / `85439f0` / `feb4542`). A3 step 1 bounds the cycle DFS and
+P6 prices native/gas from the block's own hour; neither moved arb recall or
+`arb_atomic` count. The reorg/hash guard (`9334b65`, A7/R2, R3) is storage-only
+and cannot change classification, so it needs no extra benchmark run.
+
+This is a reproducibility check on the *same* window, not the fresh holdout the
+caveat asks for; 47/47 remains a recall floor.
+
 > The baseline and miss audit below are historical (pre-fix). All 42 misses are
 > now matched; keep them as the root-cause record.
 
