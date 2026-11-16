@@ -134,12 +134,25 @@ fn dashboard_build_leaves_file_bytes_unchanged() {
         conn.execute(
             "INSERT INTO mev_ops(
                block_number, tx_index, tx_hash, ts, kind, eoa, confidence,
-               profit_usd, gas_cost_usd, net_profit_usd, detector, created_at, subkind, excluded_from_net
+               profit_usd, gas_cost_usd, net_profit_usd, detector, created_at, subkind,
+               excluded_from_net, victim_hashes
              ) VALUES(1, 0, '0xabc', 1700000000, 'arb_atomic', '0xeee', 'exact',
-               1.5, 0.1, 1.4, 'test', 1700000000, NULL, 0)",
+               1.5, 0.1, 1.4, 'test', 1700000000, NULL, 0, '[\"0xdef\"]')",
             [],
         )
         .expect("op");
+        conn.execute(
+            "INSERT INTO tx_evidence(tx_hash, block_number, tx_index, payload_json, created_at)
+             VALUES('0xabc', 1, 0, ?1, 1700000000)",
+            [r#"{"export_version":1,"event_logs":[{"log_index":7}],"internal_calls":null}"#],
+        )
+        .expect("tx evidence");
+        conn.execute(
+            "INSERT INTO tx_evidence(tx_hash, block_number, tx_index, payload_json, created_at)
+             VALUES('0xdef', 1, 1, ?1, 1700000000)",
+            [r#"{"export_version":1,"event_logs":[{"log_index":8}],"internal_calls":null}"#],
+        )
+        .expect("victim tx evidence");
     }
     let before = sha256_file(&path).expect("sha1");
     let before_meta = fs::metadata(&path).expect("meta").len();
@@ -158,6 +171,15 @@ fn dashboard_build_leaves_file_bytes_unchanged() {
     assert_eq!(snap.coverage.ops_in_window, 1);
     assert!((snap.panels.kpi.net_usd - 1.4).abs() < 1e-9);
     assert!(!snap.gaps.enabled);
+    let evidence = snap.panels.evidence.first().expect("evidence");
+    let bundle = evidence.tx_bundle.as_ref().expect("tx bundle attached");
+    assert_eq!(bundle["event_logs"][0]["log_index"], 7);
+    assert!(bundle["internal_calls"].is_null());
+    let victim = evidence
+        .related_tx_bundles
+        .get("0xdef")
+        .expect("victim bundle attached");
+    assert_eq!(victim["event_logs"][0]["log_index"], 8);
 
     let after = sha256_file(&path).expect("sha2");
     assert_eq!(before, after, "DB sha256 must be unchanged");

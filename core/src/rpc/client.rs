@@ -1848,6 +1848,7 @@ fn alloy_receipt_to_receipt_data(receipt: &TransactionReceipt) -> ReceiptData {
             .logs()
             .iter()
             .map(|l| LogData {
+                log_index: l.log_index,
                 address: l.address(),
                 topics: l.topics().to_vec(),
                 data: l.data().data.clone(),

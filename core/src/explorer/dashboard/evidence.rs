@@ -309,6 +309,11 @@ pub struct OpEvidence {
     pub pnl_basis: Option<String>,
     pub arb_meta: Option<Value>,
     pub details: Value,
+    /// Self-contained transaction bundle for offline verification/export.
+    pub tx_bundle: Option<Value>,
+    /// Full payloads for causal victims / cross-block JIT opening txs, keyed
+    /// by lower-case transaction hash.
+    pub related_tx_bundles: HashMap<String, Value>,
 }
 
 /// Parse `route_json` array (or null/empty → empty vec).
@@ -423,6 +428,8 @@ pub fn build_evidence(op: &OpRecord) -> OpEvidence {
         pnl_basis,
         arb_meta,
         details,
+        tx_bundle: None,
+        related_tx_bundles: HashMap::new(),
     }
 }
 

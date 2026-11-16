@@ -84,6 +84,8 @@ fn dashboard_html_offline_no_config() {
     assert!(html.contains("id=\"nav\""));
     assert!(html.contains("id=\"view-overview\""));
     assert!(html.contains("id=\"view-operations\""));
+    assert!(html.contains("id=\"op-export\""));
+    assert!(html.contains("Export tx JSON"));
     assert!(html.contains("id=\"view-searchers\""));
     assert!(html.contains("id=\"view-pools\""));
     assert!(html.contains("id=\"view-analytics\""));

@@ -318,6 +318,7 @@ fn golden_block_persists_mev_ops_rows() {
             swaps: &swap_rows,
             transfers: &transfer_rows,
             events: &events,
+            tx_evidence: &[],
             native_price_usd: Some(0.75),
             native_price_approximate: false,
             token_prices: &prices,

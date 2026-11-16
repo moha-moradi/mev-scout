@@ -84,6 +84,9 @@ pub struct ReceiptData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Single log entry emitted during transaction execution.
 pub struct LogData {
+    /// Block-global log index when the node supplied it (absent in old caches).
+    #[serde(default)]
+    pub log_index: Option<u64>,
     pub address: Address,
     pub topics: Vec<B256>,
     pub data: Bytes,

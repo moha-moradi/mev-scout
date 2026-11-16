@@ -379,10 +379,12 @@ pre.raw {
               </div>
               <div class="badge-row">
                 <button class="btn" type="button" id="op-copy">Copy link</button>
+                <button class="btn" type="button" id="op-export" disabled>Export tx JSON</button>
                 <a class="btn" id="op-explorer" target="_blank" rel="noopener">Explorer</a>
               </div>
             </div>
             <div class="caption" id="op-copy-status" role="status" aria-live="polite"></div>
+            <div class="caption" id="op-export-note" role="status" aria-live="polite"></div>
             <div class="grid op-kpis" id="op-kpis"></div>
             <div id="op-accounting"></div>
             <div class="grid op-columns" style="margin-top:14px">
@@ -1927,6 +1929,20 @@ pre.raw {
     }
     $("op-raw").textContent = JSON.stringify((ev && ev.details) || {}, null, 2);
 
+    var exportBtn = $("op-export");
+    var exportNote = $("op-export-note");
+    if (ev && ev.tx_bundle) {
+      exportBtn.disabled = false;
+      var trace = ev.tx_bundle.trace || {};
+      exportNote.textContent = "Export includes the operation transaction, related victim/JIT-opening bundles, receipt, event logs, token transfers and swap events."
+        + (trace.status === "unavailable"
+          ? " Internal calls/transactions unavailable: " + String(trace.reason || "trace RPC not recorded").replace(/\.$/, "") + "."
+          : "");
+    } else {
+      exportBtn.disabled = true;
+      exportNote.textContent = "Transaction export unavailable — this artifact has no stored tx bundle.";
+    }
+
     var chainId = S.db && S.db.chain_id;
     var ex = $("op-explorer");
     if (chainId === 43114) {
@@ -2142,6 +2158,147 @@ pre.raw {
     } else {
       status.textContent = "Clipboard unavailable. Copy this URL: " + url;
     }
+  });
+  $("op-export").addEventListener("click", function () {
+    var status = $("op-export-note");
+    var ev = state.opId != null ? evidenceById()[String(state.opId)] : null;
+    var bundle = ev && ev.tx_bundle;
+    if (!bundle) {
+      status.textContent = "Transaction export unavailable for this operation.";
+      return;
+    }
+    var out = JSON.parse(JSON.stringify(bundle));
+    var op = {};
+    [
+      "id", "tx_hash", "block_number", "tx_index", "ts", "kind", "subkind",
+      "confidence", "detector", "eoa", "contract", "profit_usd",
+      "net_profit_usd", "gas_cost_usd", "volume_usd", "flashloan_fee_usd",
+      "profit_token", "profit_amount", "profit_amount_human", "route",
+      "victim_hashes", "tags", "reasons", "pnl_basis", "arb_meta", "details",
+      "economics", "excluded_from_net", "usd_approximate", "native_unpriced",
+      "multi_asset_pricing", "pricing_clamped", "flash_fee_unpriced"
+    ].forEach(function (key) {
+      if (ev[key] !== undefined) op[key] = ev[key];
+    });
+    out.operation = op;
+    var ruleKey = String(ev.kind || "") + (ev.subkind ? "/" + String(ev.subkind) : "");
+    var rule = STRATEGY_INFO[ruleKey] || STRATEGY_INFO[String(ev.kind || "")] || null;
+    out.classification = {
+      kind: ev.kind,
+      subkind: ev.subkind,
+      confidence: ev.confidence,
+      detector: ev.detector,
+      tags: ev.tags || [],
+      reasons: ev.reasons || [],
+      pnl_basis: ev.pnl_basis,
+      claimed_token: ev.details && ev.details.claimed_token,
+      victim_hashes: ev.victim_hashes || []
+    };
+    out.classification_rule = rule;
+    var related = [];
+    var seenRelated = {};
+    function addRelated(role, hash, source) {
+      var h = String(hash || "").toLowerCase();
+      if (!h || seenRelated[role + ":" + h]) return;
+      seenRelated[role + ":" + h] = true;
+      related.push({
+        role: role,
+        tx_hash: hash,
+        source: source,
+        bundle: (ev.related_tx_bundles || {})[h] || null
+      });
+    }
+    (out.classification.victim_hashes || []).forEach(function (h) {
+      addRelated("causal_market_mover", h, "operation.victim_hashes");
+    });
+    var d = out.operation.details || {};
+    if (d.opening_tx_hash) addRelated("jit_position_opening", d.opening_tx_hash, "operation.details");
+    var causal = d.causal || {};
+    ((causal.evidence || {}).supporting_tx_hashes || []).forEach(function (h) {
+      addRelated("causal_supporting", h, "operation.details.causal");
+    });
+    out.related_transactions = related;
+    out.decision_inputs = {
+      tx_hash: out.operation.tx_hash,
+      block_number: out.operation.block_number,
+      event_logs: out.event_logs,
+      token_transfers: out.token_transfers,
+      swap_events: out.swap_events,
+      details: out.operation.details,
+      route: out.operation.route,
+      related_transactions: related
+    };
+    if (ruleKey === "jit") {
+      var jc = d.jit_decision_context || {};
+      var openingKey = String(jc.opening_tx_hash || "").toLowerCase();
+      out.decision_inputs.cross_block_context = {
+        opening_transaction: (ev.related_tx_bundles || {})[openingKey] || null,
+        closing_transaction: out.transaction,
+        opened_block: jc.opened_block,
+        closing_block: ev.block_number,
+        held_blocks: jc.held_blocks,
+        position: {
+          pool: jc.pool,
+          owner: jc.owner,
+          tick_lower: jc.tick_lower,
+          tick_upper: jc.tick_upper,
+          liquidity: jc.liquidity,
+          opening_tx_hash: jc.opening_tx_hash,
+          opening_tx_index: jc.opening_tx_index,
+          opening_log_index: jc.opening_log_index,
+          burn_tx_index: jc.burn_tx_index,
+          burn_log_index: jc.burn_log_index
+        },
+        validating_swaps: jc.validating_swaps || [],
+        lifecycle_timeline: ((d.jit_accounting || {}).timeline) || []
+      };
+    }
+    if (ruleKey === "arb_atomic"
+      && ((out.classification.tags || []).indexOf("backrun") >= 0
+        || (out.classification.victim_hashes || []).length)) {
+      out.decision_inputs.causal_context = {
+        causal: d.causal || null,
+        victim_transactions: related.filter(function (r) {
+          return r.role === "causal_market_mover" || r.role === "causal_supporting";
+        })
+      };
+    }
+    if (ruleKey === "utility/claim_and_sell") {
+      var claimed = out.classification.claimed_token
+        ? String(out.classification.claimed_token).toLowerCase() : null;
+      out.rule_evidence = {
+        zero_from_transfers: (out.token_transfers || []).filter(function (t) {
+          return String(t.from || "").toLowerCase() === "0x0000000000000000000000000000000000000000"
+            && (!claimed || String(t.token || "").toLowerCase() === claimed);
+        }),
+        sell_swaps: (out.swap_events || []).filter(function (s) {
+          return !claimed || String(s.token_in || "").toLowerCase() === claimed;
+        })
+      };
+    }
+    out.verification_context = {
+      raw_event_logs_included: true,
+      decoded_token_transfers_included: true,
+      decoded_swap_events_included: true,
+      related_transaction_bundles_included: related.some(function (r) { return !!r.bundle; }),
+      classification_rule_included: !!rule,
+      internal_trace_status: (out.trace && out.trace.status) || "unknown",
+      cross_block_context_included: ruleKey === "jit"
+        || related.some(function (r) { return !!r.bundle; }),
+      note: "Internal calls/transactions and external token metadata/prices are not embedded. Related victim/JIT-opening bundles and JIT lifecycle context are included when persisted."
+    };
+    out.exported_at = new Date().toISOString();
+    out.source = "mev-scout explorer dashboard";
+    var blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+    var link = document.createElement("a");
+    var slug = String(ev.id) + "-" + String(ev.tx_hash || "").slice(0, 12);
+    link.href = URL.createObjectURL(blob);
+    link.download = "mev-tx-" + slug + ".json";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(link.href); }, 1000);
+    status.textContent = "Downloaded " + link.download + ".";
   });
   window.addEventListener("hashchange", parseHash);
   // pushState entries are restored with popstate, not hashchange.

@@ -110,6 +110,10 @@ impl ExplorerStore {
             [fork_block as i64],
         )?;
         tx.execute(
+            "DELETE FROM tx_evidence WHERE block_number >= ?1",
+            [fork_block as i64],
+        )?;
+        tx.execute(
             "DELETE FROM blocks WHERE block_number >= ?1",
             [fork_block as i64],
         )?;

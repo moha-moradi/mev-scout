@@ -472,6 +472,27 @@ The artifact always covers all rows in the selected DB. Artifact-size caps,
 soft budget trimming, and gap sampling use fixed internal defaults and are no
 longer public flags.
 
+Each operation detail includes **Export tx JSON**. The downloaded bundle
+contains the full transaction fields/calldata, receipt metadata, raw event
+logs, decoded token transfers, decoded swap events, the operation evidence,
+the matching strategy rule (`classification_rule`), and a
+`verification_context` block that states which context is missing.
+`decision_inputs` repeats the exact transaction logs, transfers, swaps,
+operation details/route, and related transaction IDs used by the classifier.
+Related transaction IDs carry their full transaction bundles when persisted:
+same-block causal backrun movers and cross-block JIT opening transactions.
+Backrun exports also include `decision_inputs.causal_context`; JIT exports
+include `decision_inputs.cross_block_context` with opening/closing transaction
+bundles, the position lifetime, lifecycle timeline, and the in-range swaps that
+validated the tick/bin range. For `utility/claim_and_sell`, `rule_evidence`
+points at the zero-address mint transfer(s) and same-token sell swap(s) that
+matched the classifier.
+`internal_calls` / `internal_transactions` are present as explicit `null`
+values with a `trace.status = "unavailable"` reason because the current ingest
+path does not call a trace RPC; they are never presented as an empty call tree.
+A future trace-aware collector can fill the same fields without changing the
+export shape.
+
 Artifact embeds coverage fractions next to every USD sum; `NULL` USD is `—`,
 never zero. Schema capability banners appear when columns (e.g. `excluded_from_net`)
 are missing on legacy files.

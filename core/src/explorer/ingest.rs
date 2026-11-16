@@ -20,7 +20,7 @@ use crate::explorer::classify::{self, BlockContext, BlockInput, TxInput};
 use crate::explorer::jit_accounting::{self, ArchiveBudget, JitAccounting, LpBlock, Quote};
 use crate::explorer::pricing::{self, TokenUsd};
 use crate::explorer::store::{
-    BlockFactsInput, ExplorerStore, JitJournalInput, SwapRow, TransferRow, TxRow,
+    BlockFactsInput, ExplorerStore, JitJournalInput, SwapRow, TransferRow, TxEvidenceRow, TxRow,
 };
 use crate::explorer::types::{MevEvent, MevKind};
 use crate::progress::{JobProgress, ProgressEvent};
@@ -719,6 +719,40 @@ pub async fn index_block_fetched(
     // Price each JIT cashflow at its own hour, then evaluate with the same
     // evaluator repricing uses. Quotes persist to `prices` as usual.
     fill_jit_valuation(cfg, rpc, store, &mut events).await?;
+    attach_jit_decision_context(&mut events, &input.txs);
+
+    let mut evidence_tx_indices: BTreeSet<u64> = events.iter().map(|e| e.tx_index).collect();
+    let tx_index_by_hash: HashMap<B256, u64> = txs.iter().map(|t| (t.hash, t.index)).collect();
+    for ev in &events {
+        for victim in &ev.victim_hashes {
+            if let Some(idx) = tx_index_by_hash.get(victim) {
+                evidence_tx_indices.insert(*idx);
+            }
+        }
+        if ev.kind == MevKind::Jit {
+            if let Some(hash) = ev.details.get("opening_tx_hash").and_then(|v| v.as_str()) {
+                if let Some((_, idx)) = tx_index_by_hash
+                    .iter()
+                    .find(|(h, _)| format!("{h:#x}") == hash)
+                {
+                    evidence_tx_indices.insert(*idx);
+                }
+            }
+        }
+    }
+    let mut tx_evidence = build_tx_evidence(
+        cfg.chain,
+        block_number,
+        &txs,
+        &receipts,
+        &evidence_tx_indices,
+        &transfer_rows,
+        &swap_rows,
+    );
+    tx_evidence
+        .extend(fetch_cross_block_jit_evidence(rpc, cfg, pools, block_number, &events).await);
+    let mut seen_evidence = HashSet::new();
+    tx_evidence.retain(|row| seen_evidence.insert(row.tx_hash));
 
     blocking_store(|| -> anyhow::Result<()> {
         store
@@ -732,6 +766,7 @@ pub async fn index_block_fetched(
                 swaps: &swap_rows,
                 transfers: &transfer_rows,
                 events: &events,
+                tx_evidence: &tx_evidence,
                 native_price_usd: native.usd,
                 native_price_approximate: native.approximate,
                 token_prices: &token_prices,
@@ -748,6 +783,269 @@ pub async fn index_block_fetched(
         block: block_number,
         ops,
     })
+}
+
+/// Persist the exact same-block swap set that satisfied JIT's in-range
+/// validation, plus the position/open-close identifiers needed to read the
+/// cross-block lifecycle without re-running the classifier.
+fn attach_jit_decision_context(events: &mut [MevEvent], txs: &[TxInput]) {
+    for ev in events.iter_mut().filter(|e| e.kind == MevKind::Jit) {
+        let Some(pool) = ev.details.get("pool").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(tick_lower) = ev.details.get("tick_lower").and_then(|v| v.as_i64()) else {
+            continue;
+        };
+        let Some(tick_upper) = ev.details.get("tick_upper").and_then(|v| v.as_i64()) else {
+            continue;
+        };
+        let bin_amm = ev
+            .details
+            .get("bin_amm")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let in_range = |s: &crate::explorer::types::SwapFact| {
+            if format!("{:#x}", s.pool) != pool {
+                return false;
+            }
+            let Some(tick) = s.tick.map(i64::from) else {
+                return false;
+            };
+            if bin_amm {
+                tick >= tick_lower && tick <= tick_upper
+            } else {
+                tick >= tick_lower && tick < tick_upper
+            }
+        };
+        let validating_swaps: Vec<serde_json::Value> = txs
+            .iter()
+            .flat_map(|t| t.swaps.iter().map(move |s| (t.tx_hash, s)))
+            .filter(|(_, s)| in_range(s))
+            .map(|(tx_hash, s)| {
+                serde_json::json!({
+                    "tx_hash": format!("{tx_hash:#x}"),
+                    "tx_index": s.tx_index,
+                    "log_index": s.log_index,
+                    "pool": format!("{:#x}", s.pool),
+                    "amm": s.amm.as_str(),
+                    "token_in": format!("{:#x}", s.token_in),
+                    "token_out": format!("{:#x}", s.token_out),
+                    "amount_in_raw": s.amount_in.to_string(),
+                    "amount_out_raw": s.amount_out.to_string(),
+                    "tick": s.tick,
+                })
+            })
+            .collect();
+        ev.details["jit_decision_context"] = serde_json::json!({
+            "opened_block": ev.details.get("opened_block").cloned().unwrap_or(serde_json::Value::Null),
+            "held_blocks": ev.details.get("held_blocks").cloned().unwrap_or(serde_json::Value::Null),
+            "opening_tx_hash": ev.details.get("opening_tx_hash").cloned().unwrap_or(serde_json::Value::Null),
+            "opening_tx_index": ev.details.get("opening_tx_index").cloned().unwrap_or(serde_json::Value::Null),
+            "opening_log_index": ev.details.get("opening_log_index").cloned().unwrap_or(serde_json::Value::Null),
+            "burn_tx_index": ev.details.get("burn_tx_index").cloned().unwrap_or(serde_json::Value::Null),
+            "burn_log_index": ev.details.get("burn_log_index").cloned().unwrap_or(serde_json::Value::Null),
+            "pool": pool,
+            "owner": ev.details.get("owner").cloned().unwrap_or(serde_json::Value::Null),
+            "tick_lower": tick_lower,
+            "tick_upper": tick_upper,
+            "liquidity": ev.details.get("liquidity").cloned().unwrap_or(serde_json::Value::Null),
+            "validating_swaps": validating_swaps,
+        });
+    }
+}
+
+/// JIT can open a position in an earlier block. Fetch that opening block once
+/// while indexing the closing event so the dashboard can export the same
+/// cross-block evidence the classifier/accounting path used.
+async fn fetch_cross_block_jit_evidence(
+    rpc: &RpcClient,
+    cfg: &IngestConfig,
+    pools: PoolViews<'_>,
+    current_block: u64,
+    events: &[MevEvent],
+) -> Vec<TxEvidenceRow> {
+    let mut wanted: BTreeSet<(u64, String)> = BTreeSet::new();
+    for ev in events {
+        if ev.kind != MevKind::Jit {
+            continue;
+        }
+        let Some(block) = ev.details.get("opened_block").and_then(|v| v.as_u64()) else {
+            continue;
+        };
+        let Some(hash) = ev.details.get("opening_tx_hash").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if block != current_block {
+            wanted.insert((block, hash.to_ascii_lowercase()));
+        }
+    }
+
+    let mut out = Vec::new();
+    for (block, hash) in wanted {
+        let (block_data, txs, receipts) = match fetch_block_bundle(rpc, block).await {
+            Ok(bundle) => bundle,
+            Err(e) => {
+                warn!(
+                    block,
+                    tx_hash = hash,
+                    error = %e,
+                    "failed to fetch cross-block JIT opening transaction"
+                );
+                continue;
+            }
+        };
+        let Some(idx) = txs
+            .iter()
+            .find(|tx| format!("{:#x}", tx.hash) == hash)
+            .map(|tx| tx.index)
+        else {
+            continue;
+        };
+        let base_fee_gwei = block_data.base_fee_per_gas.map(|b| b as f64 / 1e9);
+        let decoded = decode_successful_txs(&txs, &receipts, pools, cfg, base_fee_gwei);
+        out.extend(build_tx_evidence(
+            cfg.chain,
+            block,
+            &txs,
+            &receipts,
+            &BTreeSet::from([idx]),
+            &decoded.transfer_rows,
+            &decoded.swap_rows,
+        ));
+    }
+    out
+}
+
+/// Build offline-verification payloads for the transactions that produced MEV
+/// ops. Trace methods are not part of the block+receipt ingest path, so their
+/// sections are explicit `null` values with an availability reason instead of
+/// silently looking like an empty call tree.
+fn build_tx_evidence(
+    chain: ChainName,
+    block_number: u64,
+    txs: &[TxData],
+    receipts: &[ReceiptData],
+    op_tx_indices: &BTreeSet<u64>,
+    transfers: &[TransferRow],
+    swaps: &[SwapRow],
+) -> Vec<TxEvidenceRow> {
+    if op_tx_indices.is_empty() {
+        return Vec::new();
+    }
+    let tx_by_index: HashMap<u64, &TxData> = txs.iter().map(|t| (t.index, t)).collect();
+    let receipt_by_index: HashMap<u64, &ReceiptData> =
+        receipts.iter().map(|r| (r.tx_index, r)).collect();
+    let mut out = Vec::with_capacity(op_tx_indices.len());
+    for tx_index in op_tx_indices {
+        let Some(tx) = tx_by_index.get(tx_index) else {
+            continue;
+        };
+        let Some(receipt) = receipt_by_index.get(tx_index) else {
+            continue;
+        };
+        let transaction = serde_json::json!({
+            "hash": format!("{:#x}", tx.hash),
+            "block_number": block_number,
+            "tx_index": tx.index,
+            "type": tx.tx_type,
+            "from": format!("{:#x}", tx.from),
+            "to": tx.to.map(|a| format!("{a:#x}")),
+            "value_wei": tx.value.to_string(),
+            "input": format!("0x{}", hex::encode(tx.input.as_ref())),
+            "gas_limit": tx.gas_limit,
+            "max_fee_per_gas_wei": tx.max_fee_per_gas.to_string(),
+            "max_priority_fee_per_gas_wei": tx.max_priority_fee_per_gas.map(|v| v.to_string()),
+            "gas_price_wei": tx.gas_price.map(|v| v.to_string()),
+            "nonce": tx.nonce,
+            "access_list": tx.access_list.iter().map(|item| serde_json::json!({
+                "address": format!("{:#x}", item.address),
+                "storage_keys": item.slots.iter().map(|s| format!("{s:#x}")).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "authorization_list": tx.authorization_list.iter().map(|a| serde_json::json!({
+                "chain_id": a.chain_id.to_string(),
+                "address": format!("{:#x}", a.address),
+                "nonce": a.nonce,
+                "y_parity": a.y_parity,
+                "r": a.r.to_string(),
+                "s": a.s.to_string(),
+            })).collect::<Vec<_>>(),
+        });
+        let receipt_json = serde_json::json!({
+            "block_hash": receipt.block_hash.map(|h| format!("{h:#x}")),
+            "status": receipt.status,
+            "gas_used": receipt.gas_used,
+            "cumulative_gas_used": receipt.cumulative_gas_used,
+            "effective_gas_price_wei": receipt.effective_gas_price.map(|v| v.to_string()),
+            "contract_address": receipt.contract_address.map(|a| format!("{a:#x}")),
+        });
+        let event_logs: Vec<serde_json::Value> = receipt
+            .logs
+            .iter()
+            .enumerate()
+            .map(|(position, log)| {
+                serde_json::json!({
+                    "log_index": log.log_index,
+                    "tx_log_position": position,
+                    "address": format!("{:#x}", log.address),
+                    "topics": log.topics.iter().map(|t| format!("{t:#x}")).collect::<Vec<_>>(),
+                    "data": format!("0x{}", hex::encode(log.data.as_ref())),
+                })
+            })
+            .collect();
+        let token_transfers: Vec<serde_json::Value> = transfers
+            .iter()
+            .filter(|t| t.tx_index == *tx_index)
+            .map(|t| {
+                serde_json::json!({
+                    "log_index": t.log_index,
+                    "token": format!("{:#x}", t.token),
+                    "from": format!("{:#x}", t.from),
+                    "to": format!("{:#x}", t.to),
+                    "amount_raw": t.amount.to_string(),
+                })
+            })
+            .collect();
+        let swap_events: Vec<serde_json::Value> = swaps
+            .iter()
+            .filter(|s| s.tx_index == *tx_index)
+            .map(|s| {
+                serde_json::json!({
+                    "log_index": s.log_index,
+                    "pool": format!("{:#x}", s.pool),
+                    "amm": s.amm.as_str(),
+                    "token_in": format!("{:#x}", s.token_in),
+                    "token_out": format!("{:#x}", s.token_out),
+                    "amount_in_raw": s.amount_in.to_string(),
+                    "amount_out_raw": s.amount_out.to_string(),
+                })
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "export_version": 1,
+            "chain": chain.to_string(),
+            "block_number": block_number,
+            "tx_hash": format!("{:#x}", tx.hash),
+            "tx_index": tx.index,
+            "transaction": transaction,
+            "receipt": receipt_json,
+            "event_logs": event_logs,
+            "token_transfers": token_transfers,
+            "swap_events": swap_events,
+            "internal_calls": serde_json::Value::Null,
+            "internal_transactions": serde_json::Value::Null,
+            "trace": {
+                "status": "unavailable",
+                "reason": "Ingest stores block and receipt data but does not call a trace RPC.",
+                "required_methods": ["debug_traceTransaction", "trace_transaction"],
+            },
+        });
+        out.push(TxEvidenceRow {
+            tx_hash: tx.hash,
+            tx_index: tx.index,
+            payload_json: payload.to_string(),
+        });
+    }
+    out
 }
 
 /// Run a synchronous SQLite write on a blocking context when the runtime can
@@ -1839,6 +2137,159 @@ mod tests {
         let out = llama_token_chunks(&one);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0], one);
+    }
+
+    #[test]
+    fn tx_evidence_contains_logs_transfers_and_explicit_trace_gap() {
+        use crate::data::LogData;
+
+        let tx_hash = B256::from([0x22; 32]);
+        let token = Address::from([0x44; 20]);
+        let pool = Address::from([0x55; 20]);
+        let tx = TxData {
+            hash: tx_hash,
+            index: 0,
+            tx_type: 2,
+            from: Address::from([0x11; 20]),
+            to: Some(Address::from([0x33; 20])),
+            input: Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]),
+            value: U256::from(5u64),
+            gas_limit: 100_000,
+            max_fee_per_gas: 30,
+            max_priority_fee_per_gas: Some(2),
+            gas_price: None,
+            nonce: 9,
+            access_list: vec![],
+            authorization_list: vec![],
+        };
+        let receipt = ReceiptData {
+            block_hash: Some(B256::from([0x66; 32])),
+            tx_hash,
+            tx_index: 0,
+            status: true,
+            gas_used: 50_000,
+            cumulative_gas_used: 60_000,
+            effective_gas_price: Some(25),
+            logs: vec![LogData {
+                log_index: Some(42),
+                address: token,
+                topics: vec![B256::from([0x77; 32])],
+                data: Bytes::from(vec![0xaa, 0xbb]),
+            }],
+            contract_address: None,
+        };
+        let transfer = TransferRow {
+            tx_index: 0,
+            log_index: 42,
+            token,
+            from: Address::from([0x88; 20]),
+            to: Address::from([0x99; 20]),
+            amount: U256::from(7u64),
+        };
+        let swap = SwapRow {
+            tx_index: 0,
+            log_index: 43,
+            pool,
+            amm: crate::explorer::types::Amm::V2,
+            token_in: token,
+            token_out: Address::from([0xaa; 20]),
+            amount_in: U256::from(100u64),
+            amount_out: U256::from(90u64),
+        };
+
+        let rows = build_tx_evidence(
+            ChainName::Avalanche,
+            100,
+            &[tx],
+            &[receipt],
+            &BTreeSet::from([0u64]),
+            &[transfer],
+            &[swap],
+        );
+        assert_eq!(rows.len(), 1);
+        let payload: serde_json::Value =
+            serde_json::from_str(&rows[0].payload_json).expect("payload json");
+        assert_eq!(payload["transaction"]["input"], "0xdeadbeef");
+        assert_eq!(payload["event_logs"][0]["log_index"], 42);
+        assert_eq!(payload["token_transfers"][0]["amount_raw"], "7");
+        assert_eq!(payload["swap_events"][0]["amount_out_raw"], "90");
+        assert!(payload["internal_calls"].is_null());
+        assert!(payload["internal_transactions"].is_null());
+        assert_eq!(payload["trace"]["status"], "unavailable");
+    }
+
+    #[test]
+    fn jit_decision_context_keeps_only_in_range_swaps() {
+        use crate::explorer::types::{Amm, LegSource, SwapFact};
+
+        let pool = Address::from([0x10; 20]);
+        let token_a = Address::from([0x11; 20]);
+        let token_b = Address::from([0x12; 20]);
+        let tx_hash = B256::from([0x22; 32]);
+        let swap = |log_index: u64, tick: i32| SwapFact {
+            tx_index: 0,
+            log_index,
+            pool,
+            amm: Amm::V3,
+            token_in: token_a,
+            token_out: token_b,
+            amount_in: U256::from(100u64),
+            amount_out: U256::from(90u64),
+            token_source: LegSource::Registry,
+            tick: Some(tick),
+            owner: None,
+        };
+        let tx = TxInput {
+            tx_index: 0,
+            tx_hash,
+            from: Address::from([0x13; 20]),
+            to: Some(pool),
+            success: true,
+            gas_used: 1,
+            effective_gas_price_gwei: 1.0,
+            value: U256::ZERO,
+            transfers: vec![],
+            swaps: vec![swap(1, -5), swap(2, -500)],
+            liquidations: vec![],
+            flashloans: vec![],
+            buy_collaterals: vec![],
+            jit: vec![],
+            v2_pair_ops: vec![],
+            oracle_updates: vec![],
+            reserve_updates: vec![],
+            rate_cache_updates: vec![],
+            keepers: vec![],
+            epoch_rewards: vec![],
+            gmx_events: vec![],
+        };
+        let mut ev = sample();
+        ev.kind = MevKind::Jit;
+        ev.tx_hash = tx_hash;
+        ev.details = serde_json::json!({
+            "pool": format!("{pool:#x}"),
+            "owner": format!("{:#x}", Address::from([0x14; 20])),
+            "tick_lower": -10,
+            "tick_upper": 0,
+            "liquidity": "1000",
+            "bin_amm": false,
+            "opening_tx_hash": format!("{tx_hash:#x}"),
+            "opening_tx_index": 0,
+            "opening_log_index": 3,
+            "burn_tx_index": 0,
+            "burn_log_index": 4,
+            "opened_block": 100,
+            "held_blocks": 5,
+        });
+
+        attach_jit_decision_context(std::slice::from_mut(&mut ev), &[tx]);
+        let ctx = &ev.details["jit_decision_context"];
+        let valid = ctx["validating_swaps"]
+            .as_array()
+            .expect("validating swaps");
+        assert_eq!(valid.len(), 1, "only the tick inside [lower, upper) passes");
+        assert_eq!(valid[0]["tick"], -5);
+        assert_eq!(valid[0]["tx_hash"], format!("{tx_hash:#x}"));
+        assert_eq!(ctx["opening_log_index"], 3);
     }
 
     fn sample() -> MevEvent {

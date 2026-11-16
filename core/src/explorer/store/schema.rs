@@ -39,6 +39,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v12_paper_exec,
     migrate_v13_paper_exec_cost,
     migrate_v14_jit_journal,
+    migrate_v15_tx_evidence,
 ];
 
 /// Current schema head (`PRAGMA user_version` after a full migrate).
@@ -341,6 +342,23 @@ fn migrate_v14_jit_journal(conn: &Connection) -> anyhow::Result<()> {
            journal TEXT NOT NULL
          );
          CREATE INDEX IF NOT EXISTS idx_jit_blocks_hash ON jit_blocks(block_hash);",
+    )?;
+    Ok(())
+}
+
+/// Full transaction payload for MEV-op transactions: transaction inputs,
+/// receipt logs, decoded transfers/swaps, and an explicit trace-availability
+/// section for offline verification exports.
+fn migrate_v15_tx_evidence(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tx_evidence(
+           tx_hash TEXT PRIMARY KEY,
+           block_number INTEGER NOT NULL,
+           tx_index INTEGER NOT NULL,
+           payload_json TEXT NOT NULL,
+           created_at INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS tx_evidence_block ON tx_evidence(block_number);",
     )?;
     Ok(())
 }

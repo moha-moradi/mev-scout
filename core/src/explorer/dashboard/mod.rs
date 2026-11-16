@@ -364,6 +364,54 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
     )?;
 
     // Soft byte budget: drop evidence first, then trim events.
+    if caps.tables.iter().any(|t| t == "tx_evidence") {
+        let mut hashes: Vec<String> = Vec::new();
+        for evidence in &panels.evidence {
+            hashes.push(evidence.tx_hash.to_ascii_lowercase());
+            hashes.extend(
+                evidence
+                    .victim_hashes
+                    .iter()
+                    .map(|h| h.to_ascii_lowercase()),
+            );
+            if let Some(opening) = evidence
+                .details
+                .get("opening_tx_hash")
+                .and_then(serde_json::Value::as_str)
+            {
+                hashes.push(opening.to_ascii_lowercase());
+            }
+        }
+        hashes.sort();
+        hashes.dedup();
+        let bundles = load_tx_bundles(&tx, &hashes)?;
+        for evidence in &mut panels.evidence {
+            let own = evidence.tx_hash.to_ascii_lowercase();
+            evidence.tx_bundle = bundles.get(&own).cloned();
+            let mut related = HashMap::new();
+            for hash in &evidence.victim_hashes {
+                let key = hash.to_ascii_lowercase();
+                if key != own {
+                    if let Some(bundle) = bundles.get(&key) {
+                        related.insert(key, bundle.clone());
+                    }
+                }
+            }
+            if let Some(opening) = evidence
+                .details
+                .get("opening_tx_hash")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_ascii_lowercase)
+            {
+                if opening != own {
+                    if let Some(bundle) = bundles.get(&opening) {
+                        related.insert(opening, bundle.clone());
+                    }
+                }
+            }
+            evidence.related_tx_bundles = related;
+        }
+    }
     let budget = opts.budget_mb.saturating_mul(1024 * 1024);
     enforce_budget(&mut panels, budget);
 
@@ -712,6 +760,39 @@ fn load_labels(conn: &rusqlite::Connection) -> anyhow::Result<HashMap<String, St
         map.insert(addr, label);
     }
     Ok(map)
+}
+
+fn load_tx_bundles(
+    conn: &rusqlite::Connection,
+    hashes: &[String],
+) -> anyhow::Result<HashMap<String, serde_json::Value>> {
+    const CHUNK: usize = 500;
+    let mut out = HashMap::new();
+    for chunk in hashes.chunks(CHUNK) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT tx_hash, payload_json FROM tx_evidence WHERE tx_hash IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (hash, raw) = row?;
+            match serde_json::from_str(&raw) {
+                Ok(value) => {
+                    out.insert(hash, value);
+                }
+                Err(e) => tracing::warn!(tx_hash = hash, error = %e, "invalid tx_evidence payload"),
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn load_catalogue_tags() -> HashSet<String> {

@@ -172,6 +172,7 @@ impl ExplorerStore {
             swaps,
             transfers,
             events,
+            tx_evidence,
             native_price_usd,
             native_price_approximate,
             token_prices,
@@ -296,6 +297,23 @@ impl ExplorerStore {
                     format!("{:#x}", t.from),
                     format!("{:#x}", t.to),
                     t.amount.to_string(),
+                ])?;
+            }
+        }
+
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO tx_evidence
+                   (tx_hash, block_number, tx_index, payload_json, created_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for evidence in tx_evidence {
+                stmt.execute(rusqlite::params![
+                    format!("{:#x}", evidence.tx_hash),
+                    block_number as i64,
+                    evidence.tx_index as i64,
+                    evidence.payload_json,
+                    now,
                 ])?;
             }
         }

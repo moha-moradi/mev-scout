@@ -16,6 +16,7 @@ use crate::pool::decoders::{
 
 fn log(address: Address, topics: Vec<B256>, data: Vec<u8>) -> LogData {
     LogData {
+        log_index: None,
         address,
         topics,
         data: alloy::primitives::Bytes::from(data),

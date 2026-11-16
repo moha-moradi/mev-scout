@@ -309,6 +309,7 @@ fn p0_2_benqi_alias() {
     data[44..64].copy_from_slice(qi_eth.as_slice());
     data[88..96].copy_from_slice(&500u64.to_be_bytes());
     let liq_log = LogData {
+        log_index: None,
         address: qi_avax,
         topics: vec![
             *COMPOUND_V2_LIQUIDATE_BORROW_TOPIC,

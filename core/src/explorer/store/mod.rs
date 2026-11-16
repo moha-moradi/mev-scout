@@ -158,6 +158,7 @@ pub struct BlockFactsInput<'a> {
     pub swaps: &'a [SwapRow],
     pub transfers: &'a [TransferRow],
     pub events: &'a [MevEvent],
+    pub tx_evidence: &'a [TxEvidenceRow],
     pub native_price_usd: Option<f64>,
     /// True when `native_price_usd` is a fallback (current/nearby quote) rather
     /// than the block hour's own historical quote.
@@ -165,6 +166,15 @@ pub struct BlockFactsInput<'a> {
     pub token_prices: &'a std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
     /// Receipt-local LP journal + open-position update, committed with the facts.
     pub jit_journal: Option<JitJournalInput<'a>>,
+}
+
+/// One self-contained transaction evidence payload (`tx_evidence.payload_json`)
+/// for offline verification of an MEV operation.
+#[derive(Debug, Clone)]
+pub struct TxEvidenceRow {
+    pub tx_hash: B256,
+    pub tx_index: u64,
+    pub payload_json: String,
 }
 
 /// One scanner opportunity row to insert (`opportunities` results table).
@@ -366,6 +376,7 @@ mod tests {
                 swaps: p.swaps,
                 transfers: &[],
                 events: p.events,
+                tx_evidence: &[],
                 native_price_usd: Some(0.75),
                 native_price_approximate: false,
                 token_prices: p.token_prices,
@@ -999,6 +1010,7 @@ mod tests {
                     swaps: &[],
                     transfers: &[],
                     events: std::slice::from_ref(&ev),
+                    tx_evidence: &[],
                     native_price_usd,
                     native_price_approximate: false,
                     token_prices: &prices,
@@ -1728,6 +1740,7 @@ mod tests {
                 swaps: &[],
                 transfers: &[],
                 events: &[],
+                tx_evidence: &[],
                 native_price_usd: None,
                 native_price_approximate: false,
                 token_prices: &prices,

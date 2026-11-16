@@ -15,19 +15,12 @@ fn explorer_store(config: &Config, chain: ChainName) -> anyhow::Result<ExplorerS
     ExplorerStore::open(config.effective_explorer_db_path(&chain))
 }
 
-/// Explicit `--db`, else the effective explorer DB path for the first
-/// configured chain.
+/// Explicit `--db`, else the effective explorer DB path for the active chain.
 fn resolve_db(config: &Config, db: Option<&Path>) -> PathBuf {
     if let Some(p) = db {
         return p.to_path_buf();
     }
-    let chain = config
-        .chains
-        .keys()
-        .next()
-        .and_then(|k| k.parse::<ChainName>().ok())
-        .unwrap_or(ChainName::Avalanche);
-    PathBuf::from(config.effective_explorer_db_path(&chain))
+    PathBuf::from(config.effective_explorer_db_path(&config.chain))
 }
 
 fn short_addr(s: &str) -> String {
@@ -66,4 +59,28 @@ pub async fn run_dashboard(config: &Config, a: &crate::cli::DashboardArgs) -> an
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_db_uses_active_chain_and_explicit_override() {
+        let config = Config {
+            chain: ChainName::Avalanche,
+            ..Config::default()
+        };
+        let expected = PathBuf::from(config.effective_explorer_db_path(&ChainName::Avalanche));
+        assert_eq!(resolve_db(&config, None), expected);
+        assert!(
+            !resolve_db(&config, None)
+                .to_string_lossy()
+                .contains("explorer-bsc"),
+            "multi-chain configs must not fall back to the first map key"
+        );
+
+        let explicit = Path::new("cache/custom-explorer.sqlite");
+        assert_eq!(resolve_db(&config, Some(explicit)), explicit);
+    }
 }
