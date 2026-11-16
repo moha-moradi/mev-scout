@@ -156,35 +156,45 @@ profit token را از دست نمی‌دهد. انتخاب «سودآورتری
 
 نکتهٔ ابزاری: هارنس `results/_reindex_compare.py` در `clear_window` جداول
 `jit_blocks`/`jit_open_positions`/`oracle_answers`/`reserve_rates` را پاک نمی‌کند؛
-برای rerun روی DB استفاده‌شده باید از snapshot تمیز شروع کرد.
+برای rerun روی DB استفاده‌شده باید از snapshot تمیز شروع کرد. همچنین `MEV_DB`
+فقط clear/compare را عوض می‌کند — `explorer index` فلگ `--db` ندارد و همیشه
+DB پیش‌فرض config را می‌نویسد؛ برای پنجرهٔ دوم باید DB پیش‌فرض را با یک فایل
+تازه جابه‌جا کرد.
 
 ### Holdout benchmark (پنجرهٔ دوم، ۲۰۲۶-۱۱-۱۵)
 
 پنجرهٔ `100356443..=100359656` (Nov 15، 03:00–04:00 UTC)، ۳٬۲۱۴ بلاک،
 ground truth مستقل: `results/mevlive_holdout_2026-11-15_meta.json` (۵۱ arb).
-هارنس با `MEV_META`/`MEV_ARBS` اجرا شد؛ نتیجه در
-`results/compare_holdout_a3_p6.json`.
 
-| سنجه | مقدار |
-|---|---|
-| recall arb | **۴۴/۵۱** |
-| arb_atomic ops | ۱۱۱ |
-| ops با `NATIVE_PRICE_APPROX` | **۰** (یک ساعت قیمتی، ۷.۱۰ دلار) |
-| skip/failed block | ۰ |
+| مرحله | recall | arb_atomic | یادداشت |
+|---|---|---|---|
+| قبل از fix فورواردینگ | ۴۴/۵۱ | ۱۱۱ | هر ۷ miss = `net_zero_searcher` |
+| بعد از `c658a6a` | **۵۰/۵۱** | ۱۱۹ | ۶ مورد برگشت؛ ۰ APPROX |
 
-هر ۷ مورد miss با `net_zero_searcher` رد شده‌اند و **ربطی به A3/P6 ندارند**:
-- در هر ۷ tx یک cycle بستهٔ ۲–۳ edge با ≥۲ pool وجود دارد (با MAX=8 و MAX=64
-  یکسان)، پس bound گام ۱ مقصر نیست.
-- net توکن‌ها برای `tx.from` و `tx.to` صفر است و سود بین **چند** آدرس
-  غیرکاندید (فورواردر/گیرندهٔ fee) تقسیم شده؛ `forwarded_recipient` در
-  `arb.rs` فقط وقتی hit می‌دهد که دقیقاً **یک** holder مثبت وجود داشته باشد.
-- این همان باکت شناخته‌شدهٔ «forwarded profit» در audit قبلی است؛ تصمیم
-  محافظه‌کارانهٔ فعلی، نه رگرسیون این refactor.
+جزئیات ۷ miss اولیه و ریشهٔ آن‌ها:
+- در هر ۷ tx یک cycle بستهٔ ۲–۳ edge با ≥۲ pool وجود دارد (با MAX=8 و 64
+  یکسان)، پس bound گام ۱ مقصر نبود.
+- net توکن‌ها برای `tx.from` و `tx.to` صفر بود و سود بین چند آدرس تقسیم
+  می‌شد؛ `forwarded_recipient` شرط «تنها holder مثبت» را **قبل از** فیلتر
+  «تأمین‌شده توسط from/to» اعمال می‌کرد، پس یک bystander آن را fail می‌کرد.
+- fix `c658a6a`: ابتدا holderها به کسانی که inflowشان فقط از `from`/`to` است
+  محدود می‌شوند، بعد شرط یکتایی؛ دو گیرندهٔ funder-fed همچنان reject می‌شوند.
+- تنها miss باقی‌مانده (`0xf5eeb973…`) سودش در WETH.e است که در لیست
+  اولویت profit توکن Avalanche نیست؛ این یک gap پیکربندی profit-priority است
+  (خارج از این refactor) و نه forwarding.
 
-**Follow-up پیشنهادی (خارج از این پلن):** گسترش `forwarded_recipient` به
-چند گیرندهٔ تأمین‌شده توسط `from`/`to` (+ tag/detail برای split) و سنجش دوباره
-روی همین holdout با شرط حفظ 47/47 روی پنجرهٔ frozen. نیازمند تأیید محصول چون
-می‌تواند OUR-ONLY ops را زیاد کند.
+### نتیجهٔ نهایی rerun با fix فورواردینگ (DB تازه برای هر پنجره)
+
+| پنجره | recall | arb_atomic | JIT | ops با `forwarded_profit` | APPROX |
+|---|---|---|---|---|---|
+| frozen (۴۷ arb) | **۴۷/۴۷** | ۱۱۰ | ۵ | ۵۱ | ۰ |
+| holdout (۵۱ arb) | **۵۰/۵۱** | ۱۱۹ | ۳ | ۴۸ | ۰ |
+
+فایل‌ها: `results/frozen_forwarded.json`، `results/holdout_forwarded.json`.
+نکتهٔ اجرایی: هر پنجره روی یک DB تازه index شد؛ تلاش برای بازاستفاده از
+snapshot قدیمی (پیش از migration v14) وسط اجرا با خطای `no such table:
+jit_blocks` شکست خورد، چون فایل DB زیر دست پروسهٔ در حال اجرا جابه‌جا شده بود.
+مسیر قابل‌اعتماد: DB تازه، و نصف‌کردن پنجره برای اتمام هر بخش زیر ۱۰ دقیقه.
 
 ---
 
