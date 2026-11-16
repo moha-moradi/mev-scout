@@ -79,9 +79,9 @@ mev-scout discover --blocks 2000
 # Re-render the latest run offline
 mev-scout report
 
-# Index realized MEV (trailing 7 days / --hours / --days), then summarize
+# Index realized MEV (trailing 7 days / --window), then summarize
 mev-scout explorer index
-mev-scout explorer index --hours 24
+mev-scout explorer index --window 24h
 mev-scout explorer
 ```
 
@@ -94,7 +94,7 @@ mev-scout explorer
 | `discover` | Find pools (hybrid TVL ranking; `[discover].source` for factory-only) | [§3.3](docs/CLI.md#33-discover--build-the-pool-universe) |
 | `live` | Detect at tip → opportunities + virtual P&L ledger | [§3.2](docs/CLI.md#32-live--the-default-command) |
 | `report` | Re-render a recorded run from SQLite | [§3.5](docs/CLI.md#35-report--re-render-saved-results) |
-| `explorer` | Realized revenue report (bare); `index` for ingest | [§3.6](docs/CLI.md#36-explorer--realized-mev-forensics) |
+| `explorer` | All-time realized revenue report (bare); `index` for ingest; `--dashboard` for a static artifact | [§3.6](docs/CLI.md#36-explorer--realized-mev-forensics) |
 
 `run` and `paper` were folded into `live`, which detects at chain tip and
 always runs its paper ledger (`--initial-balance`, `--reserve`). Opt-in
@@ -110,8 +110,11 @@ Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live
 --blocks` sets the one-shot window (default 64); `--loop` follows the tip.
 `discover` takes optional `--blocks` / `--block` / `--from-block`/`--to-block`,
 and `--incremental`. Source and enrich live under `[discover]` in TOML.
-`explorer` takes `--windows` (`Nh`/`Nd`/`Nw` or `all`) / `--kind` / `--confidence` (`exact`|`inferred`|`all`) / `--top`. `explorer index` takes
-`--hours`, `--days`, or `--from-block`/`--to-block` (bounded; mutually exclusive).
+Bare `explorer` reports everything in the explorer DB and takes
+`--kind` / `--confidence` (`exact`|`inferred`|`all`); `explorer --dashboard`
+renders a static all-time artifact (`--db` works offline). `explorer index` takes
+`--window` (`Nh`/`Nd`/`Nw`, default `7d`) or `--from-block`/`--to-block`
+(bounded; mutually exclusive), plus `--dashboard` for a one-shot post-index HTML snapshot.
 
 ## Layout
 

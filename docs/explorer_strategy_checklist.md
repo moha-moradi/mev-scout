@@ -6,8 +6,9 @@ Status values: `pending` | `coverage_unknown` | `candidate_block` | `verified` |
 
 Not-observed is not a deletion signal: a rare strategy may occur a few times a
 month. Retired on 2026-11-14: `P3.11 bundler` (fee business, not searcher MEV)
-and the `bad_debt_liq` tag (risk metadata, not a tradable strategy). Historical
-rows are removed by `mev-scout explorer purge-retired`.
+and the `bad_debt_liq` tag (risk metadata, not a tradable strategy). Retired
+rows may remain in historical explorer databases; they are not automatically
+rewritten or removed.
 
 | id | label | priority | status | chain | seed_from | seed_to | notes |
 |----|-------|----------|--------|-------|-----------|---------|-------|

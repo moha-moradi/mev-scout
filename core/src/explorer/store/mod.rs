@@ -22,13 +22,11 @@ mod facts;
 mod jit_positions;
 mod labels;
 mod pnl;
-mod purge;
 mod query;
 mod reprice;
 mod schema;
 mod sync;
 
-pub use purge::PurgeReport;
 pub use schema::SCHEMA_HEAD;
 
 use alloy::primitives::{Address, B256, U256};

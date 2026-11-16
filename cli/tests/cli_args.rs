@@ -61,8 +61,9 @@ fn explorer_help_lists_subcommands() {
         help_lists_subcommand(&out.stdout, "index"),
         "explorer --help missing subcommand 'index'"
     );
-    // Revenue report is bare `explorer`; `backfill` folded into `index`.
     for removed in [
+        "dashboard",
+        "purge-retired",
         "show",
         "report",
         "backfill",
@@ -79,10 +80,31 @@ fn explorer_help_lists_subcommands() {
             "explorer --help still lists removed subcommand '{removed}'"
         );
     }
-    for flag in ["--windows", "--kind", "--top", "--confidence"] {
+    for flag in [
+        "--dashboard",
+        "--db",
+        "--out",
+        "--format",
+        "--repeat",
+        "--kind",
+        "--confidence",
+    ] {
         assert!(
             out.stdout.contains(flag),
-            "explorer --help missing report flag '{flag}'"
+            "explorer --help missing retained flag '{flag}'"
+        );
+    }
+    for removed in [
+        "--windows",
+        "--top",
+        "--with-gaps",
+        "--max-ops",
+        "--evidence",
+        "--budget-mb",
+    ] {
+        assert!(
+            !out.stdout.contains(removed),
+            "explorer --help still lists removed flag '{removed}'"
         );
     }
 }
@@ -146,8 +168,46 @@ fn removed_and_unknown_surface_fails() {
         ("explorer stats", &["explorer", "stats"], None),
         ("explorer report", &["explorer", "report"], None),
         ("explorer backfill", &["explorer", "backfill"], None),
+        ("explorer dashboard", &["explorer", "dashboard"], None),
+        (
+            "explorer purge-retired",
+            &["explorer", "purge-retired"],
+            None,
+        ),
         ("explorer top", &["explorer", "top", "--by", "sender"], None),
         ("explorer unknown", &["explorer", "frobnicate"], None),
+        ("explorer --windows", &["explorer", "--windows", "7d"], None),
+        ("explorer --top", &["explorer", "--top", "20"], None),
+        (
+            "explorer --with-gaps",
+            &["explorer", "--dashboard", "--with-gaps"],
+            None,
+        ),
+        (
+            "explorer --max-ops",
+            &["explorer", "--dashboard", "--max-ops", "10"],
+            None,
+        ),
+        (
+            "explorer --evidence",
+            &["explorer", "--dashboard", "--evidence", "10"],
+            None,
+        ),
+        (
+            "explorer --budget-mb",
+            &["explorer", "--dashboard", "--budget-mb", "1"],
+            None,
+        ),
+        (
+            "explorer index --hours",
+            &["explorer", "index", "--hours", "6"],
+            None,
+        ),
+        (
+            "explorer index --days",
+            &["explorer", "index", "--days", "1"],
+            None,
+        ),
         ("paper", &["paper"], Some("unrecognized subcommand 'paper'")),
         ("run", &["run"], Some("unrecognized subcommand 'run'")),
         ("fetch", &["fetch"], None),
@@ -408,30 +468,60 @@ fn default_subcommand_matches_live_defaults() {
     }
 }
 
-/// Bare `explorer` is the revenue report; report flags resolve their defaults.
+/// Bare `explorer` is the all-time revenue report; dashboard is a mode flag.
 #[test]
-fn bare_explorer_is_revenue_report() {
+fn bare_explorer_is_all_time_report() {
     use clap::Parser;
-    use mev_scout_cli::cli::{Cli, Command, DEFAULT_EXPLORER_TOP, DEFAULT_EXPLORER_WINDOWS};
+    use mev_scout_cli::cli::{Cli, Command};
 
     let cli = Cli::parse_from(["mev-scout", "explorer"]);
     match cli.command {
         Some(Command::Explorer(a)) => {
             assert!(a.command.is_none(), "bare explorer has no subcommand");
-            assert_eq!(a.resolved_windows(), DEFAULT_EXPLORER_WINDOWS);
-            assert_eq!(a.resolved_top(), DEFAULT_EXPLORER_TOP);
-            assert!(!a.report_flags_set());
+            assert!(a.kind.is_none());
+            assert!(a.resolved_confidence().is_none());
+            assert!(!a.dashboard.any_set(), "dashboard off by default");
+            assert!(!a.bare_flags_set());
         }
         other => panic!("expected Explorer, got {other:?}"),
     }
 
-    let cli = Cli::parse_from(["mev-scout", "explorer", "--windows", "7d", "--top", "20"]);
+    let cli = Cli::parse_from([
+        "mev-scout",
+        "explorer",
+        "--kind",
+        "sandwich",
+        "--confidence",
+        "exact",
+    ]);
     match cli.command {
         Some(Command::Explorer(a)) => {
             assert!(a.command.is_none());
-            assert!(a.report_flags_set());
-            assert_eq!(a.resolved_windows(), vec!["7d".to_string()]);
-            assert_eq!(a.resolved_top(), 20);
+            assert!(a.bare_flags_set());
+            assert_eq!(a.kind.as_deref(), Some("sandwich"));
+            assert_eq!(a.resolved_confidence(), Some("exact"));
+        }
+        other => panic!("expected Explorer, got {other:?}"),
+    }
+
+    let cli = Cli::parse_from([
+        "mev-scout",
+        "explorer",
+        "--dashboard",
+        "--db",
+        "snapshot.sqlite",
+        "--format",
+        "json",
+    ]);
+    match cli.command {
+        Some(Command::Explorer(a)) => {
+            assert!(a.dashboard.dashboard);
+            assert!(a.bare_flags_set());
+            assert_eq!(a.dashboard.resolved_format(), "json");
+            assert_eq!(
+                a.dashboard.resolved_out(),
+                std::path::PathBuf::from("results/dash.html")
+            );
         }
         other => panic!("expected Explorer, got {other:?}"),
     }
@@ -448,7 +538,7 @@ fn explorer_confidence_flag_resolves_to_documented_values() {
     let all = Cli::parse_from(["mev-scout", "explorer", "--confidence", "all"]);
     match all.command {
         Some(Command::Explorer(a)) => {
-            assert!(a.report_flags_set());
+            assert!(a.bare_flags_set());
             assert!(
                 a.resolved_confidence().is_none(),
                 "'all' must mean no filter"
@@ -480,34 +570,48 @@ fn explorer_index_defaults_to_backfill_shape() {
     match cli.command {
         Some(Command::Explorer(a)) => match a.command {
             Some(ExplorerCommand::Index(i)) => {
-                assert!(i.hours.is_none());
-                assert!(i.days.is_none());
+                assert!(i.window.is_none());
                 assert!(i.from_block.is_none());
                 assert!(i.to_block.is_none());
+                assert!(!i.dashboard);
             }
             other => panic!("expected Index, got {other:?}"),
         },
         other => panic!("expected Explorer, got {other:?}"),
     }
 
-    let cli = Cli::parse_from(["mev-scout", "explorer", "index", "--days", "30"]);
-    match cli.command {
-        Some(Command::Explorer(a)) => match a.command {
-            Some(ExplorerCommand::Index(i)) => {
-                assert_eq!(i.days, Some(30));
-                assert!(i.hours.is_none());
-            }
-            other => panic!("expected Index, got {other:?}"),
-        },
-        other => panic!("expected Explorer, got {other:?}"),
+    for window in ["6h", "30d", "2w"] {
+        let cli = Cli::parse_from(["mev-scout", "explorer", "index", "--window", window]);
+        match cli.command {
+            Some(Command::Explorer(a)) => match a.command {
+                Some(ExplorerCommand::Index(i)) => {
+                    assert_eq!(i.window.as_deref(), Some(window));
+                    assert!(i.from_block.is_none());
+                    assert!(i.to_block.is_none());
+                }
+                other => panic!("expected Index, got {other:?}"),
+            },
+            other => panic!("expected Explorer, got {other:?}"),
+        }
     }
 
-    let cli = Cli::parse_from(["mev-scout", "explorer", "index", "--hours", "6"]);
+    let cli = Cli::parse_from([
+        "mev-scout",
+        "explorer",
+        "index",
+        "--from-block",
+        "65000000",
+        "--to-block",
+        "65001000",
+        "--dashboard",
+    ]);
     match cli.command {
         Some(Command::Explorer(a)) => match a.command {
             Some(ExplorerCommand::Index(i)) => {
-                assert_eq!(i.hours, Some(6));
-                assert!(i.days.is_none());
+                assert_eq!(i.from_block, Some(65_000_000));
+                assert_eq!(i.to_block, Some(65_001_000));
+                assert!(i.window.is_none());
+                assert!(i.dashboard);
             }
             other => panic!("expected Index, got {other:?}"),
         },
@@ -515,10 +619,31 @@ fn explorer_index_defaults_to_backfill_shape() {
     }
 }
 
-/// `--hours` and `--days` together are rejected at dispatch.
+/// Invalid index windows fail before any RPC initialization.
 #[test]
-fn explorer_index_rejects_hours_with_days() {
-    let ws = temp_ws("args_explorer_index_hours_days");
+fn explorer_index_rejects_invalid_windows() {
+    for window in ["0d", "all", "1x", "d", "366d", "53w"] {
+        let ws = temp_ws(&format!(
+            "args_explorer_index_window_{}",
+            window.replace(['-', '.'], "_")
+        ));
+        let out = run(
+            &ws,
+            &["-f", &cfg(), "explorer", "index", "--window", window],
+        );
+        expect_fail(&out, &format!("explorer index --window {window}"));
+        let combined = out.combined();
+        assert!(
+            combined.contains("invalid --window") || combined.contains("365-day limit"),
+            "expected window validation for {window:?}, got:\n{combined}"
+        );
+    }
+}
+
+/// `--window` cannot be combined with exact block bounds.
+#[test]
+fn explorer_index_rejects_window_with_blocks() {
+    let ws = temp_ws("args_explorer_index_window_blocks");
     let out = run(
         &ws,
         &[
@@ -526,17 +651,19 @@ fn explorer_index_rejects_hours_with_days() {
             &cfg(),
             "explorer",
             "index",
-            "--hours",
-            "6",
-            "--days",
+            "--window",
+            "1d",
+            "--from-block",
             "1",
+            "--to-block",
+            "2",
         ],
     );
-    expect_fail(&out, "explorer index --hours --days");
+    expect_fail(&out, "explorer index --window --from-block");
+    let combined = out.combined();
     assert!(
-        out.combined().contains("mutually exclusive"),
-        "expected hours/days conflict message, got:\n{}",
-        out.combined()
+        combined.contains("cannot be used with") || combined.contains("conflict"),
+        "expected clap range conflict, got:\n{combined}"
     );
 }
 
@@ -567,31 +694,68 @@ fn explorer_invalid_confidence_value_fails_at_clap() {
     );
 }
 
-/// Report flags on a subcommand are rejected.
+/// Report/dashboard flags on a subcommand are rejected.
 #[test]
-fn explorer_index_rejects_report_flags() {
-    let ws = temp_ws("args_explorer_index_windows");
+fn explorer_index_rejects_bare_mode_flags() {
+    let ws = temp_ws("args_explorer_index_report_flags");
     let out = run(
         &ws,
         &[
             "-f",
             &cfg(),
             "explorer",
-            "--windows",
-            "7d",
+            "--kind",
+            "sandwich",
             "index",
-            "--days",
-            "1",
+            "--window",
+            "1d",
         ],
     );
-    expect_fail(&out, "explorer --windows index");
+    expect_fail(&out, "explorer --kind index");
     assert!(
-        out.combined().contains("belong on bare `explorer`")
-            || out.combined().contains("unexpected argument")
-            || out.combined().contains("unrecognized"),
-        "expected report-flag conflict or clap rejection, got:\n{}",
+        out.combined().contains("belong on bare `explorer`"),
+        "expected bare-mode flag rejection, got:\n{}",
         out.combined()
     );
+
+    let out = run(
+        &ws,
+        &[
+            "-f",
+            &cfg(),
+            "explorer",
+            "--dashboard",
+            "index",
+            "--window",
+            "1d",
+        ],
+    );
+    expect_fail(&out, "explorer --dashboard index");
+    assert!(
+        out.combined().contains("belong on bare `explorer`"),
+        "expected dashboard mode rejection with index, got:\n{}",
+        out.combined()
+    );
+}
+
+/// Dashboard-only options require `--dashboard`, and filters conflict with it.
+#[test]
+fn explorer_dashboard_flag_requirements() {
+    for args in [
+        &["explorer", "--db", "snapshot.sqlite"][..],
+        &["explorer", "--out", "dash.json"][..],
+        &["explorer", "--format", "json"][..],
+        &["explorer", "--repeat", "60s"][..],
+        &["explorer", "--dashboard", "--kind", "sandwich"][..],
+        &["explorer", "--dashboard", "--confidence", "exact"][..],
+    ] {
+        let ws = temp_ws(&format!(
+            "args_explorer_dashboard_{}",
+            args.join("_").replace(['-', '/', '.'], "_")
+        ));
+        let out = run(&ws, args);
+        expect_fail(&out, &format!("explorer dashboard args {args:?}"));
+    }
 }
 
 #[test]

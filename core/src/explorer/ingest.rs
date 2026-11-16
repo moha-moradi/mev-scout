@@ -1278,8 +1278,8 @@ fn settle_pipelined_persist(
 /// block+receipts RPC fetches while classify/persist stays in ascending
 /// block order (JIT / oracle / interest lookbacks require it).
 ///
-/// Feeds the revenue report's 1d/7d/30d windows: without history in the store
-/// the report has nothing to show for those windows.
+/// Feeds the all-time revenue report: without history in the store the report
+/// has nothing to show.
 ///
 /// Everything in the range is treated as finalized once it lags
 /// `confirmations`. Profit and native/gas USD are priced at the block's own

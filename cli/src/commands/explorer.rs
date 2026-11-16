@@ -1,4 +1,4 @@
-//! `mev-scout explorer` subcommands: index (historical), report, dashboard.
+//! `mev-scout explorer` mode: all-time report, dashboard, index backfill.
 use std::path::{Path, PathBuf};
 
 use comfy_table::Table;
@@ -40,15 +40,13 @@ fn short_addr(s: &str) -> String {
 
 mod backfill;
 mod dashboard;
-mod purge;
 mod report;
 
 pub use backfill::cmd_backfill;
 use dashboard::cmd_dashboard;
-pub use purge::cmd_purge_retired;
 pub use report::cmd_explorer_report;
 
-/// Run `explorer dashboard` from clap [`crate::cli::DashboardArgs`].
+/// Run `explorer --dashboard` from clap [`crate::cli::DashboardArgs`].
 pub async fn run_dashboard(config: &Config, a: &crate::cli::DashboardArgs) -> anyhow::Result<()> {
     let repeat = match a.repeat.as_deref() {
         None => None,
@@ -62,13 +60,8 @@ pub async fn run_dashboard(config: &Config, a: &crate::cli::DashboardArgs) -> an
         config,
         dashboard::DashboardArgs {
             db: a.db.clone(),
-            window: a.window.clone(),
-            out: a.out.clone(),
-            format: a.format.clone(),
-            max_ops: a.max_ops,
-            max_evidence: a.evidence,
-            with_gaps: a.with_gaps,
-            budget_mb: a.budget_mb,
+            out: a.resolved_out(),
+            format: a.resolved_format().to_string(),
             repeat,
         },
     )

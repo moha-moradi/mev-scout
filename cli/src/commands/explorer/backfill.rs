@@ -1,20 +1,23 @@
 //! ``explorer index`` — index a historical block range (clock or exact) into
-//! the explorer store so the revenue-report windows (1d/7d/30d) have realized
-//! data. Idempotent and gap-resumable via `blocks_classified`.
+//! the explorer store so the all-time revenue report has realized data.
+//! Idempotent and gap-resumable via `blocks_classified`.
 use super::*;
 
 use crate::job_progress::JobProgress;
 
-use mev_scout_core::chain::timing::{blocks_per_day, blocks_per_hour};
+use mev_scout_core::chain::timing::blocks_per_day;
 use mev_scout_core::explorer::ingest::{
     run_range, safe_head, IngestConfig, PoolViews, RangeRequest,
 };
 use mev_scout_core::jobs::{init_rpc, load_pool_registry, BackfillOutcome};
 
+const DEFAULT_BACKFILL_WINDOW: &str = "7d";
+const MAX_BACKFILL_SECS: u64 = 365 * 86_400;
+const SECS_PER_DAY: u64 = 86_400;
+
 pub async fn cmd_backfill(
     config: &Config,
-    hours: Option<u64>,
-    days: Option<u64>,
+    window: Option<&str>,
     from_block: Option<u64>,
     to_block: Option<u64>,
     progress: &dyn JobProgress,
@@ -24,37 +27,31 @@ pub async fn cmd_backfill(
     let (_, chain_cfg) = validation::resolve_chain(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let cfg = IngestConfig::from_app_config(chain, &chain_cfg, config);
 
-    let (from, to) = match (hours, days, from_block, to_block) {
-        (Some(h), None, None, None) => {
-            let setup = init_rpc(config, chain, false).await?;
-            let head = safe_head(&setup.rpc, &cfg).await?;
-            let span = h.saturating_mul(blocks_per_hour(chain));
-            (head.saturating_sub(span), head)
-        }
-        (None, Some(d), None, None) => {
-            let setup = init_rpc(config, chain, false).await?;
-            let head = safe_head(&setup.rpc, &cfg).await?;
-            let span = d.saturating_mul(blocks_per_day(chain));
-            (head.saturating_sub(span), head)
-        }
-        (None, None, Some(f), Some(t)) => {
+    let trailing_secs = match (window, from_block, to_block) {
+        (Some(w), None, None) => Some(parse_backfill_duration(w)?),
+        (None, Some(f), Some(t)) => {
             if t < f {
                 anyhow::bail!("--to-block ({t}) < --from-block ({f})");
             }
-            (f, t)
+            None
         }
-        (None, None, None, None) => {
-            // Zero-arg backfill defaults to the trailing week so the 1d/7d/30d
-            // revenue reports have data without the user picking a range.
-            let d = crate::cli::DEFAULT_BACKFILL_DAYS;
+        (None, None, None) => Some(parse_backfill_duration(DEFAULT_BACKFILL_WINDOW)?),
+        _ => anyhow::bail!(
+            "--window and --from-block/--to-block are mutually exclusive — pick one range form"
+        ),
+    };
+
+    let (from, to) = match trailing_secs {
+        Some(secs) => {
             let setup = init_rpc(config, chain, false).await?;
             let head = safe_head(&setup.rpc, &cfg).await?;
-            let span = d.saturating_mul(blocks_per_day(chain));
+            let span = window_span_blocks(chain, secs);
             (head.saturating_sub(span), head)
         }
-        _ => anyhow::bail!(
-            "--hours / --days / --from-block/--to-block are mutually exclusive — pick one range form"
-        ),
+        None => match (from_block, to_block) {
+            (Some(f), Some(t)) => (f, t),
+            _ => anyhow::bail!("--from-block and --to-block must be supplied together"),
+        },
     };
     if to < from {
         anyhow::bail!(
@@ -125,4 +122,84 @@ pub async fn cmd_backfill(
         ops: out.ops,
         elapsed,
     })
+}
+
+fn parse_backfill_duration(s: &str) -> anyhow::Result<u64> {
+    let secs = parse_duration_secs(s).ok_or_else(|| {
+        anyhow::anyhow!("invalid --window '{s}' (expected a positive Nh, Nd, or Nw duration)")
+    })?;
+    anyhow::ensure!(
+        secs <= MAX_BACKFILL_SECS,
+        "--window '{s}' exceeds the 365-day limit"
+    );
+    Ok(secs)
+}
+
+/// `Nh` / `Nd` / `Nw`. Zero and unknown suffixes are rejected.
+fn parse_duration_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let (num, unit) = s.split_at(s.len().checked_sub(1)?);
+    if num.is_empty() {
+        return None;
+    }
+    let v: u64 = num.parse().ok()?;
+    if v == 0 {
+        return None;
+    }
+    let factor = match unit {
+        "h" => 3_600,
+        "d" => 86_400,
+        "w" => 7 * 86_400,
+        _ => return None,
+    };
+    Some(v.saturating_mul(factor))
+}
+
+/// Use the authoritative blocks/day table so `24h == 1d` on every chain,
+/// including sub-second chains where rounded block time would distort spans.
+fn window_span_blocks(chain: ChainName, secs: u64) -> u64 {
+    secs.saturating_mul(blocks_per_day(chain))
+        .saturating_div(SECS_PER_DAY)
+        .max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duration_suffixes() {
+        assert_eq!(parse_backfill_duration("12h").unwrap(), 12 * 3_600);
+        assert_eq!(parse_backfill_duration("1d").unwrap(), 86_400);
+        assert_eq!(parse_backfill_duration("2w").unwrap(), 14 * 86_400);
+        assert_eq!(
+            parse_backfill_duration("24h").unwrap(),
+            parse_backfill_duration("1d").unwrap()
+        );
+    }
+
+    #[test]
+    fn duration_bounds_and_bad_input_are_rejected() {
+        assert!(parse_backfill_duration("365d").is_ok());
+        assert!(parse_backfill_duration("52w").is_ok());
+        assert!(parse_backfill_duration("366d").is_err());
+        assert!(parse_backfill_duration("53w").is_err());
+        assert!(parse_backfill_duration("0d").is_err());
+        assert!(parse_backfill_duration("1x").is_err());
+        assert!(parse_backfill_duration("d").is_err());
+        assert!(parse_backfill_duration("all").is_err());
+    }
+
+    #[test]
+    fn span_uses_authoritative_blocks_per_day() {
+        let arbitrum = ChainName::Arbitrum;
+        let per_day = blocks_per_day(arbitrum);
+        assert_eq!(window_span_blocks(arbitrum, 86_400), per_day);
+        assert_eq!(window_span_blocks(arbitrum, 3_600), per_day / 24);
+        assert_eq!(window_span_blocks(arbitrum, 14 * 86_400), per_day * 14);
+        assert!(
+            window_span_blocks(arbitrum, 86_400) > 86_400,
+            "rounded block-time conversion would undercount Arbitrum"
+        );
+    }
 }

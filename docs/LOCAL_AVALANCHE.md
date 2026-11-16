@@ -6,7 +6,7 @@ It is not a validator, not a public RPC, and not a bot host.
 
 `mev-scout` only needs the C-Chain (`chain_id = 43114`): `live` (the default
 scan; the old `run` command is this) and `explorer index`. There is no *served*
-web UI; `explorer dashboard` emits a static HTML/JSON file from the explorer
+web UI; `explorer --dashboard` emits a static HTML/JSON file from the explorer
 SQLite (read-only, no migrate). Deep historical `eth_call` stays on the public
 archive URL in `mev-scout.local.toml`.
 
@@ -151,12 +151,12 @@ scan.
 cargo build -j 2 --release -p mev-scout-cli
 ./target/release/mev-scout --config mev-scout.local.toml live
 ./target/release/mev-scout --config mev-scout.local.toml live --loop
-./target/release/mev-scout --config mev-scout.local.toml explorer index --hours 24
+./target/release/mev-scout --config mev-scout.local.toml explorer index --window 24h
 ./target/release/mev-scout --config mev-scout.local.toml discover --blocks 2000
 ```
 
 `live` with no flags scans the last 64 blocks and exits. `explorer index`
-(default trailing 7 days, or `--hours` / `--days` / `--from-block`/`--to-block`)
+(default trailing 7 days, or `--window` / `--from-block`/`--to-block`)
 is the historical ingest; bare `explorer` is the revenue report and does not
 need the node. Deleting `cache/*.sqlite` is safe.
 
@@ -193,7 +193,7 @@ sudo ufw enable
 | Connection refused on `:9650`         | `systemctl status avalanchego` — RPC is private (localhost)        |
 | `isBootstrapped` stays false          | Wait. Watch `journalctl -u avalanchego -f` and disk I/O            |
 | Disk climbs past ~700 GB              | Delete state-sync snapshots (official link above) or resync        |
-| `eth_getLogs` range errors            | Shorter `--blocks` / `--days`. Fresh nodes have no pre-sync history |
+| `eth_getLogs` range errors            | Shorter `--blocks` / `--window`. Fresh nodes have no pre-sync history |
 | `txpool_*` / `debug_trace*` missing   | `config.json` is not `{}`. Reset it and restart                    |
 | Box is swapping                       | Compile is still running, or concurrency was raised. `cargo` first, then the node, and keep concurrency at 4 |
 | Historical `eth_call` fails           | Expected. The public URL in `rpc_urls` is the archive              |

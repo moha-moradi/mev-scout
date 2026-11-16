@@ -104,7 +104,7 @@ flowchart TB
 - `pipeline` is the hub: `BacktestRunner` owns `BlockReplayer` + `PoolManager` and drives every detector per transaction.
 - `cache` (SQLite) is the local-first backbone — `live` fetches blocks into it; the runner reads from it; pool discovery persists pools/tokens into it.
 - `rpc` fronts the chain for everything: fetching, `eth_call` pool state, and replay's on-demand state misses (via `CachedRpcDb`).
-- `explorer` answers "what was made" (realized MEV forensics) vs the detectors' "what could be made" — it ingests via RPC into its own SQLite store (`./cache/explorer-{chain}.sqlite`) so live index writes never contend with replay-path cache reads. Scanner `live` always persists detected opportunities there (via in-memory `ResultsFile` DTO); `record_rejections = true` also stores rejected candidates for miss attribution. `explorer dashboard` opens the store read-only (`ExplorerStore::open_read_only`).
+- `explorer` answers "what was made" (realized MEV forensics) vs the detectors' "what could be made" — it ingests via RPC into its own SQLite store (`./cache/explorer-{chain}.sqlite`) so live index writes never contend with replay-path cache reads. Scanner `live` always persists detected opportunities there (via in-memory `ResultsFile` DTO); `record_rejections = true` also stores rejected candidates for miss attribution. `explorer --dashboard` opens the store read-only (`ExplorerStore::open_read_only`).
 - `exec` is opt-in from `live --exec revm|anvil`: builds Balancer flash-arb calldata (ABI v2) from `MevOpportunity`, deploys the executor from `creation.hex` + constructor args, runs it on revm / a local Anvil fork with signed EIP-1559 txs, and books P&L via `LedgerPolicy::apply_executed` (including revert-gas debit). Default remains paper/`--sim` only (no mainnet submit). Foundry sources live in `contracts/`; regenerate hex with:
   `node -e "const j=require('./contracts/out/FlashArbExecutor.sol/FlashArbExecutor.json'),f=require('fs');f.writeFileSync('core/src/exec/artifacts/FlashArbExecutor.creation.hex',j.bytecode.object.replace(/^0x/,'')+'\n');f.writeFileSync('core/src/exec/artifacts/FlashArbExecutor.deployed.hex',j.deployedBytecode.object.replace(/^0x/,'')+'\n')"`.
 
@@ -128,7 +128,7 @@ flowchart LR
 | Store | Typical path | Written by | Read by |
 |---|---|---|---|
 | Scanner cache | `./cache/{chain}-mev-scout.sqlite` (`Config::effective_db_path`) | `live` (incl. bootstrap token + pool seeding), `discover` | `live`, `discover`, `report` (manifests) |
-| Explorer store | `./cache/explorer-{chain}.sqlite` (`Config::effective_explorer_db_path`) | `live` (opportunities; rejections when `record_rejections = true`; one `paper_sessions` ledger row per session), `explorer index` | `report`, `explorer *` (dashboard: read-only) |
+| Explorer store | `./cache/explorer-{chain}.sqlite` (`Config::effective_explorer_db_path`) | `live` (opportunities; rejections when `record_rejections = true`; one `paper_sessions` ledger row per session), `explorer index` | `report`, `explorer` (dashboard: read-only) |
 
 ---
 
@@ -153,8 +153,8 @@ The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogO
 | Explorer store `./cache/explorer-{chain}.sqlite` — `opportunities` (+ optional `rejected_candidates`) | `live` (always opportunities; rejections when `record_rejections = true`) | `report` |
 | Explorer store — `paper_sessions` / `paper_fills` (incl. optional `exec_*` / `sim_*` columns) | `live` (one session row written at session end; fills from assumed, state-sim, or executed net) | `report` (session P&L + `sim:` / `exec:` lines) |
 | Checked-in FlashArb hex `core/src/exec/artifacts/FlashArbExecutor.{deployed,creation}.hex` | regenerate from `forge build` (`contracts/out/…`) | `core::exec::artifacts` (embedded at compile time) |
-| Explorer store — forensic layer (blocks, txs, transfers, swaps, `mev_ops`, sync_state, …) | `explorer index` | `explorer` CLI (report + `explorer dashboard`) |
-| Static dashboard `results/*.html` / `*.json` (gitignored) | `explorer dashboard` (read-only; never migrates) | browser / jq |
+| Explorer store — forensic layer (blocks, txs, transfers, swaps, `mev_ops`, sync_state, …) | `explorer index` | `explorer` CLI (all-time report + `explorer --dashboard`) |
+| Static dashboard `results/*.html` / `*.json` (gitignored) | `explorer --dashboard` (read-only; never migrates) | browser / jq |
 | Signature DB (4byte directory snapshot) | resolver only (`core::sigs::SignatureResolver`); `Fetcher::with_sig_resolver` exists but has **no callers** from jobs. Still **not wired** into `run`/`live` ingest | tx decoding (future) |
 
 `ResultsFile` is an in-memory / presentation DTO (CLI tables) — not a durable on-disk JSON artifact.

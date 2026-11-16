@@ -1,25 +1,23 @@
-//! Bare ``explorer`` — revenue report: cost, profit, and volume per time
-//! window (1d/7d/30d default), broken out per MEV kind, with a daily trend,
-//! competitors / top searchers/pools, and a top-op detail list. Pure SQL over
-//! the store — requires history (see ``explorer index``).
+//! Bare ``explorer`` — all-time revenue report: cost, profit, and volume
+//! broken out per MEV kind, with a daily trend, competitors / top
+//! searchers/pools, and a top-op detail list. Pure SQL over the store —
+//! requires history (see ``explorer index``).
 use super::*;
 
 use serde::Serialize;
 
-use mev_scout_core::chain::timing::block_time_secs;
 use mev_scout_core::explorer::store::{RejectCount, ReportOverview, ReportRow, StatsRow};
 use mev_scout_core::explorer::Confidence;
 use mev_scout_core::types::OutputFormat;
 use mev_scout_core::utils::epoch_secs;
 
-/// One window's worth of report data, ready for table / JSON / CSV rendering.
+/// Fixed leaderboard / top-op depth for the all-time report.
+const REPORT_TOP: usize = 10;
+
+/// The all-time report data, ready for table / JSON / CSV rendering.
 #[derive(Debug, Clone, Serialize)]
 struct WindowReport {
     window: String,
-    /// Fraction of expected blocks indexed in the window (0..=1); `None` for
-    /// the `all` window where expected is unbounded.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    coverage_pct: Option<f64>,
     blocks: i64,
     overview: ReportOverview,
     by_kind: Vec<ReportRow>,
@@ -32,96 +30,8 @@ struct WindowReport {
     classify_rejects: Vec<RejectCount>,
 }
 
-/// A report window: a rolling duration (`12h`, `1d`, `2w`) or all-time.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ReportWindow {
-    Rolling { label: String, secs: u64 },
-    AllTime,
-}
-
-impl ReportWindow {
-    fn label(&self) -> &str {
-        match self {
-            Self::Rolling { label, .. } => label,
-            Self::AllTime => "all",
-        }
-    }
-
-    fn since_ts(&self, now: u64) -> u64 {
-        match self {
-            Self::Rolling { secs, .. } => now.saturating_sub(*secs),
-            Self::AllTime => 0,
-        }
-    }
-
-    /// Expected blocks in this window using the chain's authoritative block
-    /// time; `None` for all-time, where the span is unbounded.
-    fn expected_blocks(&self, chain: ChainName) -> Option<u64> {
-        match self {
-            Self::Rolling { secs, .. } => Some(secs / block_time_secs(chain) as u64),
-            Self::AllTime => None,
-        }
-    }
-}
-
-fn parse_window(s: &str) -> anyhow::Result<ReportWindow> {
-    if s == "all" {
-        return Ok(ReportWindow::AllTime);
-    }
-    let secs = parse_duration_secs(s)
-        .ok_or_else(|| anyhow::anyhow!("invalid --windows '{s}' (expected Nh, Nd, Nw, or all)"))?;
-    Ok(ReportWindow::Rolling {
-        label: s.to_string(),
-        secs,
-    })
-}
-
-/// Split comma-delimited windows and deduplicate in first-seen order.
-fn parse_windows(windows: &[String]) -> anyhow::Result<Vec<ReportWindow>> {
-    let mut out: Vec<ReportWindow> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for raw in windows {
-        for part in raw.split(',') {
-            let p = part.trim();
-            if p.is_empty() || !seen.insert(p.to_string()) {
-                continue;
-            }
-            out.push(parse_window(p)?);
-        }
-    }
-    if out.is_empty() {
-        anyhow::bail!("no --windows selected (expected Nh, Nd, Nw, or all)");
-    }
-    Ok(out)
-}
-
-/// `Nh` / `Nd` / `Nw`. Zero and unknown suffixes are rejected.
-pub(super) fn parse_duration_secs(s: &str) -> Option<u64> {
-    let s = s.trim();
-    let (num, unit) = s.split_at(s.len().checked_sub(1)?);
-    if num.is_empty() {
-        return None;
-    }
-    let v: u64 = num.parse().ok()?;
-    if v == 0 {
-        return None;
-    }
-    let factor = match unit {
-        "h" => 3_600,
-        "d" => 86_400,
-        "w" => 7 * 86_400,
-        _ => return None,
-    };
-    Some(v.saturating_mul(factor))
-}
-
 fn usd(x: f64) -> String {
     format!("{x:.2}")
-}
-
-/// Leaderboards share one cap so `--top` means the same thing everywhere.
-fn leaderboard_limit(top: usize) -> usize {
-    top.min(100)
 }
 
 fn row_fields(r: &ReportRow) -> Vec<String> {
@@ -227,10 +137,8 @@ fn pnl_basis_of(r: &MevOpRow) -> String {
 
 pub async fn cmd_explorer_report(
     config: &Config,
-    windows: &[String],
     kind: Option<&str>,
     confidence: Option<&str>,
-    top: usize,
 ) -> anyhow::Result<()> {
     let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let chain = v.chain_name;
@@ -262,54 +170,35 @@ pub async fn cmd_explorer_report(
         },
     };
 
-    let window_list = parse_windows(windows)?;
-    let top = leaderboard_limit(top);
-
     // Fill labels for ops ingested before competitor wiring (idempotent).
     let _ = store.backfill_competitor_labels()?;
 
     let now = epoch_secs();
-    let mut reports: Vec<WindowReport> = Vec::with_capacity(window_list.len());
-    for window in &window_list {
-        let since = window.since_ts(now);
-        let overview = store.report_window_overview(since, kind_filter, confidence_filter)?;
-        let by_kind = store.report_by_kind(since, kind_filter, confidence_filter)?;
-        let daily = store.report_daily(since, kind_filter, confidence_filter)?;
-        let top_competitors =
-            store.top_competitors_filtered(since, top, kind_filter, confidence_filter)?;
-        let top_senders = store.top_senders_filtered(since, top, kind_filter, confidence_filter)?;
-        let top_pools = store.top_pools_filtered(since, top, kind_filter, confidence_filter)?;
-        let top_ops = store.top_ops(since, top, kind_filter, confidence_filter)?;
-        let blocks = store.blocks_in_window(since)?;
-        let classify_rejects = store.report_classify_rejects(since)?;
-        let coverage_pct = window.expected_blocks(chain).map(|expected| {
-            if expected == 0 {
-                1.0
-            } else {
-                (blocks as f64 / expected as f64).min(1.0)
-            }
-        });
-        reports.push(WindowReport {
-            window: window.label().to_string(),
-            coverage_pct,
-            blocks,
-            overview,
-            by_kind,
-            daily,
-            top_competitors,
-            top_senders,
-            top_pools,
-            top_ops,
-            classify_rejects,
-        });
-    }
+    let since = 0;
+    let report = WindowReport {
+        window: "all".to_string(),
+        blocks: store.blocks_in_window(since)?,
+        overview: store.report_window_overview(since, kind_filter, confidence_filter)?,
+        by_kind: store.report_by_kind(since, kind_filter, confidence_filter)?,
+        daily: store.report_daily(since, kind_filter, confidence_filter)?,
+        top_competitors: store.top_competitors_filtered(
+            since,
+            REPORT_TOP,
+            kind_filter,
+            confidence_filter,
+        )?,
+        top_senders: store.top_senders_filtered(
+            since,
+            REPORT_TOP,
+            kind_filter,
+            confidence_filter,
+        )?,
+        top_pools: store.top_pools_filtered(since, REPORT_TOP, kind_filter, confidence_filter)?,
+        top_ops: store.top_ops(since, REPORT_TOP, kind_filter, confidence_filter)?,
+        classify_rejects: store.report_classify_rejects(since)?,
+    };
 
-    let window_labels = window_list
-        .iter()
-        .map(ReportWindow::label)
-        .collect::<Vec<_>>()
-        .join(", ");
-    println!("Explorer report — {chain} windows: {window_labels}");
+    println!("Explorer report — {chain} window: all");
     if let Some(k) = kind_filter {
         println!("  (kind filter: {k})");
     }
@@ -323,22 +212,16 @@ pub async fn cmd_explorer_report(
             out.insert("chain".into(), serde_json::json!(chain.to_string()));
             out.insert("generated_at".into(), serde_json::json!(now));
             let mut wins = serde_json::Map::new();
-            for r in &reports {
-                wins.insert(r.window.clone(), serde_json::to_value(r)?);
-            }
+            wins.insert("all".into(), serde_json::to_value(&report)?);
             out.insert("windows".into(), serde_json::Value::Object(wins));
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         OutputFormat::Csv => {
-            for line in csv_lines(&reports) {
+            for line in csv_lines(std::slice::from_ref(&report)) {
                 println!("{line}");
             }
         }
-        OutputFormat::Table => {
-            for r in &reports {
-                render_window(r);
-            }
-        }
+        OutputFormat::Table => render_window(&report),
     }
 
     Ok(())
@@ -465,28 +348,10 @@ fn render_window_text(r: &WindowReport) -> (String, Vec<String>) {
     let mut out = String::new();
     let mut warnings: Vec<String> = Vec::new();
     out.push('\n');
-    match r.coverage_pct {
-        Some(c) => out.push_str(&format!(
-            "── {} window ({} blocks indexed, {:.0}% coverage) ──────────\n",
-            r.window,
-            r.blocks,
-            c * 100.0
-        )),
-        None => out.push_str(&format!(
-            "── {} window (all-time, {} blocks indexed) ─────\n",
-            r.window, r.blocks
-        )),
-    }
-    if let Some(c) = r.coverage_pct {
-        if c < 0.7 {
-            warnings.push(format!(
-                "  warning: {} window is under-filled ({:.0}% coverage). Run \
-                 `mev-scout explorer index --days 30` first.",
-                r.window,
-                c * 100.0
-            ));
-        }
-    }
+    out.push_str(&format!(
+        "── {} window (all-time, {} blocks indexed) ─────\n",
+        r.window, r.blocks
+    ));
     out.push_str(&format!(
         "  ops: {} | competitors: {} | searchers: {} | volume: ${} | gross: ${} | \
          gas: ${} | flash fees: ${} | net: ${} | highest single: ${}\n",
@@ -586,32 +451,6 @@ fn render_window_text(r: &WindowReport) -> (String, Vec<String>) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn duration_suffixes() {
-        assert_eq!(parse_duration_secs("12h"), Some(12 * 3_600));
-        assert_eq!(parse_duration_secs("1d"), Some(86_400));
-        assert_eq!(parse_duration_secs("2w"), Some(14 * 86_400));
-        assert_eq!(parse_duration_secs("0d"), None);
-        assert_eq!(parse_duration_secs("1x"), None);
-        assert_eq!(parse_duration_secs("d"), None);
-        assert_eq!(parse_duration_secs("all"), None);
-    }
-
-    #[test]
-    fn windows_dedup_in_first_seen_order_and_reject_bad_input() {
-        let windows = parse_windows(&["1d,7d,1d".to_string()]).unwrap();
-        let labels: Vec<&str> = windows.iter().map(ReportWindow::label).collect();
-        assert_eq!(labels, vec!["1d", "7d"]);
-        assert!(parse_windows(&["1x".to_string()]).is_err());
-        assert!(parse_windows(&[String::new()]).is_err());
-    }
-
-    #[test]
-    fn leaderboard_cap_applies_to_every_list() {
-        assert_eq!(leaderboard_limit(3), 3);
-        assert_eq!(leaderboard_limit(150), 100);
-    }
-
     fn fixture() -> WindowReport {
         let overview = ReportOverview {
             ops: 2,
@@ -631,8 +470,7 @@ mod tests {
             net_usd: 1.0,
         };
         WindowReport {
-            window: "1d".to_string(),
-            coverage_pct: Some(0.5), // under-filled warning
+            window: "all".to_string(),
             blocks: 10,
             overview,
             by_kind: vec![ReportRow {
@@ -696,8 +534,8 @@ mod tests {
     fn render_text_keeps_warnings_and_empty_sections_visible() {
         let (stdout, warnings) = render_window_text(&fixture());
         let warnings = warnings.join("\n");
-        assert!(warnings.contains("under-filled"), "got {warnings}");
         assert!(warnings.contains("top op is 50%"), "got {warnings}");
+        assert!(stdout.contains("all window (all-time, 10 blocks indexed)"));
         assert!(stdout.contains("classify rejects: cycle_not_closed 3"));
         assert!(stdout.contains("Per kind:"));
 

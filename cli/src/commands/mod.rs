@@ -11,7 +11,7 @@ mod report;
 
 pub use config::cmd_config;
 pub use discover::cmd_discover;
-pub use explorer::{cmd_backfill, cmd_explorer_report, cmd_purge_retired, run_dashboard};
+pub use explorer::{cmd_backfill, cmd_explorer_report, run_dashboard};
 pub use live::cmd_live;
 pub use report::cmd_report;
 
@@ -51,35 +51,33 @@ impl CliCommand for ExplorerArgs {
     async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
         use crate::cli::ExplorerCommand;
 
-        if self.command.is_some() && self.report_flags_set() {
-            anyhow::bail!(
-                "--windows / --kind / --top / --confidence belong on bare `explorer` (the revenue report)"
-            );
+        if self.command.is_some() && self.bare_flags_set() {
+            anyhow::bail!("--kind / --confidence / dashboard options belong on bare `explorer`");
         }
 
         match &self.command {
             None => {
                 let _ = progress;
-                cmd_explorer_report(
-                    config,
-                    &self.resolved_windows(),
-                    self.kind.as_deref(),
-                    self.resolved_confidence(),
-                    self.resolved_top(),
-                )
-                .await
+                if self.dashboard.dashboard {
+                    run_dashboard(config, &self.dashboard).await
+                } else {
+                    cmd_explorer_report(config, self.kind.as_deref(), self.resolved_confidence())
+                        .await
+                }
             }
             Some(ExplorerCommand::Index(a)) => {
-                cmd_backfill(config, a.hours, a.days, a.from_block, a.to_block, progress).await?;
+                cmd_backfill(
+                    config,
+                    a.window.as_deref(),
+                    a.from_block,
+                    a.to_block,
+                    progress,
+                )
+                .await?;
+                if a.dashboard {
+                    run_dashboard(config, &crate::cli::DashboardArgs::default()).await?;
+                }
                 Ok(())
-            }
-            Some(ExplorerCommand::Dashboard(a)) => {
-                let _ = progress;
-                run_dashboard(config, a).await
-            }
-            Some(ExplorerCommand::PurgeRetired(a)) => {
-                let _ = progress;
-                cmd_purge_retired(config, a).await
             }
         }
     }

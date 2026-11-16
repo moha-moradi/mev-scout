@@ -31,16 +31,6 @@ pub struct Cli {
 /// still finishing quickly.
 pub const DEFAULT_SINGLE_PASS_BLOCKS: u64 = 64;
 
-/// Trailing window `explorer index` uses when no range flag is given, so the
-/// 1d/7d/30d revenue reports have data without the user picking a range.
-pub const DEFAULT_BACKFILL_DAYS: u64 = 7;
-
-/// Default windows for bare `explorer` (revenue report).
-pub const DEFAULT_EXPLORER_WINDOWS: &[&str] = &["1d", "7d", "30d"];
-
-/// Default top-N ops for bare `explorer`.
-pub const DEFAULT_EXPLORER_TOP: usize = 10;
-
 impl Cli {
     /// The subcommand to run, materializing the implicit `live` default when
     /// none was given. Built programmatically so the zero-arg path cannot drift
@@ -76,177 +66,128 @@ pub enum Command {
     Live(LiveArgs),
 
     /// Realized-MEV explorer: forensic reconstruction of extracted MEV from
-    /// raw chain data. Bare `explorer` prints the revenue report; use
-    /// `index` to populate history.
+    /// raw chain data. Bare `explorer` prints the all-time revenue report;
+    /// use `index` to populate history.
     Explorer(ExplorerArgs),
 }
 
-/// Explorer subcommand group. Omitted → revenue report (same as the former
-/// `explorer report`).
+/// Explorer subcommand group. Omitted → all-time revenue report.
 #[derive(Subcommand, Debug, Clone)]
 pub enum ExplorerCommand {
     /// Index a historical block range into the explorer store.
     ///
-    /// Backfills a trailing window (`--hours`, `--days`, or default 7 days)
-    /// or an exact `--from-block`/`--to-block` range, then exits. Idempotent,
-    /// resumable.
+    /// Backfills a trailing `--window` (default 7d) or an exact
+    /// `--from-block`/`--to-block` range, then exits. Idempotent, resumable.
     Index(IndexArgs),
-    /// Emit a forensic static HTML/JSON dashboard from explorer SQLite.
-    ///
-    /// Opens the DB read-only (never migrates). With `--db`, no live RPC or
-    /// `mev-scout.toml` is required.
-    Dashboard(DashboardArgs),
-    /// Delete/rewrite historical rows for retired explorer strategies.
-    ///
-    /// Destructive and explicit: `bundler` rows are deleted and the retired
-    /// `bad_debt_liq` tag is stripped from surviving liquidations.
-    PurgeRetired(PurgeRetiredArgs),
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ExplorerArgs {
-    /// Subcommand; omitted → revenue report.
+    /// Subcommand; omitted → all-time revenue report or `--dashboard`.
     #[command(subcommand)]
     pub command: Option<ExplorerCommand>,
 
-    /// Time windows: comma-separated durations (Nh|Nd|Nw) or all (default 1d,7d,30d).
-    /// Only valid on bare `explorer` (the revenue report).
-    #[arg(long, value_name = "WINDOWS", value_delimiter = ',')]
-    pub windows: Vec<String>,
+    /// Render an all-time forensic HTML/JSON/CSV dashboard instead of the report.
+    #[command(flatten)]
+    pub dashboard: DashboardArgs,
 
-    /// Filter the whole report to one kind.
-    /// Only valid on bare `explorer`.
-    #[arg(long, value_name = "KIND")]
+    /// Filter the report to one kind.
+    #[arg(long, value_name = "KIND", conflicts_with = "dashboard")]
     pub kind: Option<String>,
 
-    /// Detail depth: top-N competitors and ops by net profit per window
-    /// (default 10). Only valid on bare `explorer`.
-    #[arg(long, value_name = "N")]
-    pub top: Option<usize>,
-
     /// Filter to exact / inferred / all confidence (default all).
-    /// Only valid on bare `explorer`.
-    #[arg(long, value_name = "LEVEL", value_parser = ["exact", "inferred", "all"])]
+    #[arg(
+        long,
+        value_name = "LEVEL",
+        value_parser = ["exact", "inferred", "all"],
+        conflicts_with = "dashboard"
+    )]
     pub confidence: Option<String>,
 }
 
 impl ExplorerArgs {
-    /// True when any revenue-report flag was set on the command line.
-    pub fn report_flags_set(&self) -> bool {
-        !self.windows.is_empty()
-            || self.kind.is_some()
-            || self.top.is_some()
-            || self.confidence.is_some()
+    /// True when any bare-`explorer` mode flag was set on the command line.
+    pub fn bare_flags_set(&self) -> bool {
+        self.kind.is_some() || self.confidence.is_some() || self.dashboard.any_set()
     }
 
-    /// Resolved confidence filter for the revenue report (`None` = all).
+    /// Resolved confidence filter for the report (`None` = all).
     pub fn resolved_confidence(&self) -> Option<&str> {
         match self.confidence.as_deref() {
             None | Some("all") => None,
             Some(c) => Some(c),
         }
     }
-
-    /// Resolved windows for the revenue report.
-    pub fn resolved_windows(&self) -> Vec<String> {
-        if self.windows.is_empty() {
-            DEFAULT_EXPLORER_WINDOWS
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect()
-        } else {
-            self.windows.clone()
-        }
-    }
-
-    /// Resolved top-N for the revenue report.
-    pub fn resolved_top(&self) -> usize {
-        self.top.unwrap_or(DEFAULT_EXPLORER_TOP)
-    }
 }
 
-#[derive(Args, Debug, Clone)]
+/// Dashboard mode/options for bare `explorer --dashboard`.
+#[derive(Args, Debug, Clone, Default)]
 pub struct DashboardArgs {
+    /// Emit a static dashboard instead of the revenue report.
+    #[arg(long, conflicts_with_all = ["kind", "confidence"])]
+    pub dashboard: bool,
+
     /// Explorer SQLite path (offline). Default: config per-chain path.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", requires = "dashboard")]
     pub db: Option<std::path::PathBuf>,
 
-    /// Rolling window (`24h`, `7d`, `2w`) or `all` (default `24h`).
-    #[arg(long, value_name = "WINDOW", default_value = "24h")]
-    pub window: String,
-
-    /// Output path (`.html` or `.json` depending on `--format`).
-    #[arg(long, value_name = "PATH", default_value = "results/dash.html")]
-    pub out: std::path::PathBuf,
+    /// Output path (default: results/dash.html).
+    #[arg(long, value_name = "PATH", requires = "dashboard")]
+    pub out: Option<std::path::PathBuf>,
 
     /// `html` (default), `json`, or `csv` (report-compatible columns).
-    #[arg(long, value_name = "FMT", default_value = "html", value_parser = ["html", "json", "csv"])]
-    pub format: String,
-
-    /// Cap ops / events rows embedded in the snapshot.
-    #[arg(long, value_name = "N", default_value_t = 2000)]
-    pub max_ops: usize,
-
-    /// Cap evidence blobs for `#/op/` drill-down.
-    #[arg(long, value_name = "N", default_value_t = 500)]
-    pub evidence: usize,
-
-    /// Soft JSON/HTML byte budget in MiB (trim evidence, then events).
-    #[arg(long, value_name = "MB", default_value_t = 8)]
-    pub budget_mb: usize,
-
-    /// Include sampled unclassified-block gaps near tip.
-    #[arg(long)]
-    pub with_gaps: bool,
+    #[arg(
+        long,
+        value_name = "FMT",
+        value_parser = ["html", "json", "csv"],
+        requires = "dashboard"
+    )]
+    pub format: Option<String>,
 
     /// Rewrite the output every N seconds (atomic). Accepts humantime (`30s`).
-    #[arg(long, value_name = "DURATION")]
+    #[arg(long, value_name = "DURATION", requires = "dashboard")]
     pub repeat: Option<String>,
 }
 
-#[derive(Args, Debug, Clone)]
-pub struct PurgeRetiredArgs {
-    /// Explorer SQLite path (offline). Default: config per-chain path.
-    #[arg(long, value_name = "PATH")]
-    pub db: Option<std::path::PathBuf>,
+impl DashboardArgs {
+    /// True when dashboard mode or any dashboard-only option was supplied.
+    pub fn any_set(&self) -> bool {
+        self.dashboard
+            || self.db.is_some()
+            || self.out.is_some()
+            || self.format.is_some()
+            || self.repeat.is_some()
+    }
 
-    /// Report what would be removed without writing.
-    #[arg(long)]
-    pub dry_run: bool,
+    pub fn resolved_out(&self) -> std::path::PathBuf {
+        self.out
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("results/dash.html"))
+    }
 
-    /// Confirm the destructive purge (required unless `--dry-run`).
-    #[arg(long)]
-    pub yes: bool,
+    pub fn resolved_format(&self) -> &str {
+        self.format.as_deref().unwrap_or("html")
+    }
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct IndexArgs {
-    /// Backfill the trailing N hours up to the current confirmed tip.
-    /// Incompatible with `--days` / `--from-block`/`--to-block`.
+    /// Trailing duration (`24h`, `7d`, `2w`) up to the confirmed tip.
+    /// Incompatible with `--from-block`/`--to-block`.
     #[arg(
         long,
-        value_name = "N",
-        value_parser = clap::value_parser!(u64).range(1..=8760),
+        value_name = "WINDOW",
+        conflicts_with_all = ["from_block", "to_block"],
         help_heading = "Range"
     )]
-    pub hours: Option<u64>,
-
-    /// Backfill the trailing N days up to the current confirmed tip
-    /// (default 7 when no range flag is given).
-    /// Incompatible with `--hours` / `--from-block`/`--to-block`.
-    #[arg(
-        long,
-        value_name = "N",
-        value_parser = clap::value_parser!(u64).range(1..=365),
-        help_heading = "Range"
-    )]
-    pub days: Option<u64>,
+    pub window: Option<String>,
 
     /// Exact range start (requires --to-block). Inclusive.
     #[arg(
         long = "from-block",
         value_name = "NUMBER",
         requires = "to_block",
+        conflicts_with = "window",
         help_heading = "Range"
     )]
     pub from_block: Option<u64>,
@@ -256,9 +197,14 @@ pub struct IndexArgs {
         long = "to-block",
         value_name = "NUMBER",
         requires = "from_block",
+        conflicts_with = "window",
         help_heading = "Range"
     )]
     pub to_block: Option<u64>,
+
+    /// Emit one all-time HTML dashboard after a successful backfill.
+    #[arg(long)]
+    pub dashboard: bool,
 }
 
 #[derive(Args, Debug, Clone)]

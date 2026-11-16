@@ -1514,7 +1514,7 @@ pre.raw {
       $("op-body").style.display = "none";
       $("ops-layout").classList.remove("detail-open");
       if (state.opHash && T.evidence_emitted === 0) {
-        $("op-empty").textContent = "Evidence cleared by budget — open a regenerated artifact or raise --budget-mb.";
+        $("op-empty").textContent = "Evidence cleared by the artifact size budget — open a regenerated artifact.";
       } else if (state.legacyHash) {
         $("op-empty").textContent = "No operation matches transaction " + short(state.opHash) + " in this artifact.";
       } else {

@@ -1,4 +1,4 @@
-//! Offline `explorer dashboard` CLI contract.
+//! Offline `explorer --dashboard` CLI contract.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 mod common;
 
@@ -69,11 +69,9 @@ fn dashboard_html_offline_no_config() {
 
     let r = run(&[
         "explorer",
-        "dashboard",
+        "--dashboard",
         "--db",
         db.to_str().expect("utf8"),
-        "--window",
-        "all",
         "--out",
         out.to_str().expect("utf8"),
         "--format",
@@ -115,11 +113,9 @@ fn dashboard_csv_offline_report_header() {
 
     let r = run(&[
         "explorer",
-        "dashboard",
+        "--dashboard",
         "--db",
         db.to_str().expect("utf8"),
-        "--window",
-        "all",
         "--out",
         out.to_str().expect("utf8"),
         "--format",
@@ -131,6 +127,8 @@ fn dashboard_csv_offline_report_header() {
         "window,section,label,ops,volume_usd,gross_usd,gas_usd,flash_fee_usd,net_usd"
     ));
     assert!(csv.contains(",overview,total,"));
+    assert!(csv.starts_with("window,"), "all-time CSV header");
+    assert!(csv.contains("\nall,overview,total,"));
     let _ = fs::remove_dir_all(&ws);
 }
 
@@ -145,11 +143,9 @@ fn dashboard_json_offline() {
 
     let r = run(&[
         "explorer",
-        "dashboard",
+        "--dashboard",
         "--db",
         db.to_str().expect("utf8"),
-        "--window",
-        "all",
         "--out",
         out.to_str().expect("utf8"),
         "--format",
@@ -162,17 +158,28 @@ fn dashboard_json_offline() {
     assert_eq!(v["db"]["user_version"], 0);
     assert_eq!(v["coverage"]["ops_in_window"], 1);
     assert_eq!(v["panels"]["kpi"]["ops"], 1);
+    assert_eq!(v["window"]["label"], "all");
     let _ = fs::remove_dir_all(&ws);
 }
 
 #[test]
-fn dashboard_help_lists_flags() {
-    let r = run(&["explorer", "dashboard", "--help"]);
+fn dashboard_help_lists_retained_flags_only() {
+    let r = run(&["explorer", "--help"]);
     assert!(r.success, "{}", r.combined());
     let text = r.combined();
-    assert!(text.contains("--db"));
-    assert!(text.contains("--window"));
-    assert!(text.contains("--format"));
-    assert!(text.contains("--with-gaps"));
-    assert!(text.contains("--repeat"));
+    for kept in ["--dashboard", "--db", "--out", "--format", "--repeat"] {
+        assert!(text.contains(kept), "missing retained flag {kept}");
+    }
+    for removed in [
+        "--window",
+        "--with-gaps",
+        "--max-ops",
+        "--evidence",
+        "--budget-mb",
+    ] {
+        assert!(
+            !text.contains(removed),
+            "help still lists removed flag {removed}"
+        );
+    }
 }

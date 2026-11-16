@@ -27,7 +27,8 @@ pub fn blocks_per_day(chain: crate::types::ChainName) -> u64 {
     chain_timing(&chain.to_string()).blocks_per_day
 }
 
-/// Blocks per hour — `blocks_per_day / 24`, so `--hours 24` matches `--days 1`.
+/// Blocks per hour — `blocks_per_day / 24`, so an hourly and daily explorer
+/// window resolve to the same span on every chain.
 pub fn blocks_per_hour(chain: crate::types::ChainName) -> u64 {
     (blocks_per_day(chain) / 24).max(1)
 }

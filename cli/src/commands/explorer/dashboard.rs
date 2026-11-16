@@ -1,5 +1,5 @@
-//! ``explorer dashboard`` — forensic static HTML/JSON snapshot from a
-//! read-only explorer SQLite (never migrates).
+//! ``explorer --dashboard`` — forensic static HTML/JSON snapshot from an
+//! all-time, read-only explorer SQLite (never migrates).
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -8,30 +8,29 @@ use mev_scout_core::explorer::dashboard::{
     build, render_csv, render_html, render_json, BuildOptions, WindowSpec,
 };
 
-/// CLI flags for one dashboard emission (or a `--repeat` loop).
+const MAX_OPS: usize = 2000;
+const MAX_EVIDENCE: usize = 500;
+const BUDGET_MB: usize = 8;
+const GAP_BLOCK_LIMIT: u64 = 10_000;
+
+/// CLI settings for one dashboard emission (or a `--repeat` loop).
 pub struct DashboardArgs {
     pub db: Option<PathBuf>,
-    pub window: String,
     pub out: PathBuf,
     pub format: String,
-    pub max_ops: usize,
-    pub max_evidence: usize,
-    pub with_gaps: bool,
-    pub budget_mb: usize,
     pub repeat: Option<Duration>,
 }
 
 fn emit_once(config: &Config, args: &DashboardArgs) -> anyhow::Result<()> {
     let db_path = super::resolve_db(config, args.db.as_deref());
-    let window = WindowSpec::parse(&args.window)?;
     let opts = BuildOptions {
         db_path: db_path.clone(),
-        window,
-        max_ops: args.max_ops,
-        max_evidence: args.max_evidence,
-        budget_mb: args.budget_mb,
-        with_gaps: args.with_gaps,
-        gap_block_limit: 10_000,
+        window: WindowSpec::all(),
+        max_ops: MAX_OPS,
+        max_evidence: MAX_EVIDENCE,
+        budget_mb: BUDGET_MB,
+        with_gaps: false,
+        gap_block_limit: GAP_BLOCK_LIMIT,
     };
     let snap = build(&opts)?;
     if let Some(parent) = args.out.parent() {

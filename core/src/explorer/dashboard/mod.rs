@@ -187,7 +187,7 @@ pub struct CoveragePanel {
     pub last_gap: Option<u64>,
 }
 
-/// P2 index gaps (opt-in via `--with-gaps`).
+/// P2 index gaps (opt-in through [`BuildOptions::with_gaps`]).
 #[derive(Debug, Clone, Serialize)]
 pub struct GapsPanel {
     pub enabled: bool,
@@ -221,7 +221,7 @@ impl GapsPanel {
             last_gap: None,
             ranges: Vec::new(),
             sample: Vec::new(),
-            note: "Pass --with-gaps to sample unclassified blocks near tip (expensive CTE).".into(),
+            note: "Gap sampling is disabled for this artifact.".into(),
         }
     }
 }

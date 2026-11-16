@@ -171,7 +171,7 @@ sudo systemctl restart systemd-journald
 ```bash
 ./target/release/mev-scout --config mev-scout.local-polygon.toml live
 ./target/release/mev-scout --config mev-scout.local-polygon.toml live --loop
-./target/release/mev-scout --config mev-scout.local-polygon.toml explorer index --days 1
+./target/release/mev-scout --config mev-scout.local-polygon.toml explorer index --window 1d
 ./target/release/mev-scout --config mev-scout.local-polygon.toml discover --blocks 2000
 ```
 
@@ -204,7 +204,7 @@ Firewall: `22`, Bor P2P `30303` (TCP+UDP), Heimdall P2P `26656`. Not
 | Disk heading toward 1 TB      | Full snapshot, or a pruned node that was left to grow. Re-seed pruned |
 | `:8545` refused                | `service bor status`. HTTP bind must be `127.0.0.1`              |
 | Bor restarts / reorgs          | Heimdall `catching_up` still true. Stop Bor and wait             |
-| `eth_getLogs` range errors     | Shrink `--blocks` / `--days`                                     |
+| `eth_getLogs` range errors     | Shrink `--blocks` / `--window`                                     |
 | Swapping                       | Bor cache above ~2 GB, or `cargo build` while both clients are up |
 | Historical `eth_call` fails    | Expected. Public URL in `rpc_urls`                               |
 

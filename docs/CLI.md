@@ -19,7 +19,7 @@ shorten to `mev-scout` and assume the same config file and repo-root CWD.
 | `discover` | Find pools (hybrid TVL ranking by default) | yes (RPC; aggregator HTTP unless `[discover].source = "onchain"`) | SQLite cache |
 | `report` | Re-render a recorded run from SQLite | no | — |
 | `config` | Print fully-resolved TOML | no | — |
-| `explorer` | Bare revenue report; `index` ingest; `dashboard` static HTML/JSON/CSV | bare: no; index: yes; dashboard: optional `--db` | Explorer SQLite; dashboard → `results/*` |
+| `explorer` | All-time revenue report; `index` ingest; `--dashboard` static HTML/JSON/CSV | bare: no; index: yes; dashboard: optional `--db` | Explorer SQLite; dashboard → `results/*` |
 
 Product split: **`live`** = what *could* be made, plus the theoretical session
 P&L of taking those detections with a virtual gas wallet (no competition);
@@ -39,9 +39,11 @@ the implicit bootstrap step. The range-scanning entry point (`run`) was dropped
 from the CLI in favour of `live --blocks` for a bounded window; `report` prints a
 run's ledger session alongside its results.
 
-`explorer stats`, `explorer report`, and `explorer backfill` were removed —
-bare `explorer` is the revenue report, and `explorer index` is historical
-backfill only (default trailing 7 days; tip-follow was removed).
+`explorer stats`, `explorer report`, `explorer backfill`, `explorer dashboard`,
+and `explorer purge-retired` were removed — bare `explorer` is the all-time
+revenue report, `explorer --dashboard` emits the static artifact, and
+`explorer index` is historical backfill only (default trailing 7 days;
+tip-follow was removed).
 
 ---
 
@@ -100,12 +102,15 @@ mev-scout discover --block 65000000
 mev-scout discover --from-block 65000000 --to-block 65000100
 ```
 
-Bare `explorer` takes `--windows` / `--kind` / `--confidence` / `--top`
-(revenue report). `--confidence` restricts rows to `exact`, `inferred` or `all`.
-`--windows` accepts comma-separated `Nh` / `Nd` / `Nw` durations or `all`
-(e.g. `12h,1d,7d,all`); coverage is derived from the chain's block time.
-`explorer index` takes `--hours` (1–8760), `--days` (1–365), or
-`--from-block`/`--to-block` (default trailing 7 days). At most one form.
+Bare `explorer` reports **all rows currently in the explorer DB** and takes
+`--kind` / `--confidence` (`exact`, `inferred`, or `all`). `explorer --dashboard`
+renders an all-time static artifact (`--db`, `--out`, `--format`, `--repeat`);
+with `--db` it is fully offline. `explorer index` takes one trailing `--window`
+(`Nh`/`Nd`/`Nw`, 365-day maximum, default `7d`) or exact
+`--from-block`/`--to-block` bounds (mutually exclusive), plus `--dashboard` to
+emit one HTML snapshot after a successful backfill. The DB accumulates rows
+across `index` runs and `live`; reports are not limited to the most recent
+`index` window.
 
 `live --blocks N` (default 64) is the one-shot window, scanned as
 `tip − N + 1 ..= tip`. It is not a discover-style range. `--loop` follows the
@@ -400,71 +405,72 @@ adds rejected candidates for offline analysis.
 flowchart TB
     A["resolve_chain + init_rpc"] --> B["ExplorerStore::open<br/>(explorer-{chain}.sqlite, WAL)"]
     B --> C{"subcommand"}
-    C -- "bare / none" --> R["revenue report:<br/>cost · profit · volume per window"]
-    C -- "dashboard" --> D["static HTML/JSON<br/>read-only · no migrate"]
+    C -- "bare / none" --> R["all-time revenue report:<br/>cost · profit · volume"]
+    C -- "--dashboard" --> D["static HTML/JSON/CSV<br/>read-only · all-time · no migrate"]
     C -- "index" --> BF["ingest: historical range<br/>(default trailing 7 days)"]
     BF --> F["decode → classify → profit<br/>(balance-delta accounting + gas + USD)"]
     F --> L["mev_ops + blocks/txs/transfers/swaps<br/>+ opportunities + rejected_candidates<br/>+ sync_state checkpoints"]
 ```
 
-#### 3.6.1 Bare `explorer` — revenue report
+#### 3.6.1 Bare `explorer` — all-time revenue report
 
-Revenue report: cost, profit, and volume per time window, broken out per MEV
-kind, with per-window block coverage, daily trend, competitors (bot =
-`COALESCE(contract, eoa)`), top searchers/pools, and a top-op detail list.
+Revenue report covering **everything in the explorer DB**: cost, profit, and
+volume broken out per MEV kind, with a daily trend, competitors (bot =
+`COALESCE(contract, eoa)`), top searchers/pools, and a top-10 op detail list.
 Pure SQL over the store — requires history (seed it with `explorer index`).
 Competitor identities are persisted in `labels` during ingest (and backfilled
 on report).
 
 ```powershell
 mev-scout explorer
-mev-scout explorer --windows 1d,7d,30d
-mev-scout explorer --windows 12h,1d,7d
-mev-scout explorer --windows all --kind sandwich --top 20
+mev-scout explorer --kind sandwich
+mev-scout explorer --confidence exact
 ```
 
 #### 3.6.2 `explorer index`
 
 Index a historical block range into the explorer store (default: trailing
 7 days), then exit — idempotent and gap-resumable via `blocks_classified`.
-Use `--hours`, `--days`, or an exact `--from-block`/`--to-block` window
-(mutually exclusive). Tip-follow (`--loop`) was removed; continuous
-detection stays on `live --loop`. `--hours 24` covers the same span as
-`--days 1`.
+Use one `--window` (`Nh`/`Nd`/`Nw`, 365-day maximum) or an exact
+`--from-block`/`--to-block` window (mutually exclusive). Tip-follow (`--loop`)
+was removed; continuous detection stays on `live --loop`. `--window 24h`
+covers the same span as `--window 1d`. Add `--dashboard` to emit one all-time
+HTML snapshot to `results/dash.html` after a successful backfill.
 
 ```powershell
 mev-scout explorer index
-mev-scout explorer index --hours 6
-mev-scout explorer index --days 30
+mev-scout explorer index --window 6h
+mev-scout explorer index --window 30d
 mev-scout explorer index --from-block 65000000 --to-block 65001000
+mev-scout explorer index --window 24h --dashboard
 ```
 
 Ingest tuning lives in TOML `[explorer]`: `confirmations` (plus classification
 knobs).
 
-#### 3.6.3 `explorer dashboard` — static forensic HTML/JSON
+#### 3.6.3 `explorer --dashboard` — static forensic HTML/JSON
 
-Read-only snapshot of an explorer SQLite file. **Never migrates** the DB
-(`ExplorerStore::open_read_only`). With `--db`, no live RPC / `mev-scout.toml`
-is required. Open the HTML via `file://` (no server).
+Read-only, all-time snapshot of an explorer SQLite file. **Never migrates** the
+DB (`ExplorerStore::open_read_only`). With `--db`, no live RPC /
+`mev-scout.toml` is required. Open the HTML via `file://` (no server).
 
 ```powershell
-mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --window all --out results/dash.html
-mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --format json --out results/dash.json
-mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --format csv --out results/dash.csv
-mev-scout explorer dashboard --db cache/explorer-avalanche.sqlite --with-gaps --repeat 60s
+mev-scout explorer --dashboard --db cache/explorer-avalanche.sqlite --out results/dash.html
+mev-scout explorer --dashboard --db cache/explorer-avalanche.sqlite --format json --out results/dash.json
+mev-scout explorer --dashboard --db cache/explorer-avalanche.sqlite --format csv --out results/dash.csv
+mev-scout explorer --dashboard --db cache/explorer-avalanche.sqlite --repeat 60s
 ```
 
 | Flag | Effect |
 |---|---|
 | `--db PATH` | Offline DB path (skips `validate_live`) |
-| `--window` | `all` \| `Nh` \| `Nd` \| `Nw` (default `24h`) |
 | `--out` | Output path (default `results/dash.html`) |
-| `--format` | `html` \| `json` \| `csv` (same columns as bare `explorer` CSV) |
-| `--max-ops` / `--evidence` | Artifact size caps |
-| `--budget-mb` | Soft JSON size budget before truncation |
-| `--with-gaps` | P2 unclassified-block gap sample near tip |
+| `--format` | `html` (default) \| `json` \| `csv` (same columns as bare `explorer` CSV) |
 | `--repeat DURATION` | Atomic rewrite every N seconds |
+
+The artifact always covers all rows in the selected DB. Artifact-size caps,
+soft budget trimming, and gap sampling use fixed internal defaults and are no
+longer public flags.
 
 Artifact embeds coverage fractions next to every USD sum; `NULL` USD is `—`,
 never zero. Schema capability banners appear when columns (e.g. `excluded_from_net`)
@@ -475,8 +481,8 @@ HTML notes (offline single-file):
 - No global Strategy/Confidence/Pricing/Scope/Tags filter bar — panels always show
   full-window Rust aggregates (`kpi`, `series`, `strategy_series`, `scatter_points`, …).
 - Additive `panels.op_index` is a compact interned full-window index used only for
-  topbar search / ops list when `truncation.index_complete` is true. Soft `--budget-mb`
-  trim order: clear `evidence` → halve `events` (floor 50) → halve `scatter_points`
+  topbar search / ops list when `truncation.index_complete` is true. Fixed soft
+  artifact-budget trim order: clear `evidence` → halve `events` (floor 50) → halve `scatter_points`
   (floor 200) → clear `op_index` (`index_emitted=0`, `index_complete=false`). A banner
   surfaces truncation; KPIs are never silently subset-filtered.
 - Route evidence may include `amount_*_human` and `token_*_symbol` when the address is
@@ -499,8 +505,8 @@ sqlite3 cache/explorer-polygon.sqlite \
    DELETE FROM blocks_classified WHERE block >= N;
    UPDATE sync_state SET indexed_to = N-1 WHERE chain_id = 137;"
 
-# 2) Rewrite the window with --hours / --days or --from-block/--to-block.
-mev-scout explorer index --hours 24
+# 2) Rewrite the window with --window or --from-block/--to-block.
+mev-scout explorer index --window 24h
 ```
 
 #### Phase-0 baseline recipe and ship gates
@@ -509,8 +515,8 @@ Historical-window recipe (e.g. Avalanche / Polygon): backfill a measurement
 window, then inspect with bare `explorer`:
 
 ```bash
-mev-scout explorer index --hours 24
-mev-scout explorer --windows 1d,7d,30d
+mev-scout explorer index --window 24h
+mev-scout explorer
 ```
 
 Record coverage notes on every phase merge (`cargo test` + clippy alone are not the
@@ -528,8 +534,8 @@ Pangolin V3, LFJ LB + Pharaoh DLMM. Use public endpoints from
 ```bash
 # config: chain = "avalanche"
 mev-scout discover --blocks 2000
-mev-scout explorer index --hours 24
-mev-scout explorer --windows 1d,7d,30d
+mev-scout explorer index --window 24h
+mev-scout explorer
 ```
 
 Paste report output into notes above. Atomic arb is closed-cycle Exact only
