@@ -145,6 +145,9 @@ fn print_discovered_pools(
             DexType::Metric | DexType::Fluid => {
                 println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
             }
+            DexType::Unknown => {
+                println!("  {dex}  {}  {}/{}  family=unknown{}", p.address, t0, t1, tvl_note);
+            }
         }
     }
     println!();

@@ -16,6 +16,7 @@
 //! Transfer legs that move tokens into/out of the pool in the same tx
 //! (registry-free, chain-generic). Pool-registry lookups can enrich later but
 //! are not required for classification.
+mod actions;
 mod aggregator;
 mod attach;
 mod flash_loan;
@@ -29,6 +30,9 @@ mod transfer;
 #[cfg(test)]
 mod tests;
 
+pub use actions::{
+    decode_lb_reward_accumulator, decode_lb_transfer_batch, decode_reward_claim,
+};
 pub use aggregator::dedup_aggregator_facts;
 // Topic pins are consumed by `chain::events` tests and decode unit tests.
 #[allow(unused_imports)]
@@ -70,6 +74,12 @@ pub(crate) enum LogFamily {
     BuyCollateral,
     V3Liquidity,
     LbLiquidity,
+    /// LB rewarder `ClaimRewards` (first-class `RewardClaim` action).
+    RewardClaim,
+    /// LB token `TransferBatch` — bin-token movement, not ERC-20 `Transfer`.
+    LbTokenTransfer,
+    /// Pharaoh DLMM `BinRewardAccumulatorsUpdated` (typed, not an action).
+    LbRewardAccumulator,
     V2PairOp,
     Oracle,
     Reserve,
@@ -94,7 +104,8 @@ fn topic_families() -> &'static HashMap<B256, LogFamily> {
             CHAINLINK_LOG_TRIGGERED_TOPIC, CHAINLINK_UPKEEP_PERFORMED_TOPIC,
             COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC,
             COMPOUND_V3_BUY_COLLATERAL_TOPIC, DONASWAP_V3_SWAP_TOPIC, EULER_V2_LIQUIDATE_TOPIC,
-            GELATO_EXEC_SUCCESS_TOPIC, INF_CL_SWAP_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC,
+            GELATO_EXEC_SUCCESS_TOPIC, INF_CL_SWAP_TOPIC, LB_BIN_REWARD_UPDATED_TOPIC,
+            LB_CLAIM_REWARDS_TOPIC, LB_TRANSFER_BATCH_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC,
             MORPHO_BLUE_LIQUIDATE_TOPIC, NOTIFY_REWARD_TOPIC, SILO_V2_LIQUIDATION_CALL_TOPIC,
             TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRANSFER_TOPIC, UNI_V3_FLASH_TOPIC, V2_BURN_TOPIC,
             V2_MINT_TOPIC, V2_SWAP_TOPIC, V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
@@ -144,6 +155,9 @@ fn topic_families() -> &'static HashMap<B256, LogFamily> {
         table.insert(*jit::V3_COLLECT_TOPIC, LogFamily::V3Liquidity);
         table.insert(*LB_DEPOSITED_TO_BINS_TOPIC, LogFamily::LbLiquidity);
         table.insert(*LB_WITHDRAWN_FROM_BINS_TOPIC, LogFamily::LbLiquidity);
+        table.insert(LB_CLAIM_REWARDS_TOPIC, LogFamily::RewardClaim);
+        table.insert(LB_TRANSFER_BATCH_TOPIC, LogFamily::LbTokenTransfer);
+        table.insert(LB_BIN_REWARD_UPDATED_TOPIC, LogFamily::LbRewardAccumulator);
         table.insert(V2_SYNC_TOPIC, LogFamily::V2PairOp);
         table.insert(*V2_MINT_TOPIC, LogFamily::V2PairOp);
         table.insert(*V2_BURN_TOPIC, LogFamily::V2PairOp);
@@ -164,4 +178,16 @@ fn topic_families() -> &'static HashMap<B256, LogFamily> {
 /// Topic0 dispatch, backed by the static table.
 pub(crate) fn log_family(topic0: B256) -> Option<LogFamily> {
     topic_families().get(&topic0).copied()
+}
+
+/// True when some decoder claims this log.
+///
+/// Mirrors the dispatch in `classify::decode_tx_logs_with_aliases` (family table
+/// first, then the GMX name-hash path) so callers can record logs that fall
+/// through every decoder instead of dropping them silently.
+pub(crate) fn is_mapped_log(log: &crate::data::LogData) -> bool {
+    log.topics
+        .first()
+        .is_some_and(|topic0| log_family(*topic0).is_some())
+        || decode_gmx_event(log).is_some()
 }

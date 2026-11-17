@@ -70,7 +70,7 @@ impl SqliteStore {
     }
 
     /// Current schema version. Increment when adding a migration below.
-    const SCHEMA_VERSION: u64 = 12;
+    const SCHEMA_VERSION: u64 = 13;
 
     /// Create the SQLite schema if it does not exist.
     fn initialize_tables(&self) -> anyhow::Result<()> {
@@ -282,6 +282,9 @@ impl SqliteStore {
             // effectiveGasPrice so type-0 txs stop under-counting gas cost.
             "ALTER TABLE transactions ADD COLUMN gas_price INTEGER",
             "ALTER TABLE receipts ADD COLUMN effective_gas_price INTEGER",
+            // v13: pool-family inference version. NULL = row predates
+            // versioning; the registry loader re-derives instead of trusting it.
+            "ALTER TABLE pool_info ADD COLUMN derivation_version INTEGER",
         ];
 
         for (i, sql) in migrations.iter().enumerate() {
@@ -415,6 +418,7 @@ fn row_to_pool_info(row: &rusqlite::Row) -> anyhow::Result<PoolInfo> {
     let tvl_usd = row.get::<_, Option<f64>>(18)?;
     let volume_usd_24h = row.get::<_, Option<f64>>(19)?;
     let volume_usd_30d = row.get::<_, Option<f64>>(20)?;
+    let derivation_version = row.get::<_, Option<i64>>(21)?.map(|v| v as u32);
     let token0 = SqliteStore::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
     let token1 = SqliteStore::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
     let is_fot = Some(
@@ -445,6 +449,7 @@ fn row_to_pool_info(row: &rusqlite::Row) -> anyhow::Result<PoolInfo> {
         bin_step,
         maturity_timestamp,
         dex_name: dex_name.map(Arc::from),
+        derivation_version,
         token0_symbol: token0_symbol.map(Arc::from),
         token1_symbol: token1_symbol.map(Arc::from),
         tvl_usd,
@@ -485,6 +490,7 @@ fn dex_type_from_i64(v: i64) -> anyhow::Result<crate::dex_type::DexType> {
         10 => Ok(crate::dex_type::DexType::PancakeInfinity),
         11 => Ok(crate::dex_type::DexType::Metric),
         12 => Ok(crate::dex_type::DexType::Fluid),
+        13 => Ok(crate::dex_type::DexType::Unknown),
         n => anyhow::bail!("invalid dex_type discriminant: {}", n),
     }
 }

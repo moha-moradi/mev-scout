@@ -57,6 +57,8 @@ impl FeeTier {
             DexType::Pendle => FeeTier::Free,
             // Metric/Fluid quoting is disabled; the fee is unused.
             DexType::Metric | DexType::Fluid => FeeTier::Unset,
+            // No family inferred ⇒ no fee convention applies.
+            DexType::Unknown => FeeTier::Unset,
         }
     }
 

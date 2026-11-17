@@ -26,11 +26,13 @@ use crate::explorer::profit::ProfitTokenPolicy;
 use crate::explorer::store::OpenPosition;
 use crate::explorer::strategy_tags::ArbTagOpts;
 use crate::explorer::types::{
-    BuyCollateralFact, Confidence, EpochRewardFact, GmxEventFact, JitFact, KeeperFact, MevEvent,
-    MevKind, OracleUpdateFact, PnlBasis, RateCacheFact, ReserveDataFact, SwapFact, TransferFact,
+    BuyCollateralFact, Confidence, EpochRewardFact, GmxEventFact, JitFact, KeeperFact,
+    LbRewardAccumulatorFact, LbTransferBatchFact, MevEvent, MevKind, OracleUpdateFact, PnlBasis,
+    RateCacheFact, ReserveDataFact, RewardClaimFact, SwapFact, TransferFact, UnmappedLog,
     V2PairOpFact,
 };
 
+mod actions;
 mod arb;
 mod causal;
 mod claims;
@@ -44,6 +46,7 @@ pub(crate) use legs::{CAUSAL_PRICE_MIN_PCT, CAUSAL_WINDOW_TXS};
 mod liquidation;
 mod skim;
 
+use actions::{classify_actions, liquidity_action_txs};
 use arb::classify_arbs;
 use causal::classify_backruns;
 use jit::classify_jit;
@@ -75,6 +78,12 @@ pub struct TxInput {
     /// Compound V3 `BuyCollateral` facts (discount capture after Absorb).
     pub buy_collaterals: Vec<BuyCollateralFact>,
     pub jit: Vec<JitFact>,
+    /// LB/DLMM rewarder `ClaimRewards` facts → `RewardClaim` action.
+    pub reward_claims: Vec<RewardClaimFact>,
+    /// LB token `TransferBatch` facts (bin-token movement, typed evidence).
+    pub lb_transfer_batches: Vec<LbTransferBatchFact>,
+    /// Pharaoh DLMM bin reward accumulator updates (typed, not an action).
+    pub lb_reward_accumulators: Vec<LbRewardAccumulatorFact>,
     /// UniV2 Sync/Mint/Burn logs — exclusion signal for skim.
     pub v2_pair_ops: Vec<V2PairOpFact>,
     /// Chainlink `AnswerUpdated` facts (plan P1.4).
@@ -241,7 +250,12 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     events.extend(classify_liquidations(input, &liq_ctx, &mut drops));
 
     // ── 1b. Skim pass (exact, UniV2 pair outbound without Swap/Mint/Burn/Sync)
-    events.extend(classify_skims(input, &mut drops));
+    // A decoded LB bin withdrawal is positive evidence of liquidity removal:
+    // the pool's outbound Transfer must not also be read as a skim capture.
+    let liquidity_txs = liquidity_action_txs(input);
+    let mut skim_events = classify_skims(input, &mut drops);
+    skim_events.retain(|e| !liquidity_txs.contains(&e.tx_index));
+    events.extend(skim_events);
 
     // ── 2-3. Swap attribution + atomic arb (+ keeper/claim/upgrade)
     let (arb_events, arb_rejects) = classify_arbs(input, &arb_tag_opts);
@@ -276,6 +290,12 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
         v
     };
     jit_events.retain(|ev| !component_txs(ev).iter().any(|t| arb_txs.contains(t)));
+    // A paired JIT position already reports the mint+burn as one operation;
+    // do not emit a second liquidity row for its legs.
+    let jit_txs: HashSet<u64> = jit_events
+        .iter()
+        .flat_map(component_txs)
+        .collect();
     events.append(&mut jit_events);
 
     // ── 3c. Causal backrun annotation ──────────────────────────────────
@@ -283,6 +303,10 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     // pass owns the cycle P&L. Annotate before the precedence retain so the
     // tag rides on the arb event whenever the arb pass emitted one.
     classify_backruns(input, &mut events, &mut drops);
+    // First-class actions are not P&L claims: withdraw+claim in one tx must
+    // yield two rows. Hold them outside the one-kind-per-tx arbitration and
+    // append after the retain below.
+    let mut action_events = classify_actions(input, &jit_txs);
     // TxClaims is the authority for "one tx index, one P&L-bearing kind".
     // Passes still over-emit; a claimed tx index keeps only its highest-
     // precedence kind.
@@ -298,6 +322,7 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
         }
     }
     events.retain(|e| claims.is_claimed(e.tx_index) && claims.winner(e.tx_index) == Some(e.kind));
+    events.append(&mut action_events);
 
     events.sort_by(|a, b| {
         a.tx_index
@@ -339,16 +364,24 @@ pub(crate) fn normalize_confidence(events: &mut [MevEvent]) {
 
 /// Kind priority for [`claims::TxClaims`] (lower = higher priority).
 ///
-/// Liquidation > Jit > Skim > ArbAtomic > Utility. A real collision keeps the
-/// explicitly anchored kind (liquidation / mint-burn / pair outflow) and drops
-/// the inferred cycle. A backrun is a tag on `ArbAtomic`, not a competing kind.
+/// Liquidation > Jit > Skim > liquidity actions > ArbAtomic > Utility. A real
+/// collision keeps the explicitly anchored kind (liquidation / mint-burn /
+/// pair outflow) and drops the inferred cycle. A backrun is a tag on
+/// `ArbAtomic`, not a competing kind.
+///
+/// Liquidity/reward actions are *not* arbitrated: `classify_block` appends them
+/// after [`claims::TxClaims`] so a withdraw+claim transaction keeps both. The
+/// precedence here only orders same-tx output rows.
 pub fn kind_precedence(k: MevKind) -> u8 {
     match k {
         MevKind::Liquidation => 1,
         MevKind::Jit => 2,
         MevKind::Skim => 3,
-        MevKind::ArbAtomic => 4,
-        MevKind::Utility => 5,
+        MevKind::LiquidityRemove => 4,
+        MevKind::LiquidityAdd => 5,
+        MevKind::RewardClaim => 6,
+        MevKind::ArbAtomic => 7,
+        MevKind::Utility => 8,
     }
 }
 
@@ -372,6 +405,9 @@ pub struct DecodedTxFacts {
     pub flashloans: Vec<crate::explorer::types::FlashLoanFact>,
     pub buy_collaterals: Vec<BuyCollateralFact>,
     pub jit: Vec<JitFact>,
+    pub reward_claims: Vec<RewardClaimFact>,
+    pub lb_transfer_batches: Vec<LbTransferBatchFact>,
+    pub lb_reward_accumulators: Vec<LbRewardAccumulatorFact>,
     pub v2_pair_ops: Vec<V2PairOpFact>,
     pub oracle_updates: Vec<OracleUpdateFact>,
     pub reserve_updates: Vec<ReserveDataFact>,
@@ -379,6 +415,8 @@ pub struct DecodedTxFacts {
     pub keepers: Vec<KeeperFact>,
     pub epoch_rewards: Vec<EpochRewardFact>,
     pub gmx_events: Vec<GmxEventFact>,
+    /// Logs no decoder claimed. Phase 0 visibility: recorded, never acted on.
+    pub unmapped_logs: Vec<UnmappedLog>,
 }
 
 fn push_swap(facts: &mut DecodedTxFacts, tx_index: u64, log_idx: u64, log: &crate::data::LogData) {
@@ -402,6 +440,9 @@ pub(crate) fn decode_tx_logs_with_aliases(
     let mut facts = DecodedTxFacts::default();
     for (log_idx, log) in logs.iter().enumerate() {
         let log_idx = log_idx as u64;
+        // Set when no decoder claims this log; cleared when the GMX name-hash
+        // path below claims it.
+        let mut unmapped = None;
         if let Some(&topic0) = log.topics.first() {
             match decode::log_family(topic0) {
                 Some(decode::LogFamily::Transfer) => {
@@ -452,6 +493,27 @@ pub(crate) fn decode_tx_logs_with_aliases(
                         facts.jit.push(j);
                     }
                 }
+                Some(decode::LogFamily::RewardClaim) => {
+                    if let Some(mut c) = decode::decode_reward_claim(log) {
+                        c.tx_index = tx_index;
+                        c.log_index = log_idx;
+                        facts.reward_claims.push(c);
+                    }
+                }
+                Some(decode::LogFamily::LbTokenTransfer) => {
+                    if let Some(mut b) = decode::decode_lb_transfer_batch(log) {
+                        b.tx_index = tx_index;
+                        b.log_index = log_idx;
+                        facts.lb_transfer_batches.push(b);
+                    }
+                }
+                Some(decode::LogFamily::LbRewardAccumulator) => {
+                    if let Some(mut a) = decode::decode_lb_reward_accumulator(log) {
+                        a.tx_index = tx_index;
+                        a.log_index = log_idx;
+                        facts.lb_reward_accumulators.push(a);
+                    }
+                }
                 Some(decode::LogFamily::V2PairOp) => {
                     if let Some(mut op) = decode::decode_v2_pair_op(log) {
                         op.tx_index = tx_index;
@@ -494,14 +556,33 @@ pub(crate) fn decode_tx_logs_with_aliases(
                         facts.epoch_rewards.push(e);
                     }
                 }
-                None => {}
+                None => {
+                    unmapped = Some(UnmappedLog {
+                        tx_index,
+                        log_index: log_idx,
+                        emitter: log.address,
+                        topic0: Some(topic0),
+                    });
+                }
             }
+        } else {
+            // Anonymous log (no indexed signature) — also unmapped.
+            unmapped = Some(UnmappedLog {
+                tx_index,
+                log_index: log_idx,
+                emitter: log.address,
+                topic0: None,
+            });
         }
         // GMX EventEmitter keys eventNameHash on topics[1]; topic0 is not stable.
         if let Some(mut g) = decode::decode_gmx_event(log) {
             g.tx_index = tx_index;
             g.log_index = log_idx;
             facts.gmx_events.push(g);
+            unmapped = None;
+        }
+        if let Some(u) = unmapped {
+            facts.unmapped_logs.push(u);
         }
     }
     decode::attach_swap_tokens(&mut facts.swaps, &facts.transfers, pool_tokens);
@@ -545,11 +626,66 @@ mod tests {
         WNATIVE,
     };
     use crate::explorer::types::{
-        has_backrun_tag, utility_subkind, Confidence, JitFact, KeeperFact, MevKind, V2PairOpFact,
-        V2PairOpKind,
+        has_backrun_tag, utility_subkind, Confidence, JitFact, KeeperFact, MevKind, UnmappedLog,
+        V2PairOpFact, V2PairOpKind,
     };
     use crate::types::ChainName;
     use alloy::primitives::{address, b256, Address, U256};
+
+    /// Unmapped receipt logs are retained (never silently dropped) while
+    /// mapped families still decode normally.
+    #[test]
+    fn unmapped_logs_are_recorded_not_dropped() {
+        use crate::data::LogData;
+        use alloy::primitives::Bytes;
+
+        let unknown_topic =
+            b256!("1111111111111111111111111111111111111111111111111111111111111111");
+        let emitter = address!("00000000000000000000000000000000000000ee");
+        let logs = vec![
+            LogData {
+                log_index: Some(0),
+                address: emitter,
+                topics: vec![
+                    crate::chain::events::TRANSFER_TOPIC,
+                    b256!("00000000000000000000000000000000000000000000000000000000000000aa"),
+                    b256!("00000000000000000000000000000000000000000000000000000000000000bb"),
+                ],
+                data: Bytes::from(vec![0u8; 32]),
+            },
+            LogData {
+                log_index: Some(1),
+                address: emitter,
+                topics: vec![unknown_topic],
+                data: Bytes::new(),
+            },
+            LogData {
+                log_index: Some(2),
+                address: emitter,
+                topics: vec![],
+                data: Bytes::new(),
+            },
+        ];
+        let facts = decode_tx_logs_with_aliases(7, &logs, &HashMap::new(), &HashMap::new());
+        assert_eq!(facts.transfers.len(), 1, "the Transfer must still decode");
+        assert_eq!(
+            facts.unmapped_logs,
+            vec![
+                UnmappedLog {
+                    tx_index: 7,
+                    log_index: 1,
+                    emitter,
+                    topic0: Some(unknown_topic),
+                },
+                UnmappedLog {
+                    tx_index: 7,
+                    log_index: 2,
+                    emitter,
+                    topic0: None,
+                },
+            ]
+        );
+    }
 
     /// A future pass that dumps an untagged event into `Utility` fails here
     /// instead of silently recreating the old mystery bucket.

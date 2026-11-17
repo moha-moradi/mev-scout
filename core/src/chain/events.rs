@@ -325,6 +325,25 @@ pub static TRADER_JOE_LB_SWAP_LEGACY_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256("Swap(address,address,uint24,bytes32,bytes32,uint24,bytes32,bytes32)")
 });
 
+/// Pharaoh / LB rewarder `ClaimRewards(address caller, address reward,
+/// uint256 amount)` with `caller`/`reward` indexed. First observed on
+/// Avalanche tx `0x6ded44c4…ad4a9` (rewarder `0x138ce0…`, PHAR token).
+pub const LB_CLAIM_REWARDS_TOPIC: B256 =
+    b256!("9aa05b3d70a9e3e2f004f039648839560576334fb45c81f91b6db03ad9e2efc9");
+
+/// ERC-1155-style LB token batch transfer
+/// `TransferBatch(address operator, address from, address to, uint256[] ids,
+/// uint256[] values)` — all three addresses indexed. Emitted by the LB pool
+/// itself on bin withdrawals/deposits; not an ERC-20 `Transfer`.
+pub const LB_TRANSFER_BATCH_TOPIC: B256 =
+    b256!("4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb");
+
+/// Pharaoh DLMM `BinRewardAccumulatorsUpdated(uint24 id, uint256[] rewards)`
+/// — no indexed parameters (bin id is data word 0). Carried as a typed fact so
+/// it is claimed rather than recorded as an unmapped log.
+pub const LB_BIN_REWARD_UPDATED_TOPIC: B256 =
+    b256!("8eb73e2dcafd6475539c6f596078fb83191363912cdefa76ac116e179604da1d");
+
 // ── Fluid / Metric ──────────────────────────────────────────────────
 
 /// Fluid DEX pool `Swap(bool,uint256,uint256,address)` — no indexed params.
@@ -520,6 +539,35 @@ mod tests {
             "lb withdraw",
             *LB_WITHDRAWN_FROM_BINS_TOPIC,
             "WithdrawnFromBins(address,address,uint256[],bytes32[])",
+        );
+        pin_sig(
+            "lb claim rewards",
+            LB_CLAIM_REWARDS_TOPIC,
+            "ClaimRewards(address,address,uint256)",
+        );
+        pin_sig(
+            "lb transfer batch",
+            LB_TRANSFER_BATCH_TOPIC,
+            "TransferBatch(address,address,address,uint256[],uint256[])",
+        );
+        pin_sig(
+            "lb bin reward updated",
+            LB_BIN_REWARD_UPDATED_TOPIC,
+            "BinRewardAccumulatorsUpdated(uint24,uint256[])",
+        );
+        // Literal pins (the on-chain topics seen in the audited tx) so a
+        // signature typo cannot silently re-label the family.
+        assert_eq!(
+            LB_CLAIM_REWARDS_TOPIC,
+            b256!("9aa05b3d70a9e3e2f004f039648839560576334fb45c81f91b6db03ad9e2efc9")
+        );
+        assert_eq!(
+            LB_TRANSFER_BATCH_TOPIC,
+            b256!("4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb")
+        );
+        assert_eq!(
+            LB_BIN_REWARD_UPDATED_TOPIC,
+            b256!("8eb73e2dcafd6475539c6f596078fb83191363912cdefa76ac116e179604da1d")
         );
 
         // Scanner and decoder names are re-exports, not a second hash.

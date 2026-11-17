@@ -73,6 +73,7 @@ fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) -> Poo
         bin_step: None,
         maturity_timestamp: None,
         dex_name: None,
+        derivation_version: None,
         token0_symbol: None,
         token1_symbol: None,
         tvl_usd: None,
@@ -102,6 +103,7 @@ fn pool_info_v3(addr: Address, token0: Address, token1: Address, fee: u32, name:
         bin_step: None,
         maturity_timestamp: None,
         dex_name: None,
+        derivation_version: None,
         token0_symbol: None,
         token1_symbol: None,
         tvl_usd: None,
@@ -161,6 +163,7 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             PoolState::Metric(mev_scout_core::pool::state::MetricPoolState::new(info))
         }
         DexType::Fluid => PoolState::Fluid(mev_scout_core::pool::state::FluidPoolState::new(info)),
+        DexType::Unknown => panic!("test fixture cannot build a pool state for DexType::Unknown"),
     }
 }
 
@@ -667,6 +670,7 @@ fn test_e2e_cache_isolation() {
         bin_step: None,
         maturity_timestamp: None,
         dex_name: None,
+        derivation_version: None,
         token0_symbol: None,
         token1_symbol: None,
         tvl_usd: None,

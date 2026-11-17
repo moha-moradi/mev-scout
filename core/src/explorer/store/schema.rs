@@ -40,6 +40,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v13_paper_exec_cost,
     migrate_v14_jit_journal,
     migrate_v15_tx_evidence,
+    migrate_v16_action_kinds,
 ];
 
 /// Current schema head (`PRAGMA user_version` after a full migrate).
@@ -359,6 +360,95 @@ fn migrate_v15_tx_evidence(conn: &Connection) -> anyhow::Result<()> {
            created_at INTEGER NOT NULL
          );
          CREATE INDEX IF NOT EXISTS tx_evidence_block ON tx_evidence(block_number);",
+    )?;
+    Ok(())
+}
+
+/// Phase 2: widen `mev_ops.kind` for first-class LB/DLMM actions. The V1/V8
+/// CHECK accepts only the historical P&L kinds, so inserting a
+/// `liquidity_add` / `liquidity_remove` / `reward_claim` row would fail. Rebuild
+/// the table with the same columns and a wider CHECK; all existing rows (and
+/// their ids) are copied verbatim, including retired legacy labels.
+fn migrate_v16_action_kinds(conn: &Connection) -> anyhow::Result<()> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='mev_ops'",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(sql) = sql else {
+        return Ok(());
+    };
+    if sql.contains("'reward_claim'") && sql.contains("'liquidity_remove'") {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        BEGIN;
+        CREATE TABLE mev_ops_new(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          block_number INTEGER NOT NULL,
+          tx_index INTEGER,
+          tx_hash TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          -- Legacy labels remain accepted for old rows only; new code never
+          -- writes them (see types::MevKind). Actions are heuristic evidence,
+          -- not P&L claims, but they need a row of their own.
+          kind TEXT NOT NULL CHECK(kind IN
+            ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb',
+             'skim','utility','liquidity_add','liquidity_remove','reward_claim')),
+          eoa TEXT NOT NULL,
+          contract TEXT,
+          confidence TEXT NOT NULL CHECK(confidence IN ('exact','inferred')),
+          canonical_id TEXT,
+          profit_token TEXT,
+          profit_amount TEXT,
+          profit_usd REAL,
+          volume_usd REAL,
+          gas_cost_usd REAL,
+          flashloan_fee_usd REAL,
+          net_profit_usd REAL,
+          route_json TEXT,
+          victim_hashes TEXT,
+          details_json TEXT,
+          detector TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          excluded_from_net INTEGER NOT NULL DEFAULT 0,
+          subkind TEXT,
+          usd_approximate INTEGER NOT NULL DEFAULT 0,
+          native_unpriced INTEGER NOT NULL DEFAULT 0,
+          multi_asset_pricing INTEGER NOT NULL DEFAULT 0,
+          pricing_clamped INTEGER NOT NULL DEFAULT 0,
+          flash_fee_unpriced INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO mev_ops_new(
+          id, block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence,
+          canonical_id, profit_token, profit_amount, profit_usd, volume_usd,
+          gas_cost_usd, flashloan_fee_usd, net_profit_usd, route_json,
+          victim_hashes, details_json, detector, created_at, excluded_from_net,
+          subkind, usd_approximate, native_unpriced, multi_asset_pricing,
+          pricing_clamped, flash_fee_unpriced)
+        SELECT
+          id, block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence,
+          canonical_id, profit_token, profit_amount, profit_usd, volume_usd,
+          gas_cost_usd, flashloan_fee_usd, net_profit_usd, route_json,
+          victim_hashes, details_json, detector, created_at, excluded_from_net,
+          subkind, usd_approximate, native_unpriced, multi_asset_pricing,
+          pricing_clamped, flash_fee_unpriced
+        FROM mev_ops;
+        DROP TABLE mev_ops;
+        ALTER TABLE mev_ops_new RENAME TO mev_ops;
+        CREATE INDEX IF NOT EXISTS mev_ops_block ON mev_ops(block_number);
+        CREATE INDEX IF NOT EXISTS mev_ops_sender ON mev_ops(eoa, block_number);
+        CREATE INDEX IF NOT EXISTS mev_ops_kind_ts ON mev_ops(kind, ts);
+        CREATE INDEX IF NOT EXISTS mev_ops_canonical ON mev_ops(canonical_id);
+        CREATE INDEX IF NOT EXISTS mev_ops_ts ON mev_ops(ts);
+        CREATE INDEX IF NOT EXISTS mev_ops_tx_hash ON mev_ops(tx_hash);
+        CREATE UNIQUE INDEX IF NOT EXISTS mev_ops_natural
+          ON mev_ops(canonical_id, tx_hash);
+        COMMIT;
+        ",
     )?;
     Ok(())
 }

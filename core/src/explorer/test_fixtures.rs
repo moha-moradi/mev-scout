@@ -188,6 +188,7 @@ pub fn tx(
         keepers: vec![],
         epoch_rewards: vec![],
         gmx_events: vec![],
+        ..Default::default()
     }
 }
 

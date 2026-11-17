@@ -91,6 +91,8 @@ pub(super) fn health_probe(
             })
         }
         DexType::Metric | DexType::Fluid => None,
+        // No family ⇒ no known probe selector; keep the pool without a verdict.
+        DexType::Unknown => None,
     }
 }
 
@@ -135,6 +137,8 @@ pub(super) fn probe_alive(dex_type: &DexType, bytes: &[u8]) -> bool {
             false
         }
         // getReserves (V2/Solidly/Camelot): r0(32) + r1(32) + blockTimestamp(32)
+        // Unknown family has no specified response shape — never claim liveness.
+        DexType::Unknown => false,
         _ => {
             bytes.len() >= 64
                 && (!bytes[..32].iter().all(|b| *b == 0) || !bytes[32..64].iter().all(|b| *b == 0))

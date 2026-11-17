@@ -124,6 +124,11 @@ pub struct PoolInfo {
     /// Human-readable DEX protocol name (e.g. "QuickSwap", "SushiSwap", "Velodrome").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dex_name: Option<Arc<str>>,
+    /// Inference-rule version this row's `dex_type` was derived under. `None` =
+    /// written before versioning existed (or family never inferred), so the
+    /// registry loader re-derives from `dex_name` instead of trusting it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_version: Option<u32>,
     /// Token0 symbol (e.g. "WETH", "USDC").
     #[serde(default, skip_serializing_if = "Option::is_none", with = "arc_str_opt")]
     pub token0_symbol: Option<Arc<str>>,
@@ -157,7 +162,8 @@ impl Default for PoolInfo {
             token1: Address::ZERO,
             fee: 0,
             name: None,
-            dex_type: DexType::UniswapV2,
+            // Fail-closed: a default-constructed pool has no established family.
+            dex_type: DexType::Unknown,
             tick_spacing: None,
             creation_block: 0,
             pool_id: None,
@@ -171,6 +177,7 @@ impl Default for PoolInfo {
             bin_step: None,
             maturity_timestamp: None,
             dex_name: None,
+            derivation_version: None,
             token0_symbol: None,
             token1_symbol: None,
             tvl_usd: None,

@@ -123,34 +123,54 @@ pub(crate) fn parse_addr(s: &str) -> Option<Address> {
 /// `dex_id` is the source's dex identifier string; `label_hints` are optional
 /// free-text classifiers from sources that expose them (e.g. DexScreener
 /// `labels` / `types` arrays).
+///
+/// Falls back to `UniswapV2` for unrecognised classic-AMM ids so discovery
+/// keeps those pools. Callers that rewrite *stored* metadata must use
+/// [`infer_dex_type_strict`] instead: the fallback is a discovery convenience,
+/// not a classification.
 pub fn infer_dex_type(dex_id: Option<&str>, label_hints: &[&str]) -> DexType {
+    infer_dex_type_strict(dex_id, label_hints).unwrap_or(DexType::UniswapV2)
+}
+
+/// Positive-identification variant of [`infer_dex_type`].
+///
+/// Returns `Some` only when the source name/labels positively identify a
+/// family, and `None` when the answer would have been the classic-AMM
+/// fallback. Re-deriving a stored row with the lenient function is unsafe:
+/// names that do not round-trip (e.g. `"Trader Joe LB"`, aggregator labels)
+/// would be silently downgraded to `UniswapV2` — the exact provenance of the
+/// Pharaoh false-positive skim.
+pub fn infer_dex_type_strict(dex_id: Option<&str>, label_hints: &[&str]) -> Option<DexType> {
     let id = dex_id.unwrap_or("").to_ascii_lowercase();
     let hints = label_hints.join(" ").to_ascii_lowercase();
+    if id.trim().is_empty() && hints.trim().is_empty() {
+        return None;
+    }
 
     // Source labels are the authoritative CL markers (DexScreener "v3"/"cl"/
     // "algebra"/"slipstream"/"v4" types beat any dex-id default).
     if hints.contains("v4") {
-        return DexType::UniswapV4;
+        return Some(DexType::UniswapV4);
     }
     if hints.contains("v3")
         || hints.contains("cl")
         || hints.contains("algebra")
         || hints.contains("slipstream")
     {
-        return DexType::UniswapV3;
+        return Some(DexType::UniswapV3);
     }
     // Dex-id level markers (GeckoTerminal network ids, DexScreener dex ids).
     if id.contains("v4") {
-        return DexType::UniswapV4;
+        return Some(DexType::UniswapV4);
     }
     if id.contains("algebra") || id.contains("slipstream") || id.contains("v3") {
-        return DexType::UniswapV3;
+        return Some(DexType::UniswapV3);
     }
     if id.contains("pancakeswap") && id.contains("infinity") {
-        return DexType::PancakeInfinity;
+        return Some(DexType::PancakeInfinity);
     }
     if id == "pharaoh" || (id.contains("pharaoh") && id.contains("dlmm")) {
-        return DexType::TraderJoeLB;
+        return Some(DexType::TraderJoeLB);
     }
     if id.contains("velodrome")
         || id.contains("aerodrome")
@@ -158,35 +178,52 @@ pub fn infer_dex_type(dex_id: Option<&str>, label_hints: &[&str]) -> DexType {
         || id.contains("equalizer")
         || id.contains("thena")
     {
-        return DexType::Solidly;
+        return Some(DexType::Solidly);
     }
     if id.contains("trader-joe")
         || id.contains("traderjoe")
         || id.contains("liquidity-book")
         || id.contains("lfj")
     {
-        return DexType::TraderJoeLB;
+        return Some(DexType::TraderJoeLB);
     }
     if id.contains("balancer") {
-        return DexType::Balancer;
+        return Some(DexType::Balancer);
     }
     if id.contains("curve") {
-        return DexType::Curve;
+        return Some(DexType::Curve);
     }
     if id.contains("camelot") {
-        return DexType::Camelot;
+        return Some(DexType::Camelot);
     }
     if id.contains("pendle") {
-        return DexType::Pendle;
+        return Some(DexType::Pendle);
     }
     if id.contains("metric") {
-        return DexType::Metric;
+        return Some(DexType::Metric);
     }
     if id.contains("fluid") {
-        return DexType::Fluid;
+        return Some(DexType::Fluid);
     }
-    // Classic AMMs — plain Uniswap/QuickSwap/Sushi/PancakeSwap V2 pairs.
-    DexType::UniswapV2
+    // Classic AMMs — only when the name actually identifies one. Plain
+    // Uniswap/QuickSwap/Sushi/PancakeSwap V2 pairs and their common forks.
+    const CLASSIC_V2: &[&str] = &[
+        "uniswap",
+        "quickswap",
+        "sushi",
+        "pancake",
+        "biswap",
+        "pangolin",
+        "spooky",
+        "waka",
+        "honeyswap",
+        "elk",
+        "solarbeam",
+    ];
+    if CLASSIC_V2.iter().any(|m| id.contains(m) || hints.contains(m)) {
+        return Some(DexType::UniswapV2);
+    }
+    None
 }
 
 /// DEX ids/labels with meaningful TVL but no decoder yet — importing them
@@ -582,6 +619,59 @@ mod tests {
         assert_eq!(
             discoverable, 0,
             "yields UUID rows must not resolve to a pool contract address"
+        );
+    }
+
+    /// Strict inference must never fabricate a classic-AMM fallback: repairing
+    /// a stored row with a name that does not round-trip would downgrade a
+    /// correct LB/CL row to a V2 skim venue (the Pharaoh false positive).
+    #[test]
+    fn strict_inference_refuses_ambiguous_names() {
+        // Positive identifications still resolve.
+        assert_eq!(
+            infer_dex_type_strict(Some("pharaoh"), &[]),
+            Some(DexType::TraderJoeLB)
+        );
+        assert_eq!(
+            infer_dex_type_strict(Some("pharaoh-dlmm"), &[]),
+            Some(DexType::TraderJoeLB)
+        );
+        assert_eq!(
+            infer_dex_type_strict(Some("uniswap-v3"), &[]),
+            Some(DexType::UniswapV3)
+        );
+        assert_eq!(
+            infer_dex_type_strict(Some("aerodrome-slipstream"), &[]),
+            Some(DexType::UniswapV3)
+        );
+        assert_eq!(
+            infer_dex_type_strict(Some("quickswap"), &[]),
+            Some(DexType::UniswapV2)
+        );
+        assert_eq!(
+            infer_dex_type_strict(Some("UniswapV2"), &[]),
+            Some(DexType::UniswapV2)
+        );
+
+        // Names that only hit the lenient fallback are refused.
+        assert_eq!(infer_dex_type_strict(Some("Trader Joe LB"), &[]), None);
+        assert_eq!(infer_dex_type_strict(Some("unknown-amm"), &[]), None);
+        assert_eq!(infer_dex_type_strict(Some(""), &[]), None);
+        assert_eq!(infer_dex_type_strict(None, &[]), None);
+        // Label-only sources are still enough when they name a family.
+        assert_eq!(
+            infer_dex_type_strict(None, &["v3"]),
+            Some(DexType::UniswapV3)
+        );
+
+        // The lenient contract is unchanged for discovery.
+        assert_eq!(
+            infer_dex_type(Some("unknown-amm"), &[]),
+            DexType::UniswapV2
+        );
+        assert_eq!(
+            infer_dex_type(Some("Trader Joe LB"), &[]),
+            DexType::UniswapV2
         );
     }
 }

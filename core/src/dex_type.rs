@@ -2,6 +2,12 @@
 //! TraderJoeLB, Pendle, PancakeInfinity, Metric, Fluid) and associated metadata.
 use serde::{Deserialize, Serialize};
 
+/// Version of the pool-family inference rules. Bump whenever `infer_dex_type`
+/// changes in a way that would re-derive stored `pool_info` rows. Rows stamped
+/// with an older version are re-derived by the registry loader instead of
+/// being trusted.
+pub const POOL_DERIVATION_VERSION: u32 = 1;
+
 #[repr(i64)]
 #[derive(
     Debug,
@@ -18,7 +24,6 @@ use serde::{Deserialize, Serialize};
 )]
 #[strum(ascii_case_insensitive)]
 pub enum DexType {
-    #[default]
     #[serde(rename = "uniswap_v2")]
     #[strum(serialize = "UniswapV2")]
     UniswapV2 = 0,
@@ -57,4 +62,13 @@ pub enum DexType {
     #[serde(rename = "fluid")]
     #[strum(serialize = "Fluid")]
     Fluid = 12,
+    /// No family was inferred. Fail-closed default: an unknown pool is never
+    /// V2-like (so never skim-eligible), is never added to the trading manager,
+    /// and carries no fee interpretation. Discovery still resolves classic AMMs
+    /// to `UniswapV2` from positive markers; this variant only covers pools
+    /// whose family genuinely was not established.
+    #[default]
+    #[serde(rename = "unknown")]
+    #[strum(serialize = "Unknown")]
+    Unknown = 13,
 }

@@ -86,6 +86,33 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
         MevKind::Skim => {
             format!("Skim|{:#x}|{:#x}", first_pool(&ev.pools), ev.searcher)
         }
+        // Actions are evidence rows, not P&L: key them by the emitting log so
+        // two withdrawals/claims in one tx stay distinct rows.
+        MevKind::LiquidityAdd | MevKind::LiquidityRemove => {
+            let log = ev
+                .details
+                .get("log_index")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default();
+            format!(
+                "{:?}|{:#x}|{:#x}|log:{log}",
+                ev.kind,
+                first_pool(&ev.pools),
+                ev.searcher
+            )
+        }
+        MevKind::RewardClaim => {
+            let log = ev
+                .details
+                .get("log_index")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default();
+            format!(
+                "RewardClaim|{:#x}|{:#x}|log:{log}",
+                first_pool(&ev.pools),
+                ev.searcher
+            )
+        }
         _ => {
             let mut pools = ev.pools.clone();
             pools.sort();

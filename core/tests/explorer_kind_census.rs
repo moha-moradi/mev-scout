@@ -67,6 +67,9 @@ const ALL_KINDS: &[MevKind] = &[
     MevKind::Liquidation,
     MevKind::Jit,
     MevKind::Skim,
+    MevKind::LiquidityRemove,
+    MevKind::LiquidityAdd,
+    MevKind::RewardClaim,
     MevKind::ArbAtomic,
     MevKind::Utility,
 ];

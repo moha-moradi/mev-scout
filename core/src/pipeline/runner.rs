@@ -1555,6 +1555,14 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                 crate::pool::state::pool_types::FluidPoolState::new(info),
             ));
         }
+        crate::dex_type::DexType::Unknown => {
+            // Fail-closed: a pool whose family was never established cannot be
+            // quoted. Keeping it out of the manager beats guessing V2 maths.
+            tracing::warn!(
+                pool = %info.address,
+                "skipping pool with unknown DEX family (fail-closed)"
+            );
+        }
     }
 }
 

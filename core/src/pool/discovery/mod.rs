@@ -309,6 +309,12 @@ impl DiscoveredPool {
         // a confirmed on-chain classification and wins.
         if other.dex_type != self.dex_type {
             match (self.dex_type, other.dex_type) {
+                // `Unknown` is "no family inferred", never a classification:
+                // any specific type wins over it.
+                (DexType::Unknown, specific) => {
+                    self.dex_type = specific;
+                }
+                (_, DexType::Unknown) => {}
                 (DexType::UniswapV2, specific) if self.fee == 0 => {
                     self.dex_type = specific;
                 }
@@ -379,6 +385,7 @@ impl From<DiscoveredPool> for PoolInfo {
             bin_step: d.bin_step,
             maturity_timestamp: d.maturity_timestamp,
             dex_name: d.dex_name.map(Arc::from),
+            derivation_version: Some(crate::dex_type::POOL_DERIVATION_VERSION),
             token0_symbol: d.token0_symbol.map(Arc::from),
             token1_symbol: d.token1_symbol.map(Arc::from),
             tvl_usd: d.tvl_usd,

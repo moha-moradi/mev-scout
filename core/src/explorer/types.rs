@@ -18,6 +18,15 @@ pub enum MevKind {
     Jit,
     /// UniV2-style `skim`: pair outbound Transfers with no Swap/Mint/Burn/Sync.
     Skim,
+    /// LB/DLMM bin deposit (`DepositedToBins`). A principal movement, not P&L:
+    /// emitted with `Confidence::Inferred` and no profit amount.
+    LiquidityAdd,
+    /// LB/DLMM bin withdrawal (`WithdrawnFromBins` + LB `TransferBatch`). A
+    /// principal return, not P&L: `Confidence::Inferred`, no profit amount.
+    LiquidityRemove,
+    /// Explicit `ClaimRewards` payout (Pharaoh LB rewarder). Amount is a
+    /// reward field (`PnlBasis::F`), never a ledger residual.
+    RewardClaim,
     /// Exact-fingerprint operational execution: keeper or airdrop
     /// claim-and-sell. Not a residual bucket. The family is `subkind`.
     Utility,
@@ -30,6 +39,9 @@ impl MevKind {
         MevKind::ArbAtomic,
         MevKind::Jit,
         MevKind::Liquidation,
+        MevKind::LiquidityAdd,
+        MevKind::LiquidityRemove,
+        MevKind::RewardClaim,
         MevKind::Skim,
         MevKind::Utility,
     ];
@@ -39,6 +51,9 @@ impl MevKind {
             MevKind::ArbAtomic => "arb_atomic",
             MevKind::Liquidation => "liquidation",
             MevKind::Jit => "jit",
+            MevKind::LiquidityAdd => "liquidity_add",
+            MevKind::LiquidityRemove => "liquidity_remove",
+            MevKind::RewardClaim => "reward_claim",
             MevKind::Skim => "skim",
             MevKind::Utility => "utility",
         }
@@ -53,6 +68,9 @@ impl MevKind {
             "arb_atomic" => Some(MevKind::ArbAtomic),
             "liquidation" => Some(MevKind::Liquidation),
             "jit" => Some(MevKind::Jit),
+            "liquidity_add" => Some(MevKind::LiquidityAdd),
+            "liquidity_remove" => Some(MevKind::LiquidityRemove),
+            "reward_claim" => Some(MevKind::RewardClaim),
             "skim" => Some(MevKind::Skim),
             // `unknown` is the pre-B11 label. Rows are rewritten to `utility`
             // on open; the alias keeps old CLI flags and corpus strings valid.
@@ -268,6 +286,19 @@ pub struct TransferFact {
     pub from: Address,
     pub to: Address,
     pub amount: U256,
+}
+
+/// A receipt log that no decoder claimed. Kept so unmapped protocol activity is
+/// visible instead of silently discarded; the durable copy is written into
+/// `tx_evidence.unmapped_logs` for transactions that produce an op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnmappedLog {
+    pub tx_index: u64,
+    /// Log position within the tx's receipt (stable for re-decode).
+    pub log_index: u64,
+    pub emitter: Address,
+    /// `None` for anonymous logs (no indexed `topic0`).
+    pub topic0: Option<B256>,
 }
 
 /// AMM family label carried on swap facts.
@@ -535,6 +566,49 @@ pub struct JitFact {
     pub amount1: U256,
     /// When true, overlap is any same-pool swap (LB has no tick on Swap).
     pub bin_amm: bool,
+}
+
+/// Pharaoh / LB rewarder `ClaimRewards(caller, reward, amount)` — the explicit
+/// payout leg of a withdraw+claim transaction. First-class `RewardClaim` fact.
+#[derive(Debug, Clone)]
+pub struct RewardClaimFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    /// Rewarder contract that emitted the claim.
+    pub emitter: Address,
+    /// Indexed `caller` — the account receiving the payout.
+    pub claimer: Address,
+    /// Indexed `reward` token.
+    pub token: Address,
+    pub amount: U256,
+}
+
+/// LB token `TransferBatch(operator, from, to, ids, values)`. The bin-token
+/// counterpart of `DepositedToBins` / `WithdrawnFromBins`; kept as a typed fact
+/// so it is claimed by a decoder instead of being silently dropped as a
+/// non-ERC-20 `Transfer`.
+#[derive(Debug, Clone)]
+pub struct LbTransferBatchFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    /// Emitter (the LB pool pair).
+    pub emitter: Address,
+    pub operator: Address,
+    pub from: Address,
+    pub to: Address,
+    pub ids: Vec<U256>,
+    pub values: Vec<U256>,
+}
+
+/// Pharaoh DLMM `BinRewardAccumulatorsUpdated(id, rewards)`. Not an action by
+/// itself; typed so the log is claimed rather than reported as unmapped.
+#[derive(Debug, Clone)]
+pub struct LbRewardAccumulatorFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    pub emitter: Address,
+    pub bin_id: u32,
+    pub rewards: Vec<U256>,
 }
 
 /// UniV2 pair lifecycle op used to exclude Swap/Mint/Burn/Sync outflows from

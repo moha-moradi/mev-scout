@@ -1046,7 +1046,8 @@ fn dispatched_topics_are_unique_and_classified() {
         CHAINLINK_LOG_TRIGGERED_TOPIC, CHAINLINK_UPKEEP_PERFORMED_TOPIC,
         COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC,
         COMPOUND_V3_BUY_COLLATERAL_TOPIC, EULER_V2_LIQUIDATE_TOPIC, GELATO_EXEC_SUCCESS_TOPIC,
-        INF_CL_SWAP_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC, MORPHO_BLUE_LIQUIDATE_TOPIC,
+        INF_CL_SWAP_TOPIC, LB_BIN_REWARD_UPDATED_TOPIC, LB_CLAIM_REWARDS_TOPIC,
+        LB_TRANSFER_BATCH_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC, MORPHO_BLUE_LIQUIDATE_TOPIC,
         NOTIFY_REWARD_TOPIC, SILO_V2_LIQUIDATION_CALL_TOPIC, UNI_V3_FLASH_TOPIC, V2_BURN_TOPIC,
         V2_MINT_TOPIC, V2_SYNC_TOPIC, V4_SWAP_TOPIC,
     };
@@ -1095,6 +1096,9 @@ fn dispatched_topics_are_unique_and_classified() {
         (*V3_COLLECT_TOPIC, LogFamily::V3Liquidity),
         (*LB_DEPOSITED_TO_BINS_TOPIC, LogFamily::LbLiquidity),
         (*LB_WITHDRAWN_FROM_BINS_TOPIC, LogFamily::LbLiquidity),
+        (LB_CLAIM_REWARDS_TOPIC, LogFamily::RewardClaim),
+        (LB_TRANSFER_BATCH_TOPIC, LogFamily::LbTokenTransfer),
+        (LB_BIN_REWARD_UPDATED_TOPIC, LogFamily::LbRewardAccumulator),
         (V2_SYNC_TOPIC, LogFamily::V2PairOp),
         (*V2_MINT_TOPIC, LogFamily::V2PairOp),
         (*V2_BURN_TOPIC, LogFamily::V2PairOp),
@@ -1118,5 +1122,5 @@ fn dispatched_topics_are_unique_and_classified() {
             "topic0 {topic} misclassified"
         );
     }
-    assert_eq!(seen.len(), 47);
+    assert_eq!(seen.len(), 50);
 }

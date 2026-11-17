@@ -36,6 +36,8 @@ pub(super) fn default_fee(
         | DexType::Pendle
         | DexType::Metric
         | DexType::Fluid => fee_opt.unwrap_or(0),
+        // Unknown family: keep whatever the source reported, never invent a fee.
+        DexType::Unknown => fee_opt.unwrap_or(0),
     }
 }
 
@@ -236,5 +238,7 @@ pub(super) fn fetch_pool_metadata(
                 }
             }))
         }
+        // No family ⇒ no known metadata ABI; do not spend RPC on guesses.
+        DexType::Unknown => None,
     }
 }

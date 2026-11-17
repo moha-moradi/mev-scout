@@ -969,6 +969,7 @@ impl PoolManager {
             DexType::TraderJoeLB => Self::init_lb_pool(ctx.rpc, pool, ctx.br).await,
             DexType::Pendle => Self::init_pendle_pool(ctx.rpc, pool, ctx.br).await,
             DexType::Metric | DexType::Fluid => None,
+            DexType::Unknown => None,
         }
     }
 

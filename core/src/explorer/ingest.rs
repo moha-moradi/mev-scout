@@ -17,12 +17,13 @@ use tracing::{debug, warn};
 
 use crate::data::{BlockData, ReceiptData, TxData};
 use crate::explorer::classify::{self, BlockContext, BlockInput, TxInput};
+use crate::explorer::decode;
 use crate::explorer::jit_accounting::{self, ArchiveBudget, JitAccounting, LpBlock, Quote};
 use crate::explorer::pricing::{self, TokenUsd};
 use crate::explorer::store::{
     BlockFactsInput, ExplorerStore, JitJournalInput, SwapRow, TransferRow, TxEvidenceRow, TxRow,
 };
-use crate::explorer::types::{MevEvent, MevKind};
+use crate::explorer::types::{MevEvent, MevKind, UnmappedLog};
 use crate::progress::{JobProgress, ProgressEvent};
 use crate::rpc::RpcClient;
 use crate::types::ChainName;
@@ -389,6 +390,9 @@ struct DecodedTxs {
     swap_rows: Vec<SwapRow>,
     transfer_rows: Vec<TransferRow>,
     jit_hashes: HashMap<u64, B256>,
+    /// Logs no decoder claimed, across the whole block. Recorded on the
+    /// op-producing txs' evidence payloads; summarised once per block.
+    unmapped_logs: Vec<UnmappedLog>,
 }
 
 fn decode_successful_txs(
@@ -406,6 +410,7 @@ fn decode_successful_txs(
         swap_rows: Vec::new(),
         transfer_rows: Vec::new(),
         jit_hashes: HashMap::new(),
+        unmapped_logs: Vec::new(),
     };
     for tx in txs {
         let Some(receipt) = receipt_by_index.get(&tx.index).copied() else {
@@ -414,7 +419,7 @@ fn decode_successful_txs(
         if !receipt.status {
             continue;
         }
-        let facts = classify::decode_tx_logs_with_aliases(
+        let mut facts = classify::decode_tx_logs_with_aliases(
             tx.index,
             &receipt.logs,
             pools.tokens,
@@ -466,6 +471,7 @@ fn decode_successful_txs(
         if !facts.jit.is_empty() {
             out.jit_hashes.insert(tx.index, tx.hash);
         }
+        out.unmapped_logs.append(&mut facts.unmapped_logs);
         out.tx_inputs.push(TxInput {
             tx_index: tx.index,
             tx_hash: tx.hash,
@@ -482,6 +488,9 @@ fn decode_successful_txs(
             flashloans: facts.flashloans,
             buy_collaterals: facts.buy_collaterals,
             jit: facts.jit,
+            reward_claims: facts.reward_claims,
+            lb_transfer_batches: facts.lb_transfer_batches,
+            lb_reward_accumulators: facts.lb_reward_accumulators,
             v2_pair_ops: facts.v2_pair_ops,
             oracle_updates: facts.oracle_updates,
             reserve_updates: facts.reserve_updates,
@@ -582,7 +591,31 @@ pub async fn index_block_fetched(
         swap_rows,
         transfer_rows,
         jit_hashes,
+        unmapped_logs,
     } = decode_successful_txs(&txs, &receipts, pools, cfg, base_fee_gwei);
+    if !unmapped_logs.is_empty() {
+        let mut by_topic: HashMap<B256, usize> = HashMap::new();
+        for u in &unmapped_logs {
+            if let Some(topic0) = u.topic0 {
+                *by_topic.entry(topic0).or_default() += 1;
+            }
+        }
+        let distinct = by_topic.len();
+        let mut ranked: Vec<(B256, usize)> = by_topic.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let sample: Vec<String> = ranked
+            .iter()
+            .take(3)
+            .map(|(topic0, n)| format!("{topic0:#x}x{n}"))
+            .collect();
+        debug!(
+            block = block_number,
+            logs = unmapped_logs.len(),
+            topics = distinct,
+            sample = ?sample,
+            "receipt logs with no decoder (kept in tx_evidence for op txs)"
+        );
+    }
 
     let jit_cutoff = block_number.saturating_sub(cfg.jit_window_blocks);
     let latest = store.latest_classified_block()?;
@@ -1021,6 +1054,23 @@ fn build_tx_evidence(
                 })
             })
             .collect();
+        // Logs no decoder claimed. Kept explicitly so a reader can tell
+        // "nothing was there" from "we could not see it" — the distinction
+        // that hid the Pharaoh `ClaimRewards`/`TransferBatch` path.
+        let unmapped_logs: Vec<serde_json::Value> = receipt
+            .logs
+            .iter()
+            .filter(|log| !decode::is_mapped_log(log))
+            .map(|log| {
+                serde_json::json!({
+                    "log_index": log.log_index,
+                    "address": format!("{:#x}", log.address),
+                    "topic0": log.topics.first().map(|topic0| format!("{topic0:#x}")),
+                    "topic_count": log.topics.len(),
+                    "data_bytes": log.data.len(),
+                })
+            })
+            .collect();
         let payload = serde_json::json!({
             "export_version": 1,
             "chain": chain.to_string(),
@@ -1032,6 +1082,7 @@ fn build_tx_evidence(
             "event_logs": event_logs,
             "token_transfers": token_transfers,
             "swap_events": swap_events,
+            "unmapped_logs": unmapped_logs,
             "internal_calls": serde_json::Value::Null,
             "internal_transactions": serde_json::Value::Null,
             "trace": {
@@ -2214,6 +2265,12 @@ mod tests {
         assert_eq!(payload["event_logs"][0]["log_index"], 42);
         assert_eq!(payload["token_transfers"][0]["amount_raw"], "7");
         assert_eq!(payload["swap_events"][0]["amount_out_raw"], "90");
+        assert_eq!(payload["unmapped_logs"][0]["log_index"], 42);
+        assert_eq!(payload["unmapped_logs"][0]["topic_count"], 1);
+        assert_eq!(
+            payload["unmapped_logs"][0]["topic0"],
+            serde_json::Value::String(format!("{:#x}", B256::from([0x77u8; 32])))
+        );
         assert!(payload["internal_calls"].is_null());
         assert!(payload["internal_transactions"].is_null());
         assert_eq!(payload["trace"]["status"], "unavailable");
@@ -2263,6 +2320,7 @@ mod tests {
             keepers: vec![],
             epoch_rewards: vec![],
             gmx_events: vec![],
+            ..Default::default()
         };
         let mut ev = sample();
         ev.kind = MevKind::Jit;

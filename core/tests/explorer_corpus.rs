@@ -804,7 +804,16 @@ async fn run_chain_corpus(chain: ChainName, rpc_url: &str) -> bool {
 /// absent rare kind (`jit`) is confirmed absent rather than merely unlisted.
 /// Retired labels (`sandwich`, `frontrun`, `jit_arb`, `backrun`) are not
 /// emittable; a backrun is now an `arb_atomic` row carrying the `backrun` tag.
-const ALL_KINDS: &[&str] = &["arb_atomic", "jit", "liquidation", "skim", "utility"];
+const ALL_KINDS: &[&str] = &[
+    "arb_atomic",
+    "jit",
+    "liquidation",
+    "liquidity_add",
+    "liquidity_remove",
+    "reward_claim",
+    "skim",
+    "utility",
+];
 
 /// `MEV_SCOUT_RECORD=1` — report derived facts instead of asserting them.
 fn recording() -> bool {

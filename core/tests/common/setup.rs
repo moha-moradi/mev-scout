@@ -86,6 +86,7 @@ pub fn pool_info_to_state(info: PoolInfo) -> PoolState {
             PoolState::Metric(mev_scout_core::pool::state::MetricPoolState::new(info))
         }
         DexType::Fluid => PoolState::Fluid(mev_scout_core::pool::state::FluidPoolState::new(info)),
+        DexType::Unknown => panic!("test fixture cannot build a pool state for DexType::Unknown"),
     }
 }
 
@@ -130,6 +131,7 @@ pub fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) ->
         bin_step: None,
         maturity_timestamp: None,
         dex_name: None,
+        derivation_version: None,
         token0_symbol: None,
         token1_symbol: None,
         tvl_usd: None,
@@ -200,6 +202,7 @@ pub fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: 
             bin_step: None,
             maturity_timestamp: None,
             dex_name: None,
+            derivation_version: None,
             token0_symbol: None,
             token1_symbol: None,
             tvl_usd: None,
