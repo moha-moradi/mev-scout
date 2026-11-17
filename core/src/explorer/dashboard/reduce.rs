@@ -1238,6 +1238,7 @@ pub fn reject_ladder(counts: &HashMap<String, i64>) -> Vec<RejectRow> {
         RejectReason::CausalPriceMoveBelowFloor,
         RejectReason::SkimPoolNotV2Like,
         RejectReason::SkimLooksLikeSwap,
+        RejectReason::SkimCounterEvidence,
         RejectReason::JitPairingUnmatched,
         RejectReason::LiquidationNotReconciled,
     ];

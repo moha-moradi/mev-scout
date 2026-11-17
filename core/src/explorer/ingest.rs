@@ -284,6 +284,7 @@ fn run_block_context(cfg: &IngestConfig, pools: PoolViews<'_>) -> BlockContext {
             weth: cfg.wrapped_native,
         },
         v2_like_pools: std::sync::Arc::new(pools.v2_like.clone()),
+        pool_tokens: std::sync::Arc::new(pools.tokens.clone()),
         chainlink_feeds: std::sync::Arc::new(cfg.chainlink_feeds.clone()),
         savax: cfg.savax,
         epoch_venue_pools: std::sync::Arc::new(pools.epoch_venue.clone()),

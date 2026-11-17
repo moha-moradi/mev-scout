@@ -226,7 +226,8 @@ fn baseline_jit() {
     assert!(!kinds(&classify_block(&block(vec![n0, n1]))).contains(&MevKind::Jit));
 }
 
-/// Baseline `Skim`: V2-like pair outbound transfer with no swap → R.
+/// Baseline `Skim`: V2-like pair outbound transfer with no counter-evidence
+/// → R basis. Phase 3: receipt-only inference is never `Exact`.
 /// Negative: the same pair also has a Swap in the tx → not a skim.
 #[test]
 fn baseline_skim() {
@@ -241,6 +242,7 @@ fn baseline_skim() {
     assert_eq!(ev.searcher, ATK);
     assert_eq!(ev.profit_amount, Some(U256::from(42)));
     assert_eq!(pnl_basis(&ev), Some("R"));
+    assert_eq!(ev.confidence, Confidence::Inferred);
 
     let neg = tx(
         0,

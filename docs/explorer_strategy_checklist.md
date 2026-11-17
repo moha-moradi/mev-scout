@@ -264,6 +264,7 @@ Silent `continue` in the causal, sandwich, skim, JIT, and liquidation passes now
 | `victim_set_empty` | no third-party same-direction victim | aggregate (frontrun) or front tx (sandwich round-trip) |
 | `skim_pool_not_v2_like` | pair-op outflow whose pool is not in the v2-like registry | aggregate |
 | `skim_looks_like_swap` | registry pool also receives tokens | tx |
+| `skim_counter_evidence` | V2-like pool outflow failed the positive-evidence gate (pool logs, decoded swap/pair-op, liquidity action, or a token the pair does not hold) | tx, or aggregate for routine venue activity |
 | `jit_pairing_unmatched` | Mint without a later Burn, or no in-range validating swap | mint tx |
 | `liquidation_not_reconciled` | seized collateral not covered by transfers; the liquidation event still stands | tx |
 
@@ -277,6 +278,6 @@ No `kind_precedence` number changed in A15: an empty census leaves no measured U
 |---|---|---|
 | Liquidation vs ArbAtomic | **Liquidation wins** | anchored on an explicit `LiquidateBorrow` event; an inferred cycle must not delete the liquidation label. `kind_precedence` now ranks Liquidation above ArbAtomic (`claims::TxClaims`). Goldens did not move: the census was empty. Every `P0.*`/`polygon.*`/`bsc.*` row in this checklist is a Liquidation case. |
 | Jit vs ArbAtomic | **Jit wins** | anchored on explicit Mint/Burn facts; genuine combined arb+JIT cases already upgrade to `JitArb`, so a bare Jit-vs-Arb collision would be a mislabel. |
-| Skim vs ArbAtomic | **Skim wins** | anchored on explicit pair outflow `Transfer`s (skim is defined by the absence of Swap/Mint/Burn/Sync on the pair). |
+| Skim vs ArbAtomic | **Skim wins** | anchored on a positive-evidence pair outflow (verified factory, one-way, no protocol counter-evidence, pair-token outflows only). |
 | Liquidation vs Jit vs Skim | **Liquidation > Jit > Skim** | explicit anchors, economic purpose of the tx first (liquidation P&L), fee/outflow annotations second. |
 | Sandwich/Frontrun/Backrun vs ArbAtomic/Unknown | not contested | already enforced structurally by the superseder `retain` (A1); the precedence list agrees, no decision needed. |

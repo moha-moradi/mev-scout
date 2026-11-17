@@ -554,3 +554,134 @@ rows. No checked-in DB or config fixture was modified.
 - Widening action taxonomy beyond LB/DLMM (Aave/Compound claims, generic LP
   position Add/Remove, etc.).
 
+### Phase 3 — Skim economic gate (implemented 2026-11-17)
+
+Scope chosen by the user: the phase's two statements conflict — "forbid
+`Exact`" versus "scenario 2 still yields `exact`" — and the block+receipt
+ingest path has no reserve/balance reads. The user chose **all skim ops are
+`Inferred`**: a transfer-only inference can never carry the `Exact` claim, and
+scenario 2's `exact` expectation is superseded by that decision (the event,
+amount and `R` basis are unchanged). No schema migration, no data rewrite, no
+classification rule outside skim.
+
+**1. Positive-evidence gate** (`core/src/explorer/classify/skim.rs`)
+
+The deny-list (`excluded` = swaps + pair-ops + every log emitter) is replaced
+by an explicit allow-list. A pool outflow is a skim only when **all** of these
+hold; otherwise the candidate is rejected with a named reason:
+
+| Gate | Counter-evidence | Reject anchor |
+|---|---|---|
+| No LB bin action in the tx | `tx_bin_liquidity_action` | tx |
+| Pool emitted no log | `pool_emitted_logs` | aggregate |
+| No decoded `Swap` on the pool | `decoded_swap_on_pool` | aggregate |
+| No decoded `Sync`/`Mint`/`Burn` on the pool | `pair_op_on_pool` | aggregate |
+| Pool receives no tokens (one-way) | `skim_looks_like_swap` (existing) | tx |
+| No liquidity fact on the pool | `decoded_liquidity_on_pool` | tx |
+| No liquidity fact by the same actor (V3 CL or LB bins) | `same_actor_liquidity_event` | tx |
+| Pair token0/token1 known | `pair_tokens_unresolved` | tx |
+| Outflow token ∈ {token0, token1} | `outflow_token_not_in_pair` | tx |
+
+Routine venue activity (pool logs, decoded swaps/pair-ops) is aggregated per
+block so a normal DEX swap does not create one reject row per tx; ambiguous
+counter-evidence keeps a tx anchor. This also retires the separate
+`liquidity_action_txs` post-filter from Phase 2 — the audited withdraw+claim
+tx now fails the gate itself and records `tx_bin_liquidity_action`. Outflows
+to the zero address are skipped before candidacy: a burn has no recipient and
+is not a capture.
+
+**2. Pair-token identity** (`core/src/explorer/classify/mod.rs`,
+`core/src/explorer/ingest.rs`)
+
+`BlockContext.pool_tokens` carries the registry's pool → (token0, token1)
+view (same source as `PoolViews.tokens`). A genuine UniV2 `skim()` can only
+move the pair's own two tokens, so a foreign outflow token or missing pair
+metadata fails the candidate closed.
+
+**3. Confidence** (`skim.rs`, `normalize_confidence`)
+
+- Skim events are emitted as `Confidence::Inferred` with
+  `details.confidence_reason = "transfer_only_skim_inference"` and
+  `details.detection = "v2_pair_outflow_without_counter_evidence"`.
+- `details.evidence` records the gate inputs (`verified_pool`, `pair_tokens`,
+  `one_way_outflow`, `no_pool_logs`, `no_pair_events`,
+  `no_liquidity_action`) and `reserve_delta: "unavailable"` — the missing
+  economic proof is explicit, not implied.
+- `pnl_basis` stays `R`: the amount is the searcher's ledger residual; only
+  the confidence claim is capped.
+- `normalize_confidence` demotes any `Skim` to `Inferred` even if a future
+  caller (or fixture) sets `Exact`, so the "forbid Exact" rule has one
+  enforcement point.
+
+**4. Reject reason** (`reject.rs`, `dashboard/reduce.rs`,
+`docs/explorer_strategy_checklist.md`)
+
+New `skim_counter_evidence` reason, wired into the dashboard reject ladder and
+the A20 reason table.
+
+**Tests added / extended**
+
+- `skim::tests::one_way_pair_outflow_is_skim_but_never_exact` — positive
+  control: `Skim`, `Inferred`, `R` basis, evidence block pinned.
+- `pool_emitted_log_is_counter_evidence`, `decoded_swap_on_pool_is_counter_evidence`,
+  `pair_op_on_pool_is_counter_evidence`, `decoded_burn_equal_to_outflow_is_counter_evidence`
+  (scenario 9: outflow equals the decoded burn amount).
+- `same_actor_liquidity_event_elsewhere_is_counter_evidence`,
+  `bin_liquidity_in_tx_suppresses_skim`, `outflow_token_outside_the_pair_is_counter_evidence`,
+  `unresolved_pair_tokens_fail_closed`, `pool_also_receiving_stays_looks_like_swap`,
+  `executor_recipient_does_not_confuse_actor_gate`.
+- `confidence_basis_tests::skim_can_never_claim_exact` — the normalize guard.
+- A20: `skim_reports_pool_set_rejections` extended with the aggregated
+  `pool_emitted_logs` reason; structural guard still green
+  (`no_instrumented_pass_drops_a_candidate_without_a_reason`).
+- `scenarios::baseline_skim` now asserts `Confidence::Inferred`.
+
+**Verification**
+
+- `cargo check --workspace --all-targets` — clean.
+- `cargo clippy --workspace --all-targets` — clean.
+- `cargo test --workspace -j 2` — 571 lib tests + all integration binaries
+  pass, 0 failures (parallel `-j` default hits the Windows paging-file limit
+  during test-binary linking; unrelated to the change).
+- Audited replay
+  `audited_withdraw_and_claim_replay_to_two_actions_and_zero_unknowns` still
+  yields `[LiquidityRemove, RewardClaim]`, zero unknowns, no `Skim`, no
+  `Exact`.
+- Phase 5-style A/B replay (2026-11-17): Avalanche `100537626..100538625`
+  indexed twice — Phase 2 (`984744a`, separate worktree) vs Phase 3 — with
+  isolated scanner-registry copies, 1000/1000 blocks each and zero skips.
+  Identical 110 ops, identical 374-row reject ladder, `skim` 0 → 0, no
+  `skim_counter_evidence` (the window's registry has no skim-eligible pool).
+  The anchor block re-indexes end-to-end to `LiquidityRemove` + `RewardClaim`
+  with the PHAR claim priced at $0.751274 and `tx_evidence = 1`. Report:
+  `docs/audits/phase3_validation_avalanche_100537626-100538625_2026-11-17.md`.
+
+**Acceptance status (Part 6)**
+
+- Scenario 1 (audited tx replayed): **met** — two actions, no skim, no exact.
+- Scenario 2 (positive control): **met with the approved deviation** — the
+  event is emitted with the correct amount and `R` basis, but as `Inferred`.
+  `Exact` would require reserve/balance evidence, which this pipeline cannot
+  produce (Part 4 step 6); the audit's own Q6 forbids `exact` for
+  transfer-only inference, so this supersedes the earlier `exact` expectation.
+- Scenario 3 (undecoded swap): **met** — inbound or emitted-swap evidence
+  rejects with `skim_looks_like_swap` / `pool_emitted_logs`.
+- Scenario 4 (unverified factory): **met** (Phase 1) — pool never enters
+  `v2_like`; no candidate reaches the gate.
+- Scenario 9 (economic gate + pricing integrity): **met** — burn/withdraw
+  evidence equal to the outflow rejects; missing price still persists
+  `profit_usd = NULL` with `MULTI_ASSET_PRICING` (existing `store::pnl`
+  tests), gas remains netted.
+
+**Deliberately deferred**
+
+- Reserve/balance evidence channel (the only path that could legitimately
+  re-enable `Exact` for skim). It needs a state-source producer; ingest stays
+  block+receipt-only.
+- Backfilling historical `confidence='exact'` skim rows: forward-only, as
+  Phase 4 specifies.
+- Multi-claim arbitration and basis-tagged P&L (Phase 4).
+- Wider Phase 5 operational validation: multi-window replay, the
+  `blocks_classified` zero-artifact decision, and registry coverage on
+  Avalanche. The single Phase 3 A/B window above is complete.
+

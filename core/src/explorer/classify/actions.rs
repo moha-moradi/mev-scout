@@ -21,18 +21,6 @@ use crate::explorer::types::{
 use super::gas::tx_gas_cost_wei;
 use super::{BlockInput, TxInput};
 
-/// Tx indices carrying an LB bin liquidity fact. Used to suppress a
-/// `Skim` that would otherwise be inferred from the same outbound Transfer:
-/// a decoded bin withdrawal is positive evidence of liquidity removal.
-pub(super) fn liquidity_action_txs(input: &BlockInput) -> HashSet<u64> {
-    input
-        .txs
-        .iter()
-        .filter(|tx| tx.success && tx.jit.iter().any(|j| j.bin_amm))
-        .map(|tx| tx.tx_index)
-        .collect()
-}
-
 /// Emit first-class actions. `jit_txs` are indices already represented by a
 /// paired JIT position; emitting a second liquidity row for them would
 /// double-count the same principal.

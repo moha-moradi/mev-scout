@@ -233,6 +233,14 @@ pub fn block(txs: Vec<TxInput>) -> BlockInput {
 pub fn block_with_v2(txs: Vec<TxInput>, v2_like: &[Address]) -> BlockInput {
     let mut input = block(txs);
     input.ctx.v2_like_pools = Arc::new(v2_like.iter().copied().collect());
+    // Skim gate needs the pair's own token universe. Tests that exercise a
+    // different pair must set `ctx.pool_tokens` explicitly.
+    input.ctx.pool_tokens = Arc::new(
+        v2_like
+            .iter()
+            .map(|p| (*p, (USDC, TOKA)))
+            .collect(),
+    );
     input
 }
 

@@ -59,6 +59,10 @@ pub enum RejectReason {
     SkimPoolNotV2Like,
     /// Skim: a registry pool both pays out and receives in the same tx.
     SkimLooksLikeSwap,
+    /// Skim: a V2-like pool outflow failed the positive-evidence gate. The
+    /// `detail` names the counter-evidence (pool logs, decoded swap/pair-op,
+    /// liquidity action, or an outflow token the pair does not hold).
+    SkimCounterEvidence,
     /// JIT: a Mint has no later Burn, or the pair has no in-range validating swap.
     JitPairingUnmatched,
     /// Liquidation event stands, but seized collateral is not covered by transfers.
@@ -89,6 +93,7 @@ impl RejectReason {
             RejectReason::CausalAnchorMissing => "causal_anchor_missing",
             RejectReason::SkimPoolNotV2Like => "skim_pool_not_v2_like",
             RejectReason::SkimLooksLikeSwap => "skim_looks_like_swap",
+            RejectReason::SkimCounterEvidence => "skim_counter_evidence",
             RejectReason::JitPairingUnmatched => "jit_pairing_unmatched",
             RejectReason::LiquidationNotReconciled => "liquidation_not_reconciled",
         }

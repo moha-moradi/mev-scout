@@ -5,7 +5,10 @@
 //!
 //! Pass order (first match wins, disjoint):
 //! 1. Liquidation pass — exact event match on configured lending pools.
-//! 2. Skim pass — V2-like pair outbound Transfers with no Swap/Mint/Burn/Sync.
+//! 2. Skim pass — V2-like pair outbound Transfers that pass the
+//!    positive-evidence gate (no pool logs, no inbound, no decoded
+//!    swap/pair-op/liquidity action, pair-token outflows only).
+//!    Receipt-only evidence, so a skim is never `Exact`.
 //! 3. Swap attribution — per-tx per-address net token deltas.
 //! 4. Atomic arb pass — ≥2 swaps in one tx + closed cycle + positive net
 //!    delta of a single profit token.
@@ -46,7 +49,7 @@ pub(crate) use legs::{CAUSAL_PRICE_MIN_PCT, CAUSAL_WINDOW_TXS};
 mod liquidation;
 mod skim;
 
-use actions::{classify_actions, liquidity_action_txs};
+use actions::classify_actions;
 use arb::classify_arbs;
 use causal::classify_backruns;
 use jit::classify_jit;
@@ -110,6 +113,9 @@ pub struct BlockContext {
     /// Registry addresses that expose UniV2-style `skim` (V2/Solidly/Camelot).
     /// `Arc` so a backfill shares one registry universe across every block.
     pub v2_like_pools: Arc<HashSet<Address>>,
+    /// Registry pool → (token0, token1). A V2 skim can only move the pair's
+    /// own tokens; an outflow of anything else is not a skim.
+    pub pool_tokens: Arc<HashMap<Address, (Address, Address)>>,
     /// Chainlink aggregator → underlying asset (plan P1.1 / P1.4).
     pub chainlink_feeds: Arc<HashMap<Address, Address>>,
     /// Benqi sAVAX (plan P3.16); `None` disables the tag.
@@ -134,6 +140,7 @@ impl Default for BlockContext {
             wrapped_native: Address::ZERO,
             profit_policy: ProfitTokenPolicy::default(),
             v2_like_pools: Arc::new(HashSet::new()),
+            pool_tokens: Arc::new(HashMap::new()),
             chainlink_feeds: Arc::new(HashMap::new()),
             savax: None,
             epoch_venue_pools: Arc::new(HashSet::new()),
@@ -249,13 +256,10 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     let mut drops = drops::DropSink::new(input.block);
     events.extend(classify_liquidations(input, &liq_ctx, &mut drops));
 
-    // ── 1b. Skim pass (exact, UniV2 pair outbound without Swap/Mint/Burn/Sync)
-    // A decoded LB bin withdrawal is positive evidence of liquidity removal:
-    // the pool's outbound Transfer must not also be read as a skim capture.
-    let liquidity_txs = liquidity_action_txs(input);
-    let mut skim_events = classify_skims(input, &mut drops);
-    skim_events.retain(|e| !liquidity_txs.contains(&e.tx_index));
-    events.extend(skim_events);
+    // ── 1b. Skim pass (positive-evidence gate, never Exact)
+    // A decoded liquidity action is positive counter-evidence and is recorded
+    // inside the gate; there is no separate suppression pass.
+    events.extend(classify_skims(input, &mut drops));
 
     // ── 2-3. Swap attribution + atomic arb (+ keeper/claim/upgrade)
     let (arb_events, arb_rejects) = classify_arbs(input, &arb_tag_opts);
@@ -342,6 +346,13 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
 /// the confidence claim moves.
 pub(crate) fn normalize_confidence(events: &mut [MevEvent]) {
     for e in events {
+        // Skim detection is receipt-only (verified factory + absence of
+        // protocol counter-evidence). There is no reserve/balance proof in
+        // this pipeline, so a skim can never carry the `Exact` claim.
+        if e.kind == MevKind::Skim {
+            e.confidence = Confidence::Inferred;
+            continue; // not-a-drop: a confidence assignment, not a candidate drop
+        }
         if e.confidence != Confidence::Exact {
             continue; // not-a-drop: only Exact events are normalized
         }
@@ -2250,6 +2261,17 @@ mod confidence_basis_tests {
         assert_eq!(events[0].confidence, Confidence::Inferred);
         assert_eq!(events[1].confidence, Confidence::Inferred);
     }
+
+    /// Phase 3: skim detection is transfer-only inference without a reserve
+    /// proof, so no layer may persist it as `Exact`.
+    #[test]
+    fn skim_can_never_claim_exact() {
+        let mut skim = event_with(serde_json::json!("R"), Confidence::Exact);
+        skim.kind = MevKind::Skim;
+        let mut events = vec![skim];
+        normalize_confidence(&mut events);
+        assert_eq!(events[0].confidence, Confidence::Inferred);
+    }
 }
 
 /// A20: every candidate a classify pass drops must emit a `RejectedCandidate`
@@ -2597,6 +2619,24 @@ mod a20_reject_reasons {
         assert!(
             has(&out, "skim_looks_like_swap", Some(0), "pool_also_receives"),
             "an inbound+outbound pair must be recorded as swap-like, got {:?}",
+            dump(&out)
+        );
+
+        // A registry pool that emitted a log in this tx: positive counter-
+        // evidence of other AMM activity, decoded or not. Routine venue
+        // activity is folded into the per-block aggregate, not one row per tx.
+        let mut logged = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 42)],
+        );
+        logged.log_emitters = vec![POOL_A];
+        let out = classify_block(&block_with_v2(vec![logged], &[POOL_A]));
+        assert!(
+            has(&out, "skim_counter_evidence", None, "pool_emitted_logs"),
+            "a pool-emitted log must be recorded as counter-evidence, got {:?}",
             dump(&out)
         );
     }
