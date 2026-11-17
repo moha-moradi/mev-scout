@@ -39,7 +39,7 @@ pub(super) fn classify_skims(input: &BlockInput, drops: &mut DropSink) -> Vec<Me
         if input.ctx.v2_like_pools.is_empty() {
             continue; // not-a-drop: no registry pools to score as skim
         }
-        let mut excluded: HashSet<Address> = HashSet::new();
+        let mut excluded: HashSet<Address> = tx.log_emitters.iter().copied().collect();
         for s in &tx.swaps {
             excluded.insert(s.pool);
         }

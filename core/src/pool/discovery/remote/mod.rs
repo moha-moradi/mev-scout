@@ -149,7 +149,7 @@ pub fn infer_dex_type(dex_id: Option<&str>, label_hints: &[&str]) -> DexType {
     if id.contains("pancakeswap") && id.contains("infinity") {
         return DexType::PancakeInfinity;
     }
-    if id.contains("pharaoh") && id.contains("dlmm") {
+    if id == "pharaoh" || (id.contains("pharaoh") && id.contains("dlmm")) {
         return DexType::TraderJoeLB;
     }
     if id.contains("velodrome")

@@ -1315,6 +1315,7 @@ mod accounting_tests {
             gas_used: 100,
             effective_gas_price_gwei: 1.0,
             value: U256::ZERO,
+            log_emitters: vec![],
             transfers: vec![
                 transfer(0, 0, USD0, OWNER, POOL, 1_000),
                 transfer(0, 0, USD1, OWNER, POOL, 2_000),

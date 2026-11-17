@@ -301,6 +301,7 @@ mod tests {
             infer_dex_type(Some("pharaoh-dlmm"), &[]),
             DexType::TraderJoeLB
         );
+        assert_eq!(infer_dex_type(Some("pharaoh"), &[]), DexType::TraderJoeLB);
         assert_eq!(infer_dex_type(Some("unknown-dex"), &[]), DexType::UniswapV2);
     }
 

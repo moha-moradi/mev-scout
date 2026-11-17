@@ -96,6 +96,7 @@ fn tx_input(
         gas_used: GAS_USED,
         effective_gas_price_gwei: GAS_GWEI,
         value: U256::ZERO,
+        log_emitters: vec![],
         transfers,
         swaps,
         liquidations: vec![],

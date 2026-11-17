@@ -174,6 +174,7 @@ pub fn tx(
         gas_used: 100_000,
         effective_gas_price_gwei: 30.0,
         value: U256::ZERO,
+        log_emitters: vec![],
         transfers,
         swaps,
         liquidations: vec![],

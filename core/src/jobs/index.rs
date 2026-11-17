@@ -6,6 +6,7 @@ use crate::cache::SqliteStore;
 use crate::config::Config;
 use crate::dex_type::DexType;
 use crate::pool::discovery::is_epoch_venue_factory;
+use crate::pool::PoolInfo;
 use crate::types::ChainName;
 
 /// Pool → (token0, token1) plus skim-eligible V2-like and epoch-venue sets.
@@ -24,6 +25,14 @@ fn is_v2_like(dex: DexType) -> bool {
     )
 }
 
+/// Skim needs a V2-like type and a verified creator. Remote pools whose
+/// metadata could not be resolved historically defaulted to `UniswapV2` with
+/// no factory; treating those as skim-eligible converted CL/LB swap activity
+/// into large false-positive skims.
+fn is_skim_eligible(pool: &PoolInfo) -> bool {
+    is_v2_like(pool.dex_type) && pool.factory.is_some()
+}
+
 /// Load the pool → (token0, token1) registry and V2-like skim set from the
 /// scanner cache. Best-effort: an absent/locked cache yields empty
 /// maps and ingest degrades to transfer-pairing resolution (no skim).
@@ -37,7 +46,7 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
                 for p in pools {
                     if !p.token0.is_zero() && !p.token1.is_zero() {
                         tokens.insert(p.address, (p.token0, p.token1));
-                        if is_v2_like(p.dex_type) {
+                        if is_skim_eligible(&p) {
                             v2_like.insert(p.address);
                         }
                         if p.factory.is_some_and(is_epoch_venue_factory) {
@@ -54,5 +63,29 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
         tokens,
         v2_like,
         epoch_venue,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skim_eligibility_requires_v2_type_and_verified_factory() {
+        let mut pool = PoolInfo {
+            address: Address::from([1u8; 20]),
+            token0: Address::from([2u8; 20]),
+            token1: Address::from([3u8; 20]),
+            dex_type: DexType::UniswapV2,
+            ..Default::default()
+        };
+        assert!(
+            !is_skim_eligible(&pool),
+            "unresolved remote V2 metadata must not enable skim"
+        );
+        pool.factory = Some(Address::from([4u8; 20]));
+        assert!(is_skim_eligible(&pool));
+        pool.dex_type = DexType::TraderJoeLB;
+        assert!(!is_skim_eligible(&pool), "LB pools are not V2 skim venues");
     }
 }

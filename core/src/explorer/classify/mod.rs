@@ -64,6 +64,10 @@ pub struct TxInput {
     pub gas_used: u64,
     pub effective_gas_price_gwei: f64,
     pub value: U256,
+    /// Every log emitter in this receipt. A V2 skim emits no pair logs, so any
+    /// pair address here proves other AMM activity even when its swap/log ABI
+    /// is not decoded yet.
+    pub log_emitters: Vec<Address>,
     pub transfers: Vec<TransferFact>,
     pub swaps: Vec<SwapFact>,
     pub liquidations: Vec<crate::explorer::types::LiquidationFact>,
@@ -1816,6 +1820,22 @@ mod tests {
             pool: POOL_A,
             kind: V2PairOpKind::Sync,
         }];
+        let input = block_with_v2(vec![t], &[POOL_A]);
+        assert!(!kinds(&classify_block(&input)).contains(&MevKind::Skim));
+    }
+
+    #[test]
+    fn skim_excluded_when_pool_emits_unrecognized_log() {
+        let mut t = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 42)],
+        );
+        // A real V2 skim emits no pair logs. Any emitter log proves the pool
+        // is doing something else, even if that AMM's event ABI is undecoded.
+        t.log_emitters = vec![POOL_A];
         let input = block_with_v2(vec![t], &[POOL_A]);
         assert!(!kinds(&classify_block(&input)).contains(&MevKind::Skim));
     }
