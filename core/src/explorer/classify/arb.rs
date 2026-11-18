@@ -614,7 +614,7 @@ fn arb_route_meta(swaps: &[SwapFact], flashloan_funded: bool) -> serde_json::Val
 ///
 /// Blue-chip allowlist = profit-token priority (stables + wrapped native).
 /// Requires ≥2 swap legs so single-hop dust is never labeled long-tail.
-fn is_long_tail_arb(swaps: &[SwapFact], blue_chips: &[Address]) -> bool {
+pub(crate) fn is_long_tail_arb(swaps: &[SwapFact], blue_chips: &[Address]) -> bool {
     if swaps.len() < 2 {
         return false;
     }

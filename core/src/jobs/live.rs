@@ -18,6 +18,7 @@ use crate::paper::{
     reconcile_sim_vs_exec, FillSkipReason, LedgerPolicy, LedgerResult, PaperFill, PaperMode,
     SimMode, SimPolicy, HARD_MAX_FILLS_PER_BLOCK,
 };
+use crate::pipeline::aggregate::StrategyMetrics;
 use crate::pipeline::{aggregate_fills, BacktestRunner, BlockMode, BlockReplayStats};
 use crate::pool::state::PoolManager;
 use crate::progress::{JobProgress, ProgressEvent};
@@ -196,6 +197,16 @@ fn resolve_exec_context(
         anvil,
         anvil_executor: None,
         anvil_block: None,
+        routers: crate::exec::VenueRouters {
+            lb_router_v21: validation.chain_config.lb_router_v21,
+            lb_router_v22: validation.chain_config.lb_router_v22,
+            lb_factory_versions: validation
+                .chain_config
+                .lb_factory_versions
+                .clone()
+                .unwrap_or_default(),
+            pendle_router: validation.chain_config.pendle_router,
+        },
         cache: Default::default(),
     })
 }
@@ -306,6 +317,8 @@ struct LiveContext<'a> {
     seeds_capped: usize,
     /// Virtual execution. `mode == none` leaves the paper ledger on sim/assumed.
     exec: ExecContext,
+    /// Hourly Benqi sAVAX exchange-rate cache (shared with the explorer).
+    savax_cache: crate::chain::savax::SavaxRateCache,
 }
 
 impl<'a> LiveContext<'a> {
@@ -346,8 +359,42 @@ impl<'a> LiveContext<'a> {
             calibration: Default::default(),
         };
 
+        let wrapped_native = validation
+            .chain_config
+            .wrapped_native_token
+            .unwrap_or(Address::ZERO);
+        let mut blue_chips = validation
+            .chain_config
+            .profit_stable_tokens
+            .clone()
+            .unwrap_or_default();
+        if !wrapped_native.is_zero() {
+            blue_chips.push(wrapped_native);
+        }
+        blue_chips.retain(|a| !a.is_zero());
+        let registry = crate::jobs::load_pool_registry(config, &chain_name);
+        let tag_policy = crate::mev::detectors::ArbTagPolicy {
+            blue_chips,
+            wrapped_native,
+            savax: validation.chain_config.savax,
+            epoch_venue_pools: registry.epoch_venue.into_iter().collect(),
+            gmx_market_tokens: validation
+                .chain_config
+                .gmx_market_tokens
+                .clone()
+                .unwrap_or_default(),
+            gmx_event_emitters: validation
+                .chain_config
+                .gmx_event_emitters
+                .clone()
+                .unwrap_or_default(),
+            flash_financed: ledger.sim.flash_loan,
+            savax_rate_wad: None,
+        };
+
         let mut pool_manager = PoolManager::new();
         pool_manager.set_max_pairs_per_token(config.backtest.max_pairs_per_token);
+        pool_manager.set_tax_quoting(config.live.fot_quote);
         pool_manager.set_concurrency_limit(provider_configs.len() as u32);
         pool_manager.use_latest();
         if let Some(vault_addr) = validation.chain_config.balancer_vault {
@@ -381,7 +428,8 @@ impl<'a> LiveContext<'a> {
             .with_sim_seeds(
                 ledger.sim.is_state_sim(),
                 ledger.sim.max_candidates_per_block,
-            );
+            )
+            .with_tag_policy(tag_policy);
 
         Ok(LiveContext {
             config,
@@ -405,7 +453,28 @@ impl<'a> LiveContext<'a> {
             log_only_blocks: 0,
             seeds_capped: 0,
             exec,
+            savax_cache: Default::default(),
         })
+    }
+
+    /// Refresh the sAVAX exchange rate at most once per hour and hand it to
+    /// the detector/tag policy. A missing rate disables sAVAX emissions.
+    async fn refresh_savax_rate(&mut self, block: u64) {
+        let rate = crate::chain::savax::fetch_savax_exchange_rate(
+            &self.rpc,
+            self.validation.chain_config.savax,
+            block,
+            epoch_secs(),
+            &mut self.savax_cache,
+        )
+        .await;
+        match rate {
+            Some(rate) => self.runner.set_savax_rate(Some(rate)),
+            None => {
+                self.runner.set_savax_rate(None);
+                tracing::debug!("sAVAX exchangeRate unavailable for this hour");
+            }
+        }
     }
 
     async fn fetch_blocks<F: Fn() -> bool + Sync>(
@@ -545,8 +614,12 @@ impl<'a> LiveContext<'a> {
         self.session_opps.extend_from_slice(opps);
         let mut ledger = if self.exec.mode.is_off() {
             if self.sim.is_state_sim() {
-                self.policy
-                    .apply_simulated(&self.session_opps, &self.session_seeds, &self.sim)
+                self.policy.apply_simulated(
+                    &self.session_opps,
+                    &self.session_seeds,
+                    &self.sim,
+                    Some(self.runner.pool_manager()),
+                )
             } else {
                 self.policy.apply(&self.session_opps)
             }
@@ -564,9 +637,12 @@ impl<'a> LiveContext<'a> {
             )?
         };
         if !self.exec.mode.is_off() && self.sim.is_state_sim() {
-            let sim_ledger =
-                self.policy
-                    .apply_simulated(&self.session_opps, &self.session_seeds, &self.sim);
+            let sim_ledger = self.policy.apply_simulated(
+                &self.session_opps,
+                &self.session_seeds,
+                &self.sim,
+                Some(self.runner.pool_manager()),
+            );
             reconcile_sim_vs_exec(&mut ledger, &sim_ledger);
         }
         ledger.sim_mode = self.sim.mode;
@@ -738,6 +814,7 @@ pub fn render_ledger_summary(ledger: &LedgerResult, native_usd: Option<f64>) -> 
         usd_end = usd_of(ledger.ending_gas_wei),
     ));
     out.push_str(&render_by_strategy(&ledger.fills, native_usd));
+    out.push_str(&render_by_tag(&ledger.fills, native_usd));
     let not_native = ledger
         .skips
         .iter()
@@ -765,8 +842,35 @@ fn render_by_strategy(fills: &[PaperFill], native_usd: Option<f64>) -> String {
     // `aggregate_fills` needs a price only to populate USD fields. Passing 0.0
     // when unknown keeps them at zero; the wei columns stay exact regardless.
     let agg = aggregate_fills(fills, native_usd.unwrap_or(0.0));
+    render_metric_table(
+        "by strategy (fills accepted):",
+        agg.by_strategy.into_values().collect(),
+        native_usd,
+    )
+}
 
-    let mut rows: Vec<_> = agg.by_strategy.into_values().collect();
+/// Per-tag attribution. Tag buckets overlap: one fill may appear under several
+/// tags, so these rows do not add up to the strategy table above.
+fn render_by_tag(fills: &[PaperFill], native_usd: Option<f64>) -> String {
+    if fills.is_empty() {
+        return String::new();
+    }
+    let agg = aggregate_fills(fills, native_usd.unwrap_or(0.0));
+    if agg.by_tag.is_empty() {
+        return String::new();
+    }
+    render_metric_table(
+        "by tag (fills accepted, overlapping):",
+        agg.by_tag.into_values().collect(),
+        native_usd,
+    )
+}
+
+fn render_metric_table(
+    title: &str,
+    mut rows: Vec<StrategyMetrics>,
+    native_usd: Option<f64>,
+) -> String {
     rows.sort_by(|a, b| {
         b.net_profit_wei
             .unsigned_abs()
@@ -788,7 +892,7 @@ fn render_by_strategy(fills: &[PaperFill], native_usd: Option<f64>) -> String {
         .to_string()
         .len();
 
-    let mut out = String::from("\n  by strategy (fills accepted):\n");
+    let mut out = format!("\n  {title}\n");
     for r in &rows {
         let usd = match native_usd {
             Some(_) => format!("  ${:>9.4}", r.net_profit_usd),
@@ -938,6 +1042,7 @@ async fn run_once(
     };
 
     let start = Instant::now();
+    ctx.refresh_savax_rate(tip).await;
     let fetch_done = Arc::new(AtomicU64::new(0));
     let total_blocks = resolved.block_count;
     let tick = move || {
@@ -1082,6 +1187,8 @@ async fn process_pass(
     };
 
     let pass_start = Instant::now();
+
+    ctx.refresh_savax_rate(current_tip).await;
 
     let fetch_done = Arc::new(AtomicU64::new(0));
     let tick = move || {

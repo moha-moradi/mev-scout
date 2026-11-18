@@ -310,10 +310,13 @@ impl MultiHopArbDetector {
             let pool_a = pm.get(&walk[0])?;
             let pool_b = pm.get(&walk[walk.len() - 1])?;
 
-            // Fee-on-transfer filter: quotes assume full output received; sell-tax
-            // tokens produce phantom opportunities. Exclude known and dynamically
-            // learned FOT tokens.
-            if arb_common::is_fot_pair(pm, token_in, token_out) {
+            // Fee-on-transfer filter: static-registry tokens have no measured bps;
+            // dynamically measured taxes stay in and are applied per transfer by
+            // `quote_leg_taxed` (disabled by `[live] fot_quote = false`).
+            let Some(route_tokens) = walk_token_sequence(pm, &walk, token_in) else {
+                continue;
+            };
+            if arb_common::excludes_taxed_route(pm, &route_tokens) {
                 continue;
             }
 
@@ -361,6 +364,9 @@ impl MultiHopArbDetector {
             // Subtract flash loan fee from gross profit
             let flash_fee = gas_config.flash_loan_fee(input_amount);
             let net_profit = gross_profit.saturating_sub(flash_fee);
+            if net_profit == 0 {
+                continue;
+            }
 
             // Normalize profit to native when token_in != token_out.
             let (expected_profit, raw_profit) =
@@ -383,6 +389,7 @@ impl MultiHopArbDetector {
                     })
             });
 
+            let route_tokens = Some(route_tokens);
             return Some(arb_common::build_arb_opportunity(
                 arb_common::ArbOpportunityInput {
                     strategy: Strategy::MultiHopArb,
@@ -399,6 +406,7 @@ impl MultiHopArbDetector {
                     slippage,
                     gas_cost_wei,
                     path: Some(walk),
+                    route_tokens,
                 },
             ));
         }
@@ -474,12 +482,30 @@ impl MultiHopArbDetector {
         let mut current_token = token_in;
         for &addr in path {
             let pool = pm.get(&addr)?;
-            let (out, next_token) = pool.quote_walk(current_token, current)?;
-            current = out;
+            let next_token = pool.walk_next_token(current_token)?;
+            current = arb_common::quote_leg_taxed(pm, pool, current_token, next_token, current)?;
             current_token = next_token;
         }
         Some(current)
     }
+}
+
+/// Exact token sequence a multi-hop walk uses: `[token_in, …, token_out]`.
+/// Mirrors [`PoolState::walk_next_token`] so sim/exec can replay the same hops.
+fn walk_token_sequence(
+    pm: &PoolManager,
+    path: &[Address],
+    token_in: Address,
+) -> Option<Vec<Address>> {
+    let mut tokens = Vec::with_capacity(path.len() + 1);
+    tokens.push(token_in);
+    let mut current = token_in;
+    for addr in path {
+        let pool = pm.get(addr)?;
+        current = pool.walk_next_token(current)?;
+        tokens.push(current);
+    }
+    Some(tokens)
 }
 
 /// Rotate a cyclic pool path so it starts at the lexicographically smallest pool.

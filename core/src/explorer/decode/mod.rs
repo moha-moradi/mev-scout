@@ -30,9 +30,7 @@ mod transfer;
 #[cfg(test)]
 mod tests;
 
-pub use actions::{
-    decode_lb_reward_accumulator, decode_lb_transfer_batch, decode_reward_claim,
-};
+pub use actions::{decode_lb_reward_accumulator, decode_lb_transfer_batch, decode_reward_claim};
 pub use aggregator::dedup_aggregator_facts;
 // Topic pins are consumed by `chain::events` tests and decode unit tests.
 #[allow(unused_imports)]

@@ -91,7 +91,7 @@ pub fn annotate_event_with_volume(
     let jit_accounting = (ev.kind == MevKind::Jit)
         .then(|| crate::explorer::jit_accounting::JitAccounting::from_details(&ev.details))
         .flatten();
-    let profit_usd = if let Some(accounting) = &jit_accounting {
+    let realized_profit_usd = if let Some(accounting) = &jit_accounting {
         accounting.valuation.gross_usd.filter(|v| v.is_finite())
     } else if ev.kind == MevKind::Liquidation {
         let (usd, conf) = liquidation_pnl(ev, token_prices, &mut details);
@@ -184,6 +184,35 @@ pub fn annotate_event_with_volume(
             _ => None,
         }
     };
+    // A receipt-only skim's amount is an observed pool outflow, not verified
+    // excess: the searcher's own principal or another protocol action can move
+    // the same tokens. The token quantity stays on the event, but USD moves to
+    // `details.values.candidate_value_usd` and `profit_usd`/`net_profit_usd`
+    // stay NULL, so no report can sum a candidate into realized profit. A
+    // future reserve/balance evidence channel may relax this for a verified
+    // skim.
+    let profit_usd = if ev.kind == MevKind::Skim {
+        None
+    } else {
+        realized_profit_usd
+    };
+    if ev.kind == MevKind::Skim {
+        let values = details
+            .entry("values".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(obj) = values.as_object_mut() {
+            obj.insert(
+                "status".to_string(),
+                serde_json::json!("observed_outflow_unverified"),
+            );
+            if let Some(candidate) = realized_profit_usd.filter(|v| v.is_finite() && *v > 0.0) {
+                obj.insert(
+                    "candidate_value_usd".to_string(),
+                    serde_json::json!(candidate),
+                );
+            }
+        }
+    }
     if unpriced_residual {
         note_pricing_issue(&mut details, "MULTI_ASSET_PRICING");
     }
@@ -1173,6 +1202,137 @@ mod tests {
         assert!(
             details.contains("other_residuals_usd_partial"),
             "got {details}"
+        );
+    }
+
+    fn skim_event(block: u64, token: Address) -> MevEvent {
+        let mut ev = sample_event(block);
+        ev.kind = MevKind::Skim;
+        ev.confidence = Confidence::Inferred;
+        ev.profit_token = Some(token);
+        ev.profit_amount = Some(U256::from(1_000_000u64));
+        ev.profit_tokens = vec![(token, U256::from(1_000_000u64))];
+        ev.details = serde_json::json!({
+            "evidence": { "reserve_delta": "unavailable" },
+            "pnl_basis": "R",
+        });
+        ev
+    }
+
+    fn details_of(op: &PersistedOp) -> serde_json::Value {
+        serde_json::from_str(op.details_json.as_deref().expect("details")).expect("json")
+    }
+
+    /// 3.1.1: the observed outflow stays on the event, but an inferred skim
+    /// never populates realized profit. The priced value is a candidate.
+    #[test]
+    fn inferred_skim_keeps_observed_amount_but_has_no_realized_profit() {
+        let token = address!("4444000000000000000000000000000000000004"); // 6 decimals
+        let prices = HashMap::from([(token, token_usd(0.5, 6))]);
+        let op = annotate_event(&skim_event(700, token), &[], &prices, Some(0.75), 0);
+
+        // Observed quantity is preserved.
+        assert_eq!(
+            op.profit_token.as_deref(),
+            Some("0x4444000000000000000000000000000000000004")
+        );
+        assert_eq!(op.profit_amount.as_deref(), Some("1000000"));
+        assert!(op
+            .details_json
+            .as_deref()
+            .unwrap()
+            .contains("\"profit_tokens\""));
+        // No realized profit, no net.
+        assert!(op.profit_usd.is_none(), "profit_usd must stay NULL");
+        assert!(op.net_profit_usd.is_none(), "net must stay NULL");
+        // Gas remains a known cost.
+        let gas = op.gas_cost_usd.expect("gas is priced");
+        assert!((gas - (100_000_000_000_000f64 / 1e18 * 0.75)).abs() < 1e-12);
+        // Candidate value is stored separately, outside `profit_usd`.
+        let details = details_of(&op);
+        assert_eq!(
+            details["values"]["status"],
+            serde_json::json!("observed_outflow_unverified")
+        );
+        let candidate = details["values"]["candidate_value_usd"]
+            .as_f64()
+            .expect("priced candidate");
+        assert!((candidate - 0.5).abs() < 1e-9, "candidate {candidate}");
+        // Basis and unrelated details survive.
+        assert_eq!(details["pnl_basis"], serde_json::json!("R"));
+        assert_eq!(
+            details["evidence"]["reserve_delta"],
+            serde_json::json!("unavailable")
+        );
+    }
+
+    /// 3.1.1: a missing quote yields neither a candidate value nor a profit.
+    #[test]
+    fn inferred_skim_without_price_has_no_candidate_value_or_profit() {
+        let token = address!("9999000000000000000000000000000000000009");
+        let prices = HashMap::new();
+        let op = annotate_event(&skim_event(701, token), &[], &prices, Some(0.75), 0);
+
+        assert!(op.profit_usd.is_none());
+        assert!(op.net_profit_usd.is_none());
+        assert_eq!(op.profit_amount.as_deref(), Some("1000000"));
+        let details = details_of(&op);
+        assert_eq!(
+            details["values"]["status"],
+            serde_json::json!("observed_outflow_unverified")
+        );
+        assert!(
+            details["values"].get("candidate_value_usd").is_none(),
+            "no fabricated candidate: {details}"
+        );
+        assert!(details["reasons"]
+            .as_array()
+            .expect("reasons")
+            .iter()
+            .any(|r| r.as_str() == Some("MULTI_ASSET_PRICING")));
+    }
+
+    /// 3.1.1: RewardClaim keeps its `F`-basis payout as profit.
+    #[test]
+    fn reward_claim_keeps_realized_profit() {
+        let token = address!("4444000000000000000000000000000000000004");
+        let prices = HashMap::from([(token, token_usd(0.5, 6))]);
+        let mut ev = sample_event(702);
+        ev.kind = MevKind::RewardClaim;
+        ev.confidence = Confidence::Inferred;
+        ev.profit_token = Some(token);
+        ev.profit_amount = Some(U256::from(1_000_000u64));
+        ev.profit_tokens = vec![(token, U256::from(1_000_000u64))];
+        ev.details = serde_json::json!({ "pnl_basis": "F" });
+
+        let op = annotate_event(&ev, &[], &prices, Some(0.75), 0);
+        let gas = 100_000_000_000_000f64 / 1e18 * 0.75;
+        assert!((op.profit_usd.expect("claim profit") - 0.5).abs() < 1e-9);
+        assert!((op.net_profit_usd.expect("claim net") - (0.5 - gas)).abs() < 1e-9);
+        let details = details_of(&op);
+        assert!(
+            details.get("values").is_none(),
+            "only skim gets candidate values"
+        );
+    }
+
+    /// 3.1.1: arbitrage keeps its ledger-residual profit and net.
+    #[test]
+    fn arbitrage_keeps_realized_profit() {
+        let token = address!("4444000000000000000000000000000000000004");
+        let prices = HashMap::from([(token, token_usd(0.5, 6))]);
+        let mut ev = sample_event(703);
+        ev.confidence = Confidence::Exact;
+        ev.details = serde_json::json!({ "pnl_basis": "R" });
+
+        let op = annotate_event(&ev, &[], &prices, Some(0.75), 0);
+        let gas = 100_000_000_000_000f64 / 1e18 * 0.75;
+        assert!((op.profit_usd.expect("arb profit") - 0.5).abs() < 1e-9);
+        assert!((op.net_profit_usd.expect("arb net") - (0.5 - gas)).abs() < 1e-9);
+        let details = details_of(&op);
+        assert!(
+            details.get("values").is_none(),
+            "only skim gets candidate values"
         );
     }
 }

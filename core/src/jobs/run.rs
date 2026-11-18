@@ -149,6 +149,7 @@ pub async fn job_run(
 
     let mut pool_manager = PoolManager::new();
     pool_manager.set_max_pairs_per_token(config.backtest.max_pairs_per_token);
+    pool_manager.set_tax_quoting(config.live.fot_quote);
     pool_manager.set_concurrency_limit(provider_configs.len() as u32);
     if let Some(vault_addr) = validation_result.chain_config.balancer_vault {
         pool_manager = pool_manager.with_balancer_vault(vault_addr);

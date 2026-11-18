@@ -184,6 +184,92 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
 mod tests {
     use super::*;
 
+    /// A registry row for identity/eligibility tests. `factory` stands for
+    /// provenance written by a configured factory scan, not runtime proof.
+    fn identity_pool(dex_type: DexType, factory: Option<Address>, name: Option<&str>) -> PoolInfo {
+        PoolInfo {
+            address: Address::from([7u8; 20]),
+            token0: Address::from([2u8; 20]),
+            token1: Address::from([3u8; 20]),
+            dex_type,
+            factory,
+            dex_name: name.map(std::sync::Arc::from),
+            ..Default::default()
+        }
+    }
+
+    /// 3.1.3: the full identity matrix. Only a positively identified V2-like
+    /// family with factory provenance is skim-eligible; empty/ambiguous names
+    /// strict-infer to no family, so they fail closed as `Unknown`.
+    #[test]
+    fn skim_eligibility_identity_matrix_is_fail_closed() {
+        let factory = Address::from([4u8; 20]);
+
+        // UniswapV2 + factory provenance -> eligible.
+        assert!(is_skim_eligible(&identity_pool(
+            DexType::UniswapV2,
+            Some(factory),
+            Some("UniswapV2")
+        )));
+        // LB + factory provenance -> not a V2 skim venue.
+        assert!(!is_skim_eligible(&identity_pool(
+            DexType::TraderJoeLB,
+            Some(factory),
+            Some("pharaoh")
+        )));
+        // Unknown family + any non-null factory -> not eligible.
+        assert!(!is_skim_eligible(&identity_pool(
+            DexType::Unknown,
+            Some(factory),
+            None
+        )));
+        // CL family + any non-null factory -> not eligible.
+        assert!(!is_skim_eligible(&identity_pool(
+            DexType::UniswapV3,
+            Some(factory),
+            Some("uniswap-v3")
+        )));
+
+        // Empty name: strict inference yields no family -> effective Unknown.
+        assert_eq!(infer_dex_type_strict(Some(""), &[]), None);
+        assert!(!is_skim_eligible(&identity_pool(
+            infer_dex_type_strict(Some(""), &[]).unwrap_or(DexType::Unknown),
+            Some(factory),
+            Some("")
+        )));
+        // Ambiguous name: strict inference yields no family -> Unknown.
+        assert_eq!(infer_dex_type_strict(Some("unknown-amm"), &[]), None);
+        assert!(!is_skim_eligible(&identity_pool(
+            infer_dex_type_strict(Some("unknown-amm"), &[]).unwrap_or(DexType::Unknown),
+            Some(factory),
+            Some("unknown-amm")
+        )));
+    }
+
+    /// 3.1.3: a stored V2 label with factory provenance is explicitly tested,
+    /// not silently trusted. Empty/ambiguous metadata carries no evidence to
+    /// demote the row, so it stays skim-eligible; a name that positively
+    /// identifies a different family is repaired by the loader (V2 -> non-V2).
+    /// Factory provenance is not a claim of runtime verification.
+    #[test]
+    fn v2_label_with_factory_provenance_is_explicitly_tested() {
+        let factory = Address::from([4u8; 20]);
+        for name in [None, Some(""), Some("unknown-amm")] {
+            let pool = identity_pool(DexType::UniswapV2, Some(factory), name);
+            assert_eq!(rederived_dex_type(&pool), None, "name {name:?}");
+            assert!(
+                is_skim_eligible(&pool),
+                "no counter-evidence to demote the stored V2 family: {name:?}"
+            );
+        }
+
+        // `pharaoh` positively identifies LB; the loader repairs the stored
+        // V2 row, which removes skim eligibility.
+        let pharaoh = identity_pool(DexType::UniswapV2, Some(factory), Some("pharaoh"));
+        assert_eq!(rederived_dex_type(&pharaoh), Some(DexType::TraderJoeLB));
+        assert!(!is_v2_like(DexType::TraderJoeLB));
+    }
+
     #[test]
     fn skim_eligibility_requires_v2_type_and_verified_factory() {
         let mut pool = PoolInfo {
@@ -318,7 +404,10 @@ mod tests {
         assert_eq!(registry.health.repaired, 1);
         assert_eq!(registry.health.downgrades_refused, 1);
         assert!(!registry.v2_like.contains(&stale.address));
-        assert_eq!(registry.tokens.get(&stale.address).map(|t| t.0), Some(stale.token0));
+        assert_eq!(
+            registry.tokens.get(&stale.address).map(|t| t.0),
+            Some(stale.token0)
+        );
 
         {
             let store = SqliteStore::open(&db).unwrap();

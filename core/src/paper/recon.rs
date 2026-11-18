@@ -345,6 +345,7 @@ mod tests {
             exec_gas_used: None,
             exec_net_wei: None,
             tx_hash: None,
+            tags: Vec::new(),
         }
     }
 

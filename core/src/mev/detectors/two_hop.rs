@@ -95,14 +95,14 @@ impl TwoHopArbDetector {
 
         let (token_in, token_out) = arb_tokens(pool_a, pool_b, shared_token)?;
 
-        // Fee-on-transfer filter: the simulation assumes the full quote is
-        // received, but sell-tax tokens take a cut on transfer — producing
-        // phantom opportunities. Exclude known and dynamically-learned FOT tokens.
-        if arb_common::is_fot_pair(pm, token_in, token_out) {
+        // Fee-on-transfer filter: static-registry tokens have no measured bps and
+        // cannot be corrected; dynamically measured taxes stay in and are applied
+        // leg-by-leg inside `quote_path` (when `[live] fot_quote` is on).
+        if arb_common::excludes_taxed_route(pm, &[token_in, shared_token, token_out]) {
             return None;
         }
 
-        let result = quote_path(pool_a, pool_b, shared_token)?;
+        let result = quote_path(pool_a, pool_b, shared_token, pm)?;
 
         if result.profit == 0 {
             return None;
@@ -122,6 +122,9 @@ impl TwoHopArbDetector {
         // Subtract flash loan fee from gross profit
         let flash_fee = ctx.gas_config.flash_loan_fee(result.input_amount);
         let profit_after_fl = result.profit.saturating_sub(flash_fee);
+        if profit_after_fl == 0 {
+            return None;
+        }
 
         // Normalize profit to wrapped native token when token_in != token_out
         let (expected_profit, raw_profit) = arb_common::normalize_profit(
@@ -158,6 +161,7 @@ impl TwoHopArbDetector {
                 slippage,
                 gas_cost_wei,
                 path: None,
+                route_tokens: Some(vec![token_in, shared_token, token_out]),
             },
         ))
     }
@@ -175,8 +179,25 @@ pub fn quote_path(
     pool_a: &PoolState,
     pool_b: &PoolState,
     shared_token: Address,
+    pm: &PoolManager,
 ) -> Option<TwoHopArbResult> {
     let (token_in, token_out) = arb_tokens(pool_a, pool_b, shared_token)?;
+
+    // Any measured tax on the route makes the analytic closed form invalid;
+    // maximize the taxed forward path numerically instead.
+    let taxed = [token_in, shared_token, token_out]
+        .iter()
+        .any(|t| pm.tax_bps(t).is_some());
+    if taxed && pm.tax_quoting() {
+        let max_input = pool_a.max_input(token_in)?;
+        let quote_a = |x: u128| {
+            arb_common::quote_leg_taxed(pm, pool_a, token_in, shared_token, x)
+        };
+        let quote_b = |x: u128| {
+            arb_common::quote_leg_taxed(pm, pool_b, shared_token, token_out, x)
+        };
+        return optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b);
+    }
 
     match (pool_a.quote_kind(), pool_b.quote_kind()) {
         // Unsupported pool types (LB/Pendle/Metric/Fluid for two-hop) — no path.
@@ -242,7 +263,7 @@ fn compute_slippage_profits(
     optimal_input: u128,
 ) -> arb_common::SlippageProfits {
     arb_common::slippage_profits(optimal_input, |input| {
-        two_hop_profit_at(pool_a, pool_b, shared_token, input)
+        two_hop_profit_at(pm, pool_a, pool_b, shared_token, input)
             .filter(|p| *p > 0)
             .and_then(|p| {
                 arb_common::normalize_profit_native(pm, token_in, token_out, p, optimal_input)
@@ -253,6 +274,7 @@ fn compute_slippage_profits(
 /// Compute the profit for a two-hop arbitrage at a fixed input amount.
 /// Returns the profit (output - input) or 0 if unprofitable.
 pub(crate) fn two_hop_profit_at(
+    pm: &PoolManager,
     pool_a: &PoolState,
     pool_b: &PoolState,
     shared_token: Address,
@@ -260,8 +282,8 @@ pub(crate) fn two_hop_profit_at(
 ) -> Option<u128> {
     let (token_in, token_out) = arb_tokens(pool_a, pool_b, shared_token)?;
 
-    let intermediate = pool_a.quote_dir(input_amount, token_in, shared_token)?;
-    let output = pool_b.quote_dir(intermediate, shared_token, token_out)?;
+    let intermediate = arb_common::quote_leg_taxed(pm, pool_a, token_in, shared_token, input_amount)?;
+    let output = arb_common::quote_leg_taxed(pm, pool_b, shared_token, token_out, intermediate)?;
 
     (output > input_amount).then(|| output - input_amount)
 }
@@ -556,5 +578,65 @@ mod tests {
             !after.is_empty(),
             "liquidity shift >0.1% should re-open emission"
         );
+    }
+
+    #[test]
+    fn learned_tax_is_quoted_per_leg_and_off_excludes() {
+        let pa = address!("dd00000000000000000000000000000000000001");
+        let pb = address!("dd00000000000000000000000000000000000002");
+        let token_in = tok(1);
+        let token_out = tok(3);
+        let mut pm = PoolManager::new();
+        pm.add_pool(v2_pool(pa, token_in, tok(2), 1_000_000, 2_000_000));
+        pm.add_pool(v2_pool(pb, token_out, tok(2), 2_000_000, 1_000_000));
+
+        let baseline = detect(&pm, 1);
+        let base_profit = baseline
+            .iter()
+            .map(|o| o.expected_profit)
+            .max()
+            .expect("baseline arb");
+
+        pm.set_tax_bps(token_in, 300);
+        pm.set_tax_bps(token_out, 300);
+        let taxed = detect(&pm, 2);
+        let taxed_profit = taxed
+            .iter()
+            .map(|o| o.expected_profit)
+            .max()
+            .expect("taxed arb stays detectable");
+        assert!(taxed_profit < base_profit, "per-leg tax must reduce profit");
+        assert!(taxed
+            .iter()
+            .all(|o| o.route_tokens.as_ref().is_some_and(|t| t.len() == 3)));
+
+        // `[live] fot_quote = false`: learned-tax routes fall back to exclusion.
+        pm.set_tax_quoting(false);
+        assert!(detect(&pm, 3).is_empty());
+    }
+
+    #[test]
+    fn static_registry_fot_is_always_excluded() {
+        // USDT is in the static FoT registry; no bps exist, so it cannot be
+        // quoted and must be excluded regardless of the quote gate.
+        let usdt = address!("dac17f958d2ee523a2206206994597c13d831ec7");
+        let mut pm = PoolManager::new();
+        pm.add_pool(v2_pool(
+            address!("ee00000000000000000000000000000000000001"),
+            usdt,
+            tok(2),
+            1_000_000,
+            2_000_000,
+        ));
+        pm.add_pool(v2_pool(
+            address!("ee00000000000000000000000000000000000002"),
+            tok(3),
+            tok(2),
+            2_000_000,
+            1_000_000,
+        ));
+        assert!(detect(&pm, 1).is_empty());
+        pm.set_tax_quoting(true);
+        assert!(detect(&pm, 2).is_empty());
     }
 }

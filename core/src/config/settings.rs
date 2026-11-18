@@ -142,6 +142,11 @@ pub struct LiveConfig {
     /// Polling interval in milliseconds when `--loop` is set (default: 2000).
     #[serde(default = "default_live_poll_ms")]
     pub poll_interval_ms: u64,
+    /// Apply measured fee-on-transfer taxes per leg in arb quotes and
+    /// state-sim (default true; a no-op when no tax has been learned).
+    /// `false` falls back to excluding dynamically taxed tokens.
+    #[serde(default = "default_true")]
+    pub fot_quote: bool,
 }
 
 /// Ledger sub-config: `[paper]` TOML section (virtual-fund bot P&L). The
@@ -530,6 +535,7 @@ impl Default for LiveConfig {
     fn default() -> Self {
         LiveConfig {
             poll_interval_ms: default_live_poll_ms(),
+            fot_quote: true,
         }
     }
 }

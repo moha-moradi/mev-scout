@@ -573,17 +573,18 @@ fn test_spot_prefilter_skips_aligned_prices() {
         1_000_000,
         1_000_000,
     );
-    assert!(quote_path(&aligned_a, &aligned_b, wmatic()).is_none());
+    let pm = PoolManager::new();
+    assert!(quote_path(&aligned_a, &aligned_b, wmatic(), &pm).is_none());
 
     // Imbalanced: profitable direction passes the pre-filter and finds the arb
     let cheap = make_pool(matic_usdc_pool(), usdc(), wmatic(), 1_000_000, 2_000_000);
     let dear = make_pool(matic_usdt_pool(), usdt(), wmatic(), 2_000_000, 500_000);
-    let fwd = quote_path(&cheap, &dear, wmatic());
+    let fwd = quote_path(&cheap, &dear, wmatic(), &pm);
     assert!(fwd.is_some(), "profitable direction must pass pre-filter");
     assert!(fwd.unwrap().profit > 0);
 
     // Reverse direction: provably below break-even → skipped without optimizing
-    assert!(quote_path(&dear, &cheap, wmatic()).is_none());
+    assert!(quote_path(&dear, &cheap, wmatic(), &pm).is_none());
 }
 
 #[test]

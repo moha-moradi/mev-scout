@@ -141,6 +141,59 @@ pub struct MevOpportunity {
     /// Makes run-vs-live coverage gaps attributable to detection path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detection_path: Option<DetectionPath>,
+    /// Attribution tags shared with the explorer (`backrun`, `flash_arb`,
+    /// `long_tail`, …). Empty for strategies that carry no sub-tags.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Exact token order of the route: `len == path.len() + 1`.
+    /// Multi-token Curve/Balancer pools make the hop token ambiguous from the
+    /// pool set alone, so sim/exec must not re-derive it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_tokens: Option<Vec<Address>>,
+    /// Virtual Benqi mint/redeem leg for `savax_rate_arb` rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub savax_route: Option<SavaxRoute>,
+    /// Structured tag evidence (route shape, rate values, signal tx index).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+/// Direction of the virtual sAVAX leg in a rate-arb route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SavaxDirection {
+    /// Buy sAVAX in a pool, redeem for AVAX at the protocol rate.
+    Redeem,
+    /// Mint sAVAX with AVAX at the protocol rate, sell into a pool.
+    Mint,
+}
+
+impl SavaxDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Redeem => "redeem",
+            Self::Mint => "mint",
+        }
+    }
+}
+
+/// Virtual Benqi leg attached to an sAVAX rate-arb opportunity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavaxRoute {
+    /// AMM pool used for the market leg.
+    pub pool: Address,
+    pub direction: SavaxDirection,
+    /// `getPooledAvaxByShares(1e18)` at detect time (AVAX wad per sAVAX).
+    pub rate_wad: U256,
+    /// sAVAX shares moved through the virtual leg.
+    pub shares: U256,
+    /// Minimum AVAX out (redeem) or sAVAX out (mint) after the rate leg.
+    pub min_out_wad: U256,
+}
+
+/// sAVAX canonical id: mint and redeem in the same pool/block must not collapse.
+pub fn compute_savax_canonical_id(pool: Address, direction: SavaxDirection) -> String {
+    format!("SavaxRateArb|{pool:#x}|{}", direction.as_str())
 }
 
 /// Key fields used to build a canonical opportunity dedup id.
@@ -205,7 +258,22 @@ impl MevOpportunity {
             sender: None,
             tx_hash: None,
             detection_path: None,
+            tags: Vec::new(),
+            route_tokens: None,
+            savax_route: None,
+            details: None,
         }
+    }
+
+    /// Add an attribution tag once (order preserved).
+    pub fn add_tag(&mut self, tag: &str) {
+        if !self.tags.iter().any(|t| t == tag) {
+            self.tags.push(tag.to_string());
+        }
+    }
+
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.iter().any(|t| t == tag)
     }
 }
 

@@ -60,6 +60,9 @@ output = "table"
 # ── Live polling ───────────────────────────────────────────────────
 # [live]
 # poll_interval_ms = 2000
+# Apply measured fee-on-transfer taxes per leg in arb quotes and state-sim.
+# false falls back to excluding dynamically taxed tokens.
+# fot_quote = true
 
 # ── Ledger (virtual-fund P&L, always on in `live`) ──────────────────
 # Overridable per session: --initial-balance, --reserve.

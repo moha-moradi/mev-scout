@@ -632,6 +632,7 @@ impl PoolManager {
             state.scaling_factors = scaling_factors;
             state.bpt_index = bpt_index;
             state.rate_providers = rate_providers;
+            state.rate_cache = vec![None; tokens.len()];
             if tokens.len() >= 2 {
                 state.info.token0 = tokens[0];
                 state.info.token1 = tokens[1];
@@ -757,7 +758,7 @@ impl PoolManager {
         removed_count
     }
 
-    fn rebuild_token_index(&mut self) {
+    pub(crate) fn rebuild_token_index(&mut self) {
         self.token_index.clear();
         for (addr, ps) in &self.pools {
             for token in ps.tokens() {
@@ -1756,7 +1757,8 @@ impl PoolManager {
                             amplification,
                             scaling_factors,
                             bpt_index,
-                            rate_providers,
+                            rate_providers: rate_providers.clone(),
+                            rate_cache: vec![None; rate_providers.len()],
                         }))
                     }
                     _ => None,

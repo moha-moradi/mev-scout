@@ -31,6 +31,8 @@ pub enum FillSkipReason {
     ExecBuildFailed,
     /// Strategy is outside the flash executor (JIT, and anything non-V2/V3).
     ExecStrategyUnsupported,
+    /// Route touches a venue with no executor leg in this build.
+    ExecVenueUnsupported,
 }
 
 impl FillSkipReason {
@@ -49,6 +51,7 @@ impl FillSkipReason {
             Self::ExecRevert => "exec_revert",
             Self::ExecBuildFailed => "exec_build_failed",
             Self::ExecStrategyUnsupported => "exec_strategy_unsupported",
+            Self::ExecVenueUnsupported => "exec_venue_unsupported",
         }
     }
 }
@@ -214,6 +217,9 @@ pub struct PaperFill {
     pub exec_net_wei: Option<i128>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<String>,
+    /// ArbAtomic attribution tags carried from the opportunity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 impl PaperFill {

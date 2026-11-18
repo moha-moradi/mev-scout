@@ -56,7 +56,7 @@ use jit::classify_jit;
 use liquidation::{classify_liquidations, LiqBlockCtx};
 use skim::classify_skims;
 
-pub(crate) use arb::flow_attributable;
+pub(crate) use arb::{flow_attributable, is_long_tail_arb};
 pub(crate) use jit::stamp_jit_tx_hashes;
 
 /// Raw per-tx input the classifier consumes (decoded by `ingest`).
@@ -296,10 +296,7 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     jit_events.retain(|ev| !component_txs(ev).iter().any(|t| arb_txs.contains(t)));
     // A paired JIT position already reports the mint+burn as one operation;
     // do not emit a second liquidity row for its legs.
-    let jit_txs: HashSet<u64> = jit_events
-        .iter()
-        .flat_map(component_txs)
-        .collect();
+    let jit_txs: HashSet<u64> = jit_events.iter().flat_map(component_txs).collect();
     events.append(&mut jit_events);
 
     // ── 3c. Causal backrun annotation ──────────────────────────────────

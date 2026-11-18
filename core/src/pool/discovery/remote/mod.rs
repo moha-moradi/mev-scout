@@ -220,7 +220,10 @@ pub fn infer_dex_type_strict(dex_id: Option<&str>, label_hints: &[&str]) -> Opti
         "elk",
         "solarbeam",
     ];
-    if CLASSIC_V2.iter().any(|m| id.contains(m) || hints.contains(m)) {
+    if CLASSIC_V2
+        .iter()
+        .any(|m| id.contains(m) || hints.contains(m))
+    {
         return Some(DexType::UniswapV2);
     }
     None
@@ -665,10 +668,7 @@ mod tests {
         );
 
         // The lenient contract is unchanged for discovery.
-        assert_eq!(
-            infer_dex_type(Some("unknown-amm"), &[]),
-            DexType::UniswapV2
-        );
+        assert_eq!(infer_dex_type(Some("unknown-amm"), &[]), DexType::UniswapV2);
         assert_eq!(
             infer_dex_type(Some("Trader Joe LB"), &[]),
             DexType::UniswapV2

@@ -22,6 +22,12 @@ fn report_filter_clause(kind: Option<MevKind>, confidence: Option<Confidence>) -
     if let Some(c) = confidence {
         s.push_str(&format!("AND confidence = '{}' ", c.as_str()));
     }
+    // Only verified skims are announced. Candidate/rejected rows remain in
+    // `mev_ops` for audit but never enter headline counts or totals.
+    s.push_str(
+        "AND (kind != 'skim' OR \
+         json_extract(details_json, '$.values.evidence_tier') = 'verified') ",
+    );
     s
 }
 
@@ -89,14 +95,19 @@ fn insert_opportunity_row(conn: &Connection, row: &OpportunityInput<'_>) -> anyh
         tx_hash,
         detection_path,
         canonical_id,
+        tags_json,
+        details_json,
+        route_tokens_json,
+        savax_route_json,
     } = *row;
     conn.execute(
         "INSERT INTO opportunities
            (run_id, chain, block_number, tx_index, strategy, pool_a, pool_b,
             token_in, token_out, input_amount, expected_profit, gas_cost_wei,
             path, timestamp, mempool_only, confidence, sender, tx_hash,
-            detection_path, canonical_id)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+            detection_path, canonical_id, tags_json, details_json,
+            route_tokens_json, savax_route_json)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)",
         rusqlite::params![
             run_id,
             chain,
@@ -118,6 +129,10 @@ fn insert_opportunity_row(conn: &Connection, row: &OpportunityInput<'_>) -> anyh
             tx_hash.map(|h| format!("{:#x}", h)),
             detection_path,
             canonical_id,
+            tags_json,
+            details_json,
+            route_tokens_json,
+            savax_route_json,
         ],
     )?;
     Ok(())
@@ -309,7 +324,8 @@ impl ExplorerStore {
             "SELECT block_number, tx_index, strategy, pool_a, pool_b,
                     token_in, token_out, input_amount, expected_profit, gas_cost_wei,
                     path, timestamp, mempool_only, confidence, sender, tx_hash,
-                    detection_path, canonical_id
+                    detection_path, canonical_id, tags_json, details_json,
+                    route_tokens_json, savax_route_json
              FROM opportunities
              WHERE run_id = ?1
              ORDER BY block_number, tx_index, tx_hash, strategy",
@@ -334,6 +350,10 @@ impl ExplorerStore {
                 r.get::<_, Option<String>>(15)?,
                 r.get::<_, Option<String>>(16)?,
                 r.get::<_, Option<String>>(17)?,
+                r.get::<_, Option<String>>(18)?,
+                r.get::<_, Option<String>>(19)?,
+                r.get::<_, Option<String>>(20)?,
+                r.get::<_, Option<String>>(21)?,
             ))
         })?;
         let parse_addr = |s: &Option<String>| -> anyhow::Result<Address> {
@@ -363,6 +383,10 @@ impl ExplorerStore {
                 tx_hash,
                 detection_path,
                 canonical_id,
+                tags_json,
+                details_json,
+                route_tokens_json,
+                savax_route_json,
             ) = row?;
             let strategy = match strategy_str.parse::<Strategy>() {
                 Ok(s) => s,
@@ -426,6 +450,19 @@ impl ExplorerStore {
                 detection_path: detection_path
                     .as_deref()
                     .and_then(|v| v.parse::<crate::types::DetectionPath>().ok()),
+                tags: tags_json
+                    .as_deref()
+                    .and_then(|v| serde_json::from_str(v).ok())
+                    .unwrap_or_default(),
+                route_tokens: route_tokens_json
+                    .as_deref()
+                    .and_then(|v| serde_json::from_str(v).ok()),
+                savax_route: savax_route_json
+                    .as_deref()
+                    .and_then(|v| serde_json::from_str(v).ok()),
+                details: details_json
+                    .as_deref()
+                    .and_then(|v| serde_json::from_str(v).ok()),
             });
         }
         Ok(out)
@@ -433,7 +470,9 @@ impl ExplorerStore {
     /// Count of ops by kind since a timestamp (quick overview).
     pub fn op_count_since(&self, since_ts: u64) -> anyhow::Result<u64> {
         let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM mev_ops WHERE ts >= ?1",
+            "SELECT COUNT(*) FROM mev_ops WHERE ts >= ?1
+             AND (kind != 'skim' OR
+                  json_extract(details_json, '$.values.evidence_tier') = 'verified')",
             [since_ts as i64],
             |r| r.get(0),
         )?;
@@ -636,6 +675,7 @@ mod filter_tests {
         let s = report_filter_clause(Some(MevKind::Skim), Some(Confidence::Exact));
         assert!(s.contains("kind = 'skim'"));
         assert!(s.contains("confidence = 'exact'"));
+        assert!(s.contains("evidence_tier") && s.contains("'verified'"));
     }
 
     #[test]
@@ -667,6 +707,12 @@ mod filter_tests {
                 tx_hash: None,
                 detection_path: None,
                 canonical_id: None,
+                tags_json: Some("[\"long_tail\",\"flash_arb\"]"),
+                details_json: Some("{\"gmx_signal_tx\":3}"),
+                route_tokens_json: Some(
+                    "[\"0x1111111111111111111111111111111111111111\",\"0x2222222222222222222222222222222222222222\"]",
+                ),
+                savax_route_json: None,
             })
             .unwrap();
 
@@ -675,6 +721,15 @@ mod filter_tests {
         assert_eq!(read.len(), 1, "a parseable strategy must not be skipped");
         assert_eq!(read[0].pool_a, pool);
         assert_eq!(read[0].block_number, 7);
+        assert_eq!(read[0].tags, vec!["long_tail", "flash_arb"]);
+        assert_eq!(
+            read[0]
+                .details
+                .as_ref()
+                .and_then(|d| d.get("gmx_signal_tx")),
+            Some(&serde_json::json!(3))
+        );
+        assert_eq!(read[0].route_tokens.as_ref().map(Vec::len), Some(2));
 
         // Schema drift: a non-address string persisted in `pool_a` surfaces the
         // tagged parse error, not a bare alloy ParseError.

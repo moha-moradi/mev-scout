@@ -107,7 +107,10 @@ fn lb_liquidity_event(input: &BlockInput, tx: &TxInput, j: &JitFact) -> MevEvent
         "tags": ["lb_bin_liquidity"],
     });
     if let Some(map) = detail.as_object_mut() {
-        map.insert("confidence_reason".into(), serde_json::json!("heuristic_typed_event"));
+        map.insert(
+            "confidence_reason".into(),
+            serde_json::json!("heuristic_typed_event"),
+        );
     }
     MevEvent {
         pools: vec![j.pool],
@@ -146,7 +149,10 @@ fn reward_claim_event(input: &BlockInput, tx: &TxInput, c: &RewardClaimFact) -> 
         "tags": ["reward_claim"],
     });
     if let Some(map) = detail.as_object_mut() {
-        map.insert("confidence_reason".into(), serde_json::json!("heuristic_typed_event"));
+        map.insert(
+            "confidence_reason".into(),
+            serde_json::json!("heuristic_typed_event"),
+        );
     }
     MevEvent {
         pools: vec![c.emitter],
@@ -178,8 +184,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    const TX: B256 =
-        b256!("6ded44c4edeb5f6f2e9e077001965e8dfb28910052b948c5d376a6b1885ad4a9");
+    const TX: B256 = b256!("6ded44c4edeb5f6f2e9e077001965e8dfb28910052b948c5d376a6b1885ad4a9");
     const POOL: Address = address!("8ac5707f8d4bde1d771d34c7afd81c3922b73379");
     const REWARDER: Address = address!("138ce0008f7febdcffdf27c0ad156584eca7d5b6");
     const WAVAX: Address = address!("b31f66aa3c1e785363f0875a1b74e27b85fd66c7");
@@ -188,22 +193,17 @@ mod tests {
 
     const T_BIN_REWARD: B256 =
         b256!("8eb73e2dcafd6475539c6f596078fb83191363912cdefa76ac116e179604da1d");
-    const T_BATCH: B256 =
-        b256!("4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb");
+    const T_BATCH: B256 = b256!("4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb");
     const T_WITHDRAW: B256 =
         b256!("a32e146844d6144a22e94c586715a1317d58a8aa3581ec33d040113ddcb24350");
     const T_TRANSFER: B256 =
         b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
-    const T_CLAIM: B256 =
-        b256!("9aa05b3d70a9e3e2f004f039648839560576334fb45c81f91b6db03ad9e2efc9");
-    const T_OWNER: B256 =
-        b256!("000000000000000000000000a79f638bb584292c2105f73b91544f57700709a4");
+    const T_CLAIM: B256 = b256!("9aa05b3d70a9e3e2f004f039648839560576334fb45c81f91b6db03ad9e2efc9");
+    const T_OWNER: B256 = b256!("000000000000000000000000a79f638bb584292c2105f73b91544f57700709a4");
     const T_REWARDER: B256 =
         b256!("000000000000000000000000138ce0008f7febdcffdf27c0ad156584eca7d5b6");
-    const T_POOL: B256 =
-        b256!("0000000000000000000000008ac5707f8d4bde1d771d34c7afd81c3922b73379");
-    const T_PHAR: B256 =
-        b256!("00000000000000000000000013a466998ce03db73abc2d4df3bbd845ed1f28e7");
+    const T_POOL: B256 = b256!("0000000000000000000000008ac5707f8d4bde1d771d34c7afd81c3922b73379");
+    const T_PHAR: B256 = b256!("00000000000000000000000013a466998ce03db73abc2d4df3bbd845ed1f28e7");
 
     fn padded_addr(a: Address) -> B256 {
         let mut t = B256::ZERO;
@@ -224,34 +224,55 @@ mod tests {
     /// (block 100538126), read-only from `tx_evidence` before the skim fix.
     fn audited_logs() -> Vec<LogData> {
         vec![
-            log(REWARDER, vec![T_BIN_REWARD], concat!(
-                "00000000000000000000000000000000000000000000000000000000007f377a",
-                "0000000000000000000000000000000000000000000000000000000000000040",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-                "000000000000000000000000000000000004d1bc101b0f1dc9e98743c8d7ed1e",
-            )),
-            log(POOL, vec![T_BATCH, T_OWNER, T_OWNER, B256::ZERO], concat!(
-                "0000000000000000000000000000000000000000000000000000000000000040",
-                "0000000000000000000000000000000000000000000000000000000000000080",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-                "00000000000000000000000000000000000000000000000000000000007f377d",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-                "0000000000000000000000000000000000000000013af9518acb2c88ac20e6a5",
-            )),
-            log(POOL, vec![T_WITHDRAW, T_OWNER, T_OWNER], concat!(
-                "0000000000000000000000000000000000000000000000000000000000000040",
-                "0000000000000000000000000000000000000000000000000000000000000080",
-                "0000000000000000000000000000000000000000000000000000000000000001",
-                "00000000000000000000000000000000000000000000000000000000007f377d",
-                "0000000000000000000000000000000000000000000000000000000000000001",
+            log(
+                REWARDER,
+                vec![T_BIN_REWARD],
+                concat!(
+                    "00000000000000000000000000000000000000000000000000000000007f377a",
+                    "0000000000000000000000000000000000000000000000000000000000000040",
+                    "0000000000000000000000000000000000000000000000000000000000000001",
+                    "000000000000000000000000000000000004d1bc101b0f1dc9e98743c8d7ed1e",
+                ),
+            ),
+            log(
+                POOL,
+                vec![T_BATCH, T_OWNER, T_OWNER, B256::ZERO],
+                concat!(
+                    "0000000000000000000000000000000000000000000000000000000000000040",
+                    "0000000000000000000000000000000000000000000000000000000000000080",
+                    "0000000000000000000000000000000000000000000000000000000000000001",
+                    "00000000000000000000000000000000000000000000000000000000007f377d",
+                    "0000000000000000000000000000000000000000000000000000000000000001",
+                    "0000000000000000000000000000000000000000013af9518acb2c88ac20e6a5",
+                ),
+            ),
+            log(
+                POOL,
+                vec![T_WITHDRAW, T_OWNER, T_OWNER],
+                concat!(
+                    "0000000000000000000000000000000000000000000000000000000000000040",
+                    "0000000000000000000000000000000000000000000000000000000000000080",
+                    "0000000000000000000000000000000000000000000000000000000000000001",
+                    "00000000000000000000000000000000000000000000000000000000007f377d",
+                    "0000000000000000000000000000000000000000000000000000000000000001",
+                    "000000000000000000000000000000000000000000000017669465789aac0000",
+                ),
+            ),
+            log(
+                WAVAX,
+                vec![T_TRANSFER, T_POOL, T_OWNER],
                 "000000000000000000000000000000000000000000000017669465789aac0000",
-            )),
-            log(WAVAX, vec![T_TRANSFER, T_POOL, T_OWNER],
-                "000000000000000000000000000000000000000000000017669465789aac0000"),
-            log(PHAR, vec![T_TRANSFER, T_REWARDER, T_OWNER],
-                "000000000000000000000000000000000000000000000001003bc45ee69f3dab"),
-            log(REWARDER, vec![T_CLAIM, T_OWNER, T_PHAR],
-                "000000000000000000000000000000000000000000000001003bc45ee69f3dab"),
+            ),
+            log(
+                PHAR,
+                vec![T_TRANSFER, T_REWARDER, T_OWNER],
+                "000000000000000000000000000000000000000000000001003bc45ee69f3dab",
+            ),
+            log(
+                REWARDER,
+                vec![T_CLAIM, T_OWNER, T_PHAR],
+                "000000000000000000000000000000000000000000000001003bc45ee69f3dab",
+            ),
         ]
     }
 
@@ -305,10 +326,7 @@ mod tests {
             claim.profit_amount,
             Some(U256::from(18_463_567_009_210_645_931u128))
         );
-        assert_eq!(
-            claim.profit_token,
-            Some(PHAR)
-        );
+        assert_eq!(claim.profit_token, Some(PHAR));
         assert_eq!(claim.details["token"], format!("{PHAR:#x}"));
         assert_eq!(claim.details["rewarder"], format!("{REWARDER:#x}"));
         // Padding helper must produce the exact indexed topics used above.

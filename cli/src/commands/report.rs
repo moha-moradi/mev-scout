@@ -116,6 +116,22 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
                         m.strategy, m.count, m.net_profit, m.roi, m.best_opp,
                     );
                 }
+                if !agg.by_tag.is_empty() {
+                    println!();
+                    println!("  tag          ops     net (ETH)     ROI%");
+                    let mut tags: Vec<_> = agg.by_tag.values().collect();
+                    tags.sort_by(|a, b| {
+                        b.net_profit
+                            .partial_cmp(&a.net_profit)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    for m in tags {
+                        println!(
+                            "  {:<12} {:>4} {:>11.4} {:>7.1}",
+                            m.strategy, m.count, m.net_profit, m.roi,
+                        );
+                    }
+                }
             }
         }
         OutputFormat::Csv => {

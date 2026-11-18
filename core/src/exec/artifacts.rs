@@ -1,6 +1,6 @@
 //! Executor bytecode produced by `forge build` in `contracts/`.
 //!
-//! ABI v2: deploy from `creation.hex` + constructor args
+//! ABI v3: deploy from `creation.hex` + constructor args
 //! `[operator, withdrawer, weth]`. Never inject `deployed.hex` directly —
 //! immutables are zeroed at compile time.
 //!
@@ -11,7 +11,7 @@
 use alloy::primitives::{Address, Bytes};
 
 /// Must match `FlashArbExecutor.ABI_VERSION`.
-pub const ABI_VERSION: u8 = 2;
+pub const ABI_VERSION: u8 = 3;
 
 const DEPLOYED_HEX: &str = include_str!("artifacts/FlashArbExecutor.deployed.hex");
 const CREATION_HEX: &str = include_str!("artifacts/FlashArbExecutor.creation.hex");
@@ -71,7 +71,7 @@ mod tests {
         };
         assert!(deployed.len() > 64, "deployed bytecode missing");
         assert!(creation.len() > deployed.len(), "creation bytecode missing");
-        assert_eq!(ABI_VERSION, 2);
+        assert_eq!(ABI_VERSION, 3);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::types::{FlashLoanProvider, MevOpportunity};
 
 use super::anvil::{reset_fork, AnvilNode, AnvilSender};
 use super::calldata::encode_execute;
-use super::plan::{plan_from_opportunity, PlanError};
+use super::plan::{plan_from_opportunity, PlanError, VenueRouters};
 use super::revm_backend::{exec_plan_revm, open_revm_block, RevmBlock};
 use super::{ExecMode, ANVIL_DEFAULT_KEY};
 
@@ -28,6 +28,8 @@ pub struct ExecContext {
     pub anvil: Option<AnvilNode>,
     pub anvil_executor: Option<Address>,
     pub anvil_block: Option<u64>,
+    /// Router addresses for generic Curve/Balancer/LB/Pendle/sAVAX legs.
+    pub routers: VenueRouters,
     /// Attempts already reached a backend this session, keyed by [`submit_key`].
     pub cache: HashMap<String, ExecAttempt>,
 }
@@ -53,12 +55,16 @@ fn plan_for(
     opp: &MevOpportunity,
     pools: &PoolManager,
     ctx: &ExecContext,
+    executor: Address,
 ) -> Result<super::ExecPlan, PlanError> {
     plan_from_opportunity(
         opp,
         pools,
+        &ctx.routers,
         ctx.vault,
         ctx.provider,
+        executor,
+        ctx.weth,
         U256::from(1u64),
         opp.timestamp.saturating_add(12),
     )
@@ -119,18 +125,21 @@ fn run_revm(
                 }
             }
         }
-        let plan = match plan_for(opp, pools, ctx) {
+        let Some((_, _, block)) = prepared.as_mut() else {
+            return ExecAttempt::failed(FillSkipReason::ExecBuildFailed);
+        };
+        let plan = match plan_for(opp, pools, ctx, block.executor) {
             Ok(plan) => plan,
             Err(PlanError::StrategyUnsupported) => {
                 return ExecAttempt::failed(FillSkipReason::ExecStrategyUnsupported);
+            }
+            Err(PlanError::VenueUnsupported) => {
+                return ExecAttempt::failed(FillSkipReason::ExecVenueUnsupported);
             }
             Err(e) => {
                 tracing::debug!("exec build failed: {e}");
                 return ExecAttempt::failed(FillSkipReason::ExecBuildFailed);
             }
-        };
-        let Some((_, _, block)) = prepared.as_mut() else {
-            return ExecAttempt::failed(FillSkipReason::ExecBuildFailed);
         };
         let attempt = match exec_plan_revm(replayer, chain_id, block, searcher, &plan) {
             Ok(attempt) => attempt,
@@ -181,16 +190,6 @@ fn run_anvil(
         if let Some(hit) = cache.get(&cache_key).cloned() {
             return hit;
         }
-        let plan = match plan_for(opp, pools, ctx) {
-            Ok(plan) => plan,
-            Err(PlanError::StrategyUnsupported) => {
-                return ExecAttempt::failed(FillSkipReason::ExecStrategyUnsupported);
-            }
-            Err(e) => {
-                tracing::debug!("exec build failed: {e}");
-                return ExecAttempt::failed(FillSkipReason::ExecBuildFailed);
-            }
-        };
         let fork_block = fork_block_for(opp);
         if prepared_block != Some(fork_block) || executor.is_none() {
             let url = url.clone();
@@ -218,6 +217,19 @@ fn run_anvil(
         }
         let Some(to) = executor else {
             return ExecAttempt::failed(FillSkipReason::ExecBuildFailed);
+        };
+        let plan = match plan_for(opp, pools, ctx, to) {
+            Ok(plan) => plan,
+            Err(PlanError::StrategyUnsupported) => {
+                return ExecAttempt::failed(FillSkipReason::ExecStrategyUnsupported);
+            }
+            Err(PlanError::VenueUnsupported) => {
+                return ExecAttempt::failed(FillSkipReason::ExecVenueUnsupported);
+            }
+            Err(e) => {
+                tracing::debug!("exec build failed: {e}");
+                return ExecAttempt::failed(FillSkipReason::ExecBuildFailed);
+            }
         };
         let data = encode_execute(&plan);
         let url = url.clone();

@@ -115,6 +115,20 @@ pub struct ChainConfig {
     /// Pendle Finance factory contract address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pendle_factory: Option<Address>,
+    /// LFJ Liquidity Book router for V2.1 pairs (and V2.1-compatible forks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lb_router_v21: Option<Address>,
+    /// LFJ Liquidity Book router for V2.2 pairs. V2.2 routers are not
+    /// backwards compatible with V2.1 pairs, so both are configured separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lb_router_v22: Option<Address>,
+    /// LB factory → `Path.versions` enum value (`2` = V2.1, `3` = V2.2).
+    /// Unknown factories are treated as V2.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lb_factory_versions: Option<HashMap<Address, u8>>,
+    /// Pendle Router proxy (V3/V4 resolves the implementation on-chain).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pendle_router: Option<Address>,
     /// Metric V2 AMM factory address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metric_factory: Option<Address>,

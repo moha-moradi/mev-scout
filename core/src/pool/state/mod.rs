@@ -9,8 +9,8 @@ pub use manager::{check_dedup_key, PoolManager, ScanScope};
 pub use pool_types::{
     calldata_gas_estimate, is_fee_on_transfer_token, is_rebase_token, BalancerPoolState,
     BalancerPoolVariant, CurvePoolState, CurvePoolVariant, FluidPoolState, MetricPoolState,
-    PancakeInfinityPoolState, PendlePoolState, PoolInfo, PoolState, TraderJoeLBPoolState,
-    UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState,
+    PancakeInfinityPoolState, PendlePoolState, PoolInfo, PoolState, RateCacheEntry,
+    TraderJoeLBPoolState, UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState,
 };
 pub use quoting::QuoteKind;
 pub use sim::{apply_post_state, quote_swap_post, PoolPostState};

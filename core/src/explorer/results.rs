@@ -18,6 +18,10 @@ struct PreparedOpportunity<'a> {
     path: Option<String>,
     confidence: Option<String>,
     gas_cost_wei: U256,
+    tags_json: Option<String>,
+    details_json: Option<String>,
+    route_tokens_json: Option<String>,
+    savax_route_json: Option<String>,
 }
 
 /// Persist run/live results into the explorer store's `opportunities` table.
@@ -52,6 +56,23 @@ pub fn persist_opportunities_to_explorer(
             }),
             confidence: opp.confidence.map(|c| format!("{c:.2}")),
             gas_cost_wei: U256::from(opp.gas_cost_wei),
+            tags_json: if opp.tags.is_empty() {
+                None
+            } else {
+                serde_json::to_string(&opp.tags).ok()
+            },
+            details_json: opp
+                .details
+                .as_ref()
+                .and_then(|d| serde_json::to_string(d).ok()),
+            route_tokens_json: opp.route_tokens.as_ref().and_then(|tokens| {
+                serde_json::to_string(&tokens.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>())
+                    .ok()
+            }),
+            savax_route_json: opp
+                .savax_route
+                .as_ref()
+                .and_then(|r| serde_json::to_string(r).ok()),
         })
         .collect();
     let rows: Vec<OpportunityInput<'_>> = prepared
@@ -77,6 +98,10 @@ pub fn persist_opportunities_to_explorer(
             tx_hash: p.opp.tx_hash,
             detection_path: p.opp.detection_path.map(|p| p.as_str()),
             canonical_id: p.opp.canonical_id.as_deref(),
+            tags_json: p.tags_json.as_deref(),
+            details_json: p.details_json.as_deref(),
+            route_tokens_json: p.route_tokens_json.as_deref(),
+            savax_route_json: p.savax_route_json.as_deref(),
         })
         .collect();
     if let Err(e) = store.insert_opportunities(&rows) {

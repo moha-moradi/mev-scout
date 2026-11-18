@@ -67,6 +67,7 @@ pub fn pool_info_to_state(info: PoolInfo) -> PoolState {
             bpt_index: None,
             scaling_factors: vec![],
             rate_providers: vec![],
+            rate_cache: vec![],
         }),
         DexType::Solidly => PoolState::UniswapV2(UniswapV2PoolState {
             info,

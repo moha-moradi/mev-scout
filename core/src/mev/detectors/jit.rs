@@ -355,6 +355,10 @@ impl JitDetector {
             sender: None,
             tx_hash: None,
             detection_path: Some(crate::mev::detectors::DetectionPath::Replay),
+            tags: Vec::new(),
+            route_tokens: None,
+            savax_route: None,
+            details: None,
         }
     }
 }

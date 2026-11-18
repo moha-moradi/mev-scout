@@ -2,19 +2,22 @@
 pragma solidity 0.8.24;
 
 /// @title FlashArbExecutor
-/// @notice ABI v2 flash-arb executor. Borrows from Balancer V2 (fee 0), runs
-///         V2 `swap` / V3 exact-input pool `swap` (the pool-level equivalent of
-///         `exactInputSingle` — no router address, so any V3 fork works),
-///         repays the vault, and forwards leftover borrow-token to the
-///         immutable `withdrawer`. When the borrow token is WETH, leftover is
-///         unwrapped so the withdrawer's native balance delta is the profit.
+/// @notice ABI v3 flash-arb executor. Borrows from Balancer V2 (fee 0), runs
+///         V2 `swap`, V3 exact-input pool `swap`, or a generic
+///         `(target, spender, calldata, minOut)` call for Curve/Balancer/LB/
+///         Pendle/sAVAX, repays the vault, and forwards leftover borrow-token
+///         to the immutable `withdrawer`. When the borrow token is WETH,
+///         leftover is unwrapped so the withdrawer's native balance delta is
+///         the profit.
 /// @dev Operator-only `execute`. `minProfit` is in borrow-token units.
 interface IERC20 {
     function balanceOf(address) external view returns (uint256);
     function transfer(address, uint256) external returns (bool);
+    function approve(address, uint256) external returns (bool);
 }
 
 interface IWETH is IERC20 {
+    function deposit() external payable;
     function withdraw(uint256) external;
 }
 
@@ -45,7 +48,7 @@ interface IUniswapV3Pool {
 
 contract FlashArbExecutor {
     /// Bump when the `execute` / `Leg` ABI changes. Rust embeds the same number.
-    uint8 public constant ABI_VERSION = 2;
+    uint8 public constant ABI_VERSION = 3;
 
     /// Uniswap V3 tick-math limits. +1 / -1 keeps the pool from reverting on the boundary.
     uint160 internal constant MIN_SQRT_RATIO = 4295128739 + 1;
@@ -59,6 +62,11 @@ contract FlashArbExecutor {
     address internal expectedV3Pool;
     uint256 internal borrowBalanceBefore;
 
+    /// Optional operator-managed allowlist for generic call targets.
+    /// Left disabled for local revm/anvil simulation.
+    bool public restrictTargets;
+    mapping(address => bool) public allowedTargets;
+
     error NotOperator();
     error Expired();
     error Reentrant();
@@ -71,14 +79,28 @@ contract FlashArbExecutor {
     error TransferFailed();
     error EthForwardFailed();
     error ZeroAddress();
+    error CallFailed();
+    error MinOut();
+    error TargetNotAllowed();
+    error TooManyLegs();
+    error DataTooLarge();
 
     struct Leg {
-        address pool;
+        /// Pool, Balancer Vault, router, or sAVAX contract.
+        address target;
         address tokenIn;
+        /// address(0) means native ETH.
         address tokenOut;
-        /// 0 = V2 pair.swap (fee is bps, 30 = 0.30%). 1 = V3 exact-input pool swap.
+        /// Approved spender for kind 2; address(0) skips approval.
+        address spender;
+        /// 0 V2 exact-in, 1 V3 exact-in, 2 call, 3 wrapAll,
+        /// 4 unwrap, 5 callWithValue, 6 callWithTransfer.
         uint8 kind;
         uint24 fee;
+        /// Required tokenOut (or native) balance delta for generic kinds.
+        uint256 minOut;
+        /// Calldata for kinds 2/5/6.
+        bytes data;
     }
 
     struct Plan {
@@ -101,6 +123,20 @@ contract FlashArbExecutor {
 
     receive() external payable {}
 
+    function version() external pure returns (uint8) {
+        return ABI_VERSION;
+    }
+
+    function setTargetAllowed(address target, bool allowed) external {
+        if (msg.sender != operator) revert NotOperator();
+        allowedTargets[target] = allowed;
+    }
+
+    function setRestrictTargets(bool restrict) external {
+        if (msg.sender != operator) revert NotOperator();
+        restrictTargets = restrict;
+    }
+
     function execute(Plan calldata plan) external {
         if (msg.sender != operator) revert NotOperator();
         if (block.timestamp > plan.deadline) revert Expired();
@@ -108,6 +144,7 @@ contract FlashArbExecutor {
         if (plan.amount == 0) revert ZeroAmount();
         if (plan.vault == address(0)) revert ZeroAddress();
         if (plan.legs.length == 0) revert ZeroAmount();
+        if (plan.legs.length > 8) revert TooManyLegs();
 
         borrowBalanceBefore = IERC20(plan.borrowToken).balanceOf(address(this));
         activeVault = plan.vault;
@@ -134,7 +171,9 @@ contract FlashArbExecutor {
         (Leg[] memory legs, uint256 minProfit) = abi.decode(userData, (Leg[], uint256));
 
         uint256 amount = amounts[0];
+        if (legs.length > 8) revert TooManyLegs();
         for (uint256 i = 0; i < legs.length; i++) {
+            if (legs[i].data.length > 512) revert DataTooLarge();
             amount = _leg(legs[i], amount);
         }
 
@@ -186,12 +225,85 @@ contract FlashArbExecutor {
     function _leg(Leg memory leg, uint256 amountIn) internal returns (uint256 amountOut) {
         if (leg.kind == 0) return _v2(leg, amountIn);
         if (leg.kind == 1) return _v3(leg, amountIn);
+        if (leg.kind == 2) return _call(leg, amountIn);
+        if (leg.kind == 3) return _wrapAll();
+        if (leg.kind == 4) return _unwrap(amountIn);
+        if (leg.kind == 5) return _callWithValue(leg, amountIn);
+        if (leg.kind == 6) return _callWithTransfer(leg, amountIn);
         revert UnknownKind();
     }
 
+    function _checkTarget(address target) internal view {
+        if (target == address(0)) revert ZeroAddress();
+        if (restrictTargets && !allowedTargets[target]) revert TargetNotAllowed();
+    }
+
+    function _balanceOf(address token) internal view returns (uint256) {
+        return token == address(0)
+            ? address(this).balance
+            : IERC20(token).balanceOf(address(this));
+    }
+
+    function _snapshotAndCheck(Leg memory leg, uint256 before_) internal view returns (uint256 amountOut) {
+        uint256 after_ = _balanceOf(leg.tokenOut);
+        if (after_ < before_) revert CallFailed();
+        amountOut = after_ - before_;
+        if (amountOut < leg.minOut) revert MinOut();
+    }
+
+    /// Generic call with an optional ERC-20 approval. The target pulls tokenIn.
+    function _call(Leg memory leg, uint256 amountIn) internal returns (uint256 amountOut) {
+        _checkTarget(leg.target);
+        if (leg.spender != address(0)) {
+            _forceApprove(leg.tokenIn, leg.spender, amountIn);
+        }
+        uint256 before_ = _balanceOf(leg.tokenOut);
+        (bool ok,) = leg.target.call(leg.data);
+        if (!ok) revert CallFailed();
+        return _snapshotAndCheck(leg, before_);
+    }
+
+    /// V2-style pools that expect the input token transferred before `swap`.
+    function _callWithTransfer(Leg memory leg, uint256 amountIn) internal returns (uint256 amountOut) {
+        _checkTarget(leg.target);
+        _transfer(leg.tokenIn, leg.target, amountIn);
+        uint256 before_ = _balanceOf(leg.tokenOut);
+        (bool ok,) = leg.target.call(leg.data);
+        if (!ok) revert CallFailed();
+        return _snapshotAndCheck(leg, before_);
+    }
+
+    /// Payable call (sAVAX `submit()` and similar).
+    function _callWithValue(Leg memory leg, uint256 amountIn) internal returns (uint256 amountOut) {
+        _checkTarget(leg.target);
+        uint256 before_ = _balanceOf(leg.tokenOut);
+        (bool ok,) = leg.target.call{value: amountIn}(leg.data);
+        if (!ok) revert CallFailed();
+        return _snapshotAndCheck(leg, before_);
+    }
+
+    function _wrapAll() internal returns (uint256 amountOut) {
+        amountOut = address(this).balance;
+        if (amountOut == 0) revert ZeroAmount();
+        IWETH(weth).deposit{value: amountOut}();
+    }
+
+    function _unwrap(uint256 amountIn) internal returns (uint256 amountOut) {
+        if (amountIn == 0) revert ZeroAmount();
+        IWETH(weth).withdraw(amountIn);
+        return amountIn;
+    }
+
+    function _forceApprove(address token, address spender, uint256 amount) internal {
+        (bool ok,) = token.call(abi.encodeWithSelector(IERC20.approve.selector, spender, 0));
+        if (!ok) revert TransferFailed();
+        (ok,) = token.call(abi.encodeWithSelector(IERC20.approve.selector, spender, amount));
+        if (!ok) revert TransferFailed();
+    }
+
     function _v2(Leg memory leg, uint256 amountIn) internal returns (uint256 amountOut) {
-        _transfer(leg.tokenIn, leg.pool, amountIn);
-        IUniswapV2Pair pair = IUniswapV2Pair(leg.pool);
+        _transfer(leg.tokenIn, leg.target, amountIn);
+        IUniswapV2Pair pair = IUniswapV2Pair(leg.target);
         (uint112 r0, uint112 r1,) = pair.getReserves();
         address token0 = pair.token0();
         (uint256 reserveIn, uint256 reserveOut) = leg.tokenIn == token0
@@ -207,8 +319,8 @@ contract FlashArbExecutor {
     function _v3(Leg memory leg, uint256 amountIn) internal returns (uint256 amountOut) {
         bool zeroForOne = leg.tokenIn < leg.tokenOut;
         uint256 beforeOut = IERC20(leg.tokenOut).balanceOf(address(this));
-        expectedV3Pool = leg.pool;
-        IUniswapV3Pool(leg.pool).swap(
+        expectedV3Pool = leg.target;
+        IUniswapV3Pool(leg.target).swap(
             address(this),
             zeroForOne,
             int256(amountIn),

@@ -6,6 +6,9 @@ use crate::cache::SqliteStore;
 use crate::data::{ExecutedLog, ExecutedTx, TxData};
 use crate::dex_type::DexType;
 use crate::error;
+use crate::mev::detectors::tagging::{
+    collect_tx_facts, stamp_route_tags, ArbTagPolicy, BlockTagFacts,
+};
 use crate::mev::detectors::BackrunDetector;
 use crate::mev::detectors::DetectCtx;
 use crate::mev::detectors::JitDetector;
@@ -75,18 +78,104 @@ struct BlockDetectors {
     multi_hop: MultiHopArbDetector,
     jit: JitDetector,
     backrun: BackrunDetector,
+    tag_policy: ArbTagPolicy,
+    facts: BlockTagFacts,
+    epoch_pools: std::collections::HashSet<Address>,
+    gmx_pools: std::collections::HashSet<Address>,
 }
 
 impl BlockDetectors {
-    fn new(block_num: u64, pool_manager: &PoolManager) -> Self {
+    fn new(block_num: u64, pool_manager: &PoolManager, tag_policy: &ArbTagPolicy) -> Self {
         let mut jit = JitDetector::new(block_num);
         jit.seed_pool_tick_cache(pool_manager);
+        let epoch_pools = tag_policy
+            .epoch_venue_pools
+            .iter()
+            .copied()
+            .filter(|p| pool_manager.get(p).is_some())
+            .collect();
+        let gmx_pools = pool_manager
+            .pool_addresses()
+            .into_iter()
+            .filter(|addr| {
+                pool_manager.get(addr).is_some_and(|pool| {
+                    let info = pool.info();
+                    let mut tokens = vec![info.token0, info.token1];
+                    if let Some(underlying) = &info.underlying_tokens {
+                        tokens.extend(underlying.iter().copied());
+                    }
+                    tag_policy
+                        .gmx_market_tokens
+                        .iter()
+                        .any(|t| tokens.contains(t))
+                })
+            })
+            .collect();
         Self {
             two_hop: TwoHopArbDetector::new(block_num),
             multi_hop: MultiHopArbDetector::new(block_num),
             jit,
             backrun: BackrunDetector::new(block_num),
+            tag_policy: tag_policy.clone(),
+            facts: BlockTagFacts::default(),
+            epoch_pools,
+            gmx_pools,
         }
+    }
+
+    fn facts(&self) -> &BlockTagFacts {
+        &self.facts
+    }
+
+    /// Re-scan the venue set touched by a NotifyReward / GMX ADL signal.
+    /// Plain arbs created by the signal tx's flows are otherwise invisible
+    /// until the next tx's dirty-set pass.
+    #[allow(clippy::too_many_arguments)]
+    fn rescan_after_signal(
+        &mut self,
+        pm: &PoolManager,
+        tx_index: usize,
+        timestamp: u64,
+        base_fee_per_gas: u128,
+        gas_config: GasConfig,
+        epoch_signal: bool,
+        gmx_signal: bool,
+        all_opportunities: &mut Vec<MevOpportunity>,
+        pending_seeds: Option<&RefCell<Vec<PendingSeed>>>,
+    ) {
+        if !epoch_signal && !gmx_signal {
+            return;
+        }
+        let mut venues = std::collections::HashSet::new();
+        if epoch_signal {
+            venues.extend(self.epoch_pools.iter().copied());
+        }
+        if gmx_signal {
+            venues.extend(self.gmx_pools.iter().copied());
+        }
+        if venues.is_empty() {
+            return;
+        }
+        let scope = ScanScope::Dirty(&venues);
+        let ctx = DetectCtx::new(
+            pm,
+            tx_index,
+            timestamp,
+            base_fee_per_gas,
+            gas_config,
+            &scope,
+        );
+        let opps = self.two_hop.detect(ctx);
+        if let Some(buf) = pending_seeds {
+            push_pending_seeds(&mut buf.borrow_mut(), pm, &opps);
+        }
+        all_opportunities.extend(opps);
+
+        let multi_opps = self.multi_hop.detect(ctx);
+        if let Some(buf) = pending_seeds {
+            push_pending_seeds(&mut buf.borrow_mut(), pm, &multi_opps);
+        }
+        all_opportunities.extend(multi_opps);
     }
 
     fn detect_tx(&mut self, args: DetectTxArgs<'_>) {
@@ -195,6 +284,11 @@ impl BlockDetectors {
 
         pm.learn_taxes_from_tx(&tx.logs);
         pm.update_from_logs(&tx.logs);
+        let epoch_before = self.facts.epoch_reward_tokens.len();
+        let gmx_before = self.facts.gmx_signal_tx;
+        collect_tx_facts(&tx.logs, tx_index, &self.tag_policy, &mut self.facts);
+        let epoch_signal = self.facts.epoch_reward_tokens.len() > epoch_before;
+        let gmx_signal = self.facts.gmx_signal_tx != gmx_before;
 
         let newly_dirty = pm.take_dirty_pools();
         if !newly_dirty.is_empty() {
@@ -223,6 +317,18 @@ impl BlockDetectors {
                 .get_or_insert_with(Default::default)
                 .extend(newly_dirty);
         }
+
+        self.rescan_after_signal(
+            pm,
+            tx_index,
+            timestamp,
+            base_fee_per_gas,
+            gas_config,
+            epoch_signal,
+            gmx_signal,
+            all_opportunities,
+            pending_seeds,
+        );
     }
 }
 
@@ -294,6 +400,8 @@ pub struct BacktestRunner {
     pending_seeds: RefCell<Vec<PendingSeed>>,
     /// How many simulatable candidates were dropped by the seed budget.
     seeds_capped: RefCell<usize>,
+    /// Chain registries and route attributes used to stamp explorer tags.
+    tag_policy: ArbTagPolicy,
 }
 
 impl BacktestRunner {
@@ -328,7 +436,19 @@ impl BacktestRunner {
             sim_seeds: RefCell::new(SimSeeds::new()),
             pending_seeds: RefCell::new(Vec::new()),
             seeds_capped: RefCell::new(0),
+            tag_policy: ArbTagPolicy::default(),
         }
+    }
+
+    /// Install the chain tag policy used to attribute live opportunities.
+    pub fn with_tag_policy(mut self, policy: ArbTagPolicy) -> Self {
+        self.tag_policy = policy;
+        self
+    }
+
+    /// Refresh the sAVAX exchange rate used by route tagging and the detector.
+    pub fn set_savax_rate(&mut self, rate: Option<alloy::primitives::U256>) {
+        self.tag_policy.savax_rate_wad = rate;
     }
 
     /// Enable pool-snapshot capture for `--sim state` paper fills.
@@ -391,6 +511,18 @@ impl BacktestRunner {
     /// Current pool-state snapshot, used by the CLI to render result tables.
     pub fn pool_manager(&self) -> &PoolManager {
         &self.pool_manager
+    }
+
+    /// Commit the undo log opened by [`Self::sync_block_from_logs`].
+    /// Call after a successful log-only block when driving blocks manually
+    /// (the hybrid range runner does this itself).
+    pub fn finish_log_block(&mut self) {
+        self.pool_manager.end_undo();
+    }
+
+    /// Roll back the undo log opened by [`Self::sync_block_from_logs`].
+    pub fn rollback_log_block(&mut self) {
+        self.pool_manager.undo();
     }
 
     /// Replayer used by `--exec revm` to open a historical state database.
@@ -508,6 +640,7 @@ impl BacktestRunner {
         txs: &[TxData],
         block_num: u64,
         path: DetectionPath,
+        facts: &BlockTagFacts,
     ) {
         crate::mev::detectors::backrun::suppress_superseded_arbs(opps);
         self.retain_with_rejections(opps, block_num);
@@ -525,15 +658,22 @@ impl BacktestRunner {
 
         for opp in opps.iter_mut() {
             if opp.strategy != Strategy::Backrun {
-                opp.canonical_id = Some(crate::types::compute_canonical_id(
-                    crate::types::CanonicalIdParts {
-                        strategy: opp.strategy,
-                        pool_a: opp.pool_a,
-                        pool_b: opp.pool_b,
-                        token_in: opp.token_in,
-                        token_out: opp.token_out,
-                    },
-                ));
+                opp.canonical_id = if let Some(route) = &opp.savax_route {
+                    Some(crate::types::compute_savax_canonical_id(
+                        route.pool,
+                        route.direction,
+                    ))
+                } else {
+                    Some(crate::types::compute_canonical_id(
+                        crate::types::CanonicalIdParts {
+                            strategy: opp.strategy,
+                            pool_a: opp.pool_a,
+                            pool_b: opp.pool_b,
+                            token_in: opp.token_in,
+                            token_out: opp.token_out,
+                        },
+                    ))
+                };
             }
             opp.detection_path = Some(path);
             if opp.sender.is_none() {
@@ -542,6 +682,7 @@ impl BacktestRunner {
             if opp.tx_hash.is_none() {
                 opp.tx_hash = txs.get(opp.tx_index).map(|t| t.hash);
             }
+            stamp_route_tags(opp, &self.tag_policy, facts, &self.pool_manager);
         }
 
         if self.persistence_scoring {
@@ -564,7 +705,9 @@ impl BacktestRunner {
     }
 
     fn stamp_and_record_pending_seeds(&self, opps: &mut [MevOpportunity]) {
+        let facts = BlockTagFacts::default();
         for opp in opps.iter_mut() {
+            stamp_route_tags(opp, &self.tag_policy, &facts, &self.pool_manager);
             if opp.canonical_id.is_none() {
                 opp.canonical_id = Some(crate::types::compute_canonical_id(
                     crate::types::CanonicalIdParts {
@@ -847,7 +990,8 @@ impl BacktestRunner {
             self.pool_manager.token_addresses().into_iter().collect();
 
         let mut all_opportunities = Vec::new();
-        let mut block_detectors = BlockDetectors::new(block_num, &self.pool_manager);
+        let mut block_detectors =
+            BlockDetectors::new(block_num, &self.pool_manager, &self.tag_policy);
 
         // Take ownership of pool_manager so the closure can mutate it via RefCell
         let mut pool_manager = std::mem::take(&mut self.pool_manager);
@@ -917,11 +1061,32 @@ impl BacktestRunner {
         self.gas_calibration = gas_calibration.into_inner();
         replay_result?;
 
+        let savax_opps = crate::mev::detectors::savax::detect_block(
+            &self.pool_manager,
+            block_num,
+            txs.len().saturating_sub(1),
+            timestamp,
+            base_fee_per_gas,
+            self.gas_config,
+            &self.tag_policy,
+        );
+        if self.sim_seeds_enabled && !savax_opps.is_empty() {
+            let mut seeds = self.sim_seeds.borrow_mut();
+            let _ = record_seeds_for_block(
+                &mut seeds,
+                &self.pool_manager,
+                &savax_opps,
+                self.sim_max_candidates_per_block,
+            );
+        }
+        all_opportunities.extend(savax_opps);
+
         self.finalize_block_opportunities(
             &mut all_opportunities,
             &txs,
             block_num,
             DetectionPath::Replay,
+            block_detectors.facts(),
         );
         self.last_processed_block = block_num;
 
@@ -983,6 +1148,32 @@ impl BacktestRunner {
         let mut two_hop_detector = TwoHopArbDetector::new(block_num);
         let mut multi_hop_detector = MultiHopArbDetector::new(block_num);
         let mut backrun_detector = BackrunDetector::new(block_num);
+        let mut tag_facts = BlockTagFacts::default();
+        let epoch_pools: std::collections::HashSet<Address> = self
+            .tag_policy
+            .epoch_venue_pools
+            .iter()
+            .copied()
+            .filter(|p| self.pool_manager.get(p).is_some())
+            .collect();
+        let gmx_pools: std::collections::HashSet<Address> = self
+            .pool_manager
+            .pool_addresses()
+            .into_iter()
+            .filter(|addr| {
+                self.pool_manager.get(addr).is_some_and(|pool| {
+                    let info = pool.info();
+                    let mut tokens = vec![info.token0, info.token1];
+                    if let Some(underlying) = &info.underlying_tokens {
+                        tokens.extend(underlying.iter().copied());
+                    }
+                    self.tag_policy
+                        .gmx_market_tokens
+                        .iter()
+                        .any(|t| tokens.contains(t))
+                })
+            })
+            .collect();
         let mut dex_tx_count = 0usize;
         // Dirty pools touched by earlier transactions (incremental scanning)
         let mut dirty_pools: Option<std::collections::HashSet<Address>> = None;
@@ -1079,6 +1270,11 @@ impl BacktestRunner {
             // learn taxed tokens, then apply state updates
             self.pool_manager.learn_taxes_from_tx(&logs);
             self.pool_manager.update_from_logs(&logs);
+            let epoch_before = tag_facts.epoch_reward_tokens.len();
+            let gmx_before = tag_facts.gmx_signal_tx;
+            collect_tx_facts(&logs, i, &self.tag_policy, &mut tag_facts);
+            let epoch_signal = tag_facts.epoch_reward_tokens.len() > epoch_before;
+            let gmx_signal = tag_facts.gmx_signal_tx != gmx_before;
             let newly_dirty = self.pool_manager.take_dirty_pools();
 
             // Backrun post-image + differential (mirrors run_block D).
@@ -1112,6 +1308,45 @@ impl BacktestRunner {
                     .extend(newly_dirty);
             }
 
+            if epoch_signal || gmx_signal {
+                let mut venues = std::collections::HashSet::new();
+                if epoch_signal {
+                    venues.extend(epoch_pools.iter().copied());
+                }
+                if gmx_signal {
+                    venues.extend(gmx_pools.iter().copied());
+                }
+                if !venues.is_empty() {
+                    let scope = ScanScope::Dirty(&venues);
+                    let ctx = DetectCtx::new(
+                        &self.pool_manager,
+                        i,
+                        timestamp,
+                        base_fee_per_gas,
+                        self.gas_config,
+                        &scope,
+                    );
+                    let opps = two_hop_detector.detect(ctx);
+                    if self.sim_seeds_enabled {
+                        push_pending_seeds(
+                            &mut self.pending_seeds.borrow_mut(),
+                            &self.pool_manager,
+                            &opps,
+                        );
+                    }
+                    all_opportunities.extend(opps);
+                    let multi_opps = multi_hop_detector.detect(ctx);
+                    if self.sim_seeds_enabled {
+                        push_pending_seeds(
+                            &mut self.pending_seeds.borrow_mut(),
+                            &self.pool_manager,
+                            &multi_opps,
+                        );
+                    }
+                    all_opportunities.extend(multi_opps);
+                }
+            }
+
             if tx_status && tx_gas_used > 0 {
                 record_gas_observation(
                     &self.pool_manager,
@@ -1123,11 +1358,32 @@ impl BacktestRunner {
             }
         }
 
+        let savax_opps = crate::mev::detectors::savax::detect_block(
+            &self.pool_manager,
+            block_num,
+            total_tx_count.saturating_sub(1),
+            timestamp,
+            base_fee_per_gas,
+            self.gas_config,
+            &self.tag_policy,
+        );
+        if self.sim_seeds_enabled && !savax_opps.is_empty() {
+            let mut seeds = self.sim_seeds.borrow_mut();
+            let _ = record_seeds_for_block(
+                &mut seeds,
+                &self.pool_manager,
+                &savax_opps,
+                self.sim_max_candidates_per_block,
+            );
+        }
+        all_opportunities.extend(savax_opps);
+
         self.finalize_block_opportunities(
             &mut all_opportunities,
             &txs,
             block_num,
             DetectionPath::LogOnly,
+            &tag_facts,
         );
         self.last_processed_block = block_num;
 
@@ -1501,6 +1757,7 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                 scaling_factors: vec![],
                 bpt_index: None,
                 rate_providers: vec![],
+                rate_cache: vec![],
             }));
         }
         crate::dex_type::DexType::TraderJoeLB => {

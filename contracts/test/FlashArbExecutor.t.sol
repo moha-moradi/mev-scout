@@ -53,10 +53,10 @@ contract FlashArbExecutorTest {
     }
 
     function test_abi_version_and_selector() public view {
-        assert(exec.ABI_VERSION() == 2);
+        assert(exec.ABI_VERSION() == 3);
         bytes4 sel = bytes4(
             keccak256(
-                "execute((address,address,uint256,uint256,uint256,(address,address,address,uint8,uint24)[]))"
+                "execute((address,address,uint256,uint256,uint256,(address,address,address,address,uint8,uint24,uint256,bytes)[]))"
             )
         );
         assert(sel == FlashArbExecutor.execute.selector);
@@ -135,20 +135,8 @@ contract FlashArbExecutorTest {
     function test_repay_shortfall_reverts() public {
         FlashArbExecutor.Leg[] memory legs = new FlashArbExecutor.Leg[](2);
         // Sell WETH where it is cheap, buy it back where it is rich — output < repay.
-        legs[0] = FlashArbExecutor.Leg({
-            pool: address(cheap),
-            tokenIn: address(weth),
-            tokenOut: address(usdc),
-            kind: 0,
-            fee: 30
-        });
-        legs[1] = FlashArbExecutor.Leg({
-            pool: address(rich),
-            tokenIn: address(usdc),
-            tokenOut: address(weth),
-            kind: 0,
-            fee: 30
-        });
+        legs[0] = _v2Leg(address(cheap), address(weth), address(usdc), 30);
+        legs[1] = _v2Leg(address(rich), address(usdc), address(weth), 30);
         (bool ok,) = address(exec).call(abi.encodeCall(FlashArbExecutor.execute, (_plan(legs, 1 ether, 1))));
         assert(!ok);
         assert(searcher.balance == 0);
@@ -164,20 +152,8 @@ contract FlashArbExecutorTest {
         weth.mint(address(buy), 100 ether);
 
         FlashArbExecutor.Leg[] memory legs = new FlashArbExecutor.Leg[](2);
-        legs[0] = FlashArbExecutor.Leg({
-            pool: address(sell),
-            tokenIn: address(weth),
-            tokenOut: address(usdc),
-            kind: 1,
-            fee: 3000
-        });
-        legs[1] = FlashArbExecutor.Leg({
-            pool: address(buy),
-            tokenIn: address(usdc),
-            tokenOut: address(weth),
-            kind: 1,
-            fee: 3000
-        });
+        legs[0] = _v3Leg(address(sell), address(weth), address(usdc), 3000);
+        legs[1] = _v3Leg(address(buy), address(usdc), address(weth), 3000);
 
         uint256 before = searcher.balance;
         exec.execute(_plan(legs, 1 ether, 1));
@@ -193,6 +169,111 @@ contract FlashArbExecutorTest {
             )
         );
         assert(!ok);
+    }
+
+    /// Generic `(target, spender, calldata, minOut)` legs: two router calls
+    /// inside the Balancer flash loan, profit unwrapped to the withdrawer.
+    function test_generic_call_two_legs_repays() public {
+        MockCallTarget sell = new MockCallTarget(address(weth), address(usdc), 3000 ether);
+        MockCallTarget buy = new MockCallTarget(address(usdc), address(weth), 1 ether / 2000);
+        usdc.mint(address(sell), 1_000_000 ether);
+        weth.mint(address(buy), 100 ether);
+
+        FlashArbExecutor.Leg[] memory legs = new FlashArbExecutor.Leg[](2);
+        legs[0] = FlashArbExecutor.Leg({
+            target: address(sell),
+            tokenIn: address(weth),
+            tokenOut: address(usdc),
+            spender: address(sell),
+            kind: 2,
+            fee: 0,
+            minOut: 0,
+            data: abi.encodeCall(MockCallTarget.swapExact, (1 ether, 0))
+        });
+        legs[1] = FlashArbExecutor.Leg({
+            target: address(buy),
+            tokenIn: address(usdc),
+            tokenOut: address(weth),
+            spender: address(buy),
+            kind: 2,
+            fee: 0,
+            minOut: 0,
+            data: abi.encodeCall(MockCallTarget.swapExact, (3000 ether, 0))
+        });
+
+        uint256 before = searcher.balance;
+        exec.execute(_plan(legs, 1 ether, 1));
+        assert(searcher.balance > before);
+        assert(weth.balanceOf(address(exec)) == 0);
+    }
+
+    function test_generic_target_allowlist() public {
+        MockCallTarget sell = new MockCallTarget(address(weth), address(usdc), 3000 ether);
+        MockCallTarget buy = new MockCallTarget(address(usdc), address(weth), 1 ether / 2000);
+        usdc.mint(address(sell), 1_000_000 ether);
+        weth.mint(address(buy), 100 ether);
+        FlashArbExecutor.Leg[] memory legs = new FlashArbExecutor.Leg[](2);
+        legs[0] = FlashArbExecutor.Leg({
+            target: address(sell),
+            tokenIn: address(weth),
+            tokenOut: address(usdc),
+            spender: address(sell),
+            kind: 2,
+            fee: 0,
+            minOut: 0,
+            data: abi.encodeCall(MockCallTarget.swapExact, (1 ether, 0))
+        });
+        legs[1] = FlashArbExecutor.Leg({
+            target: address(buy),
+            tokenIn: address(usdc),
+            tokenOut: address(weth),
+            spender: address(buy),
+            kind: 2,
+            fee: 0,
+            minOut: 0,
+            data: abi.encodeCall(MockCallTarget.swapExact, (3000 ether, 0))
+        });
+        vm.prank(operator);
+        exec.setRestrictTargets(true);
+        vm.prank(operator);
+        (bool ok,) = address(exec).call(abi.encodeCall(FlashArbExecutor.execute, (_plan(legs, 1 ether, 0))));
+        assert(!ok);
+
+        vm.prank(operator);
+        exec.setTargetAllowed(address(sell), true);
+        vm.prank(operator);
+        exec.setTargetAllowed(address(buy), true);
+        vm.prank(operator);
+        (ok,) = address(exec).call(abi.encodeCall(FlashArbExecutor.execute, (_plan(legs, 1 ether, 0))));
+        assert(ok);
+    }
+
+    function test_wrap_unwrap_round_trip() public {
+        weth.setWithdrawer();
+        FlashArbExecutor.Leg[] memory legs = new FlashArbExecutor.Leg[](2);
+        legs[0] = FlashArbExecutor.Leg({
+            target: address(0),
+            tokenIn: address(weth),
+            tokenOut: address(0),
+            spender: address(0),
+            kind: 4,
+            fee: 0,
+            minOut: 0,
+            data: ""
+        });
+        legs[1] = FlashArbExecutor.Leg({
+            target: address(0),
+            tokenIn: address(0),
+            tokenOut: address(weth),
+            spender: address(0),
+            kind: 3,
+            fee: 0,
+            minOut: 0,
+            data: ""
+        });
+        exec.execute(_plan(legs, 1 ether, 0));
+        assert(weth.balanceOf(address(exec)) == 0);
+        assert(address(exec).balance == 0);
     }
 
     /// Optional. Set `FORK_RPC_URL` (and optionally `FORK_BLOCK`) to run a
@@ -217,8 +298,8 @@ contract FlashArbExecutorTest {
 
         uint256 before = searcher.balance;
         FlashArbExecutor.Leg[] memory legs = new FlashArbExecutor.Leg[](2);
-        legs[0] = FlashArbExecutor.Leg({pool: buy, tokenIn: forkWeth, tokenOut: forkUsdc, kind: 0, fee: 30});
-        legs[1] = FlashArbExecutor.Leg({pool: sell, tokenIn: forkUsdc, tokenOut: forkWeth, kind: 0, fee: 30});
+        legs[0] = _v2Leg(buy, forkWeth, forkUsdc, 30);
+        legs[1] = _v2Leg(sell, forkUsdc, forkWeth, 30);
         forkExec.execute(
             FlashArbExecutor.Plan({
                 vault: forkVault,
@@ -235,19 +316,41 @@ contract FlashArbExecutorTest {
     function _cycle() internal view returns (FlashArbExecutor.Leg[] memory legs) {
         legs = new FlashArbExecutor.Leg[](2);
         // Sell WETH on the richer pool, buy it back on the cheaper one.
-        legs[0] = FlashArbExecutor.Leg({
-            pool: address(rich),
-            tokenIn: address(weth),
-            tokenOut: address(usdc),
+        legs[0] = _v2Leg(address(rich), address(weth), address(usdc), 30);
+        legs[1] = _v2Leg(address(cheap), address(usdc), address(weth), 30);
+    }
+
+    function _v2Leg(address pool, address tokenIn, address tokenOut, uint24 fee)
+        internal
+        pure
+        returns (FlashArbExecutor.Leg memory)
+    {
+        return FlashArbExecutor.Leg({
+            target: pool,
+            tokenIn: tokenIn,
+            tokenOut: tokenOut,
+            spender: address(0),
             kind: 0,
-            fee: 30
+            fee: fee,
+            minOut: 0,
+            data: ""
         });
-        legs[1] = FlashArbExecutor.Leg({
-            pool: address(cheap),
-            tokenIn: address(usdc),
-            tokenOut: address(weth),
-            kind: 0,
-            fee: 30
+    }
+
+    function _v3Leg(address pool, address tokenIn, address tokenOut, uint24 fee)
+        internal
+        pure
+        returns (FlashArbExecutor.Leg memory)
+    {
+        return FlashArbExecutor.Leg({
+            target: pool,
+            tokenIn: tokenIn,
+            tokenOut: tokenOut,
+            spender: address(0),
+            kind: 1,
+            fee: fee,
+            minOut: 0,
+            data: ""
         });
     }
 
@@ -297,6 +400,7 @@ contract FlashArbExecutorTest {
 
 contract MockERC20 {
     mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
     bool public withdrawEnabled;
     address public sink;
 
@@ -314,11 +418,28 @@ contract MockERC20 {
         return true;
     }
 
+    function approve(address spender, uint256 amount) external returns (bool) {
+        allowance[msg.sender][spender] = amount;
+        return true;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        require(allowance[from][msg.sender] >= amount, "allowance");
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+        return true;
+    }
+
     function withdraw(uint256 amount) external {
         require(withdrawEnabled, "not weth");
         balanceOf[msg.sender] -= amount;
         (bool ok,) = msg.sender.call{value: amount}("");
         require(ok, "withdraw");
+    }
+
+    function deposit() external payable {
+        balanceOf[msg.sender] += msg.value;
     }
 
     receive() external payable {}
@@ -414,5 +535,25 @@ contract MockVault {
         MockERC20(payable(tokens[0])).transfer(recipient, amounts[0]);
         uint256[] memory fees = new uint256[](amounts.length);
         FlashArbExecutor(payable(recipient)).receiveFlashLoan(tokens, amounts, fees, userData);
+    }
+}
+
+/// Generic-call target: pulls tokenIn via transferFrom, pays a fixed rate.
+contract MockCallTarget {
+    address public tokenIn;
+    address public tokenOut;
+    uint256 public outPerIn;
+
+    constructor(address tokenIn_, address tokenOut_, uint256 outPerIn_) {
+        tokenIn = tokenIn_;
+        tokenOut = tokenOut_;
+        outPerIn = outPerIn_;
+    }
+
+    function swapExact(uint256 amountIn, uint256 minOut) external {
+        MockERC20(payable(tokenIn)).transferFrom(msg.sender, address(this), amountIn);
+        uint256 out = amountIn * outPerIn / 1e18;
+        require(out >= minOut, "minOut");
+        MockERC20(payable(tokenOut)).transfer(msg.sender, out);
     }
 }

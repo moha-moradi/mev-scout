@@ -41,6 +41,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v14_jit_journal,
     migrate_v15_tx_evidence,
     migrate_v16_action_kinds,
+    migrate_v17_live_tags,
 ];
 
 /// Current schema head (`PRAGMA user_version` after a full migrate).
@@ -450,6 +451,17 @@ fn migrate_v16_action_kinds(conn: &Connection) -> anyhow::Result<()> {
         COMMIT;
         ",
     )?;
+    Ok(())
+}
+
+/// Live attribution columns: sub-tags, route token order, sAVAX virtual leg,
+/// and structured evidence. Additive and nullable; old rows read as untagged.
+fn migrate_v17_live_tags(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_column(conn, "opportunities", "tags_json", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "opportunities", "details_json", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "opportunities", "route_tokens_json", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "opportunities", "savax_route_json", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "paper_fills", "tags_json", "TEXT")?;
     Ok(())
 }
 
@@ -987,6 +999,134 @@ mod tests {
             .connection()
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap()
+    }
+
+    #[test]
+    fn v17_adds_live_tag_columns() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let columns = |table: &str| -> Vec<String> {
+            let sql = format!("PRAGMA table_info({table})");
+            let mut stmt = store.connection().prepare(&sql).unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(1))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        let opp = columns("opportunities");
+        for col in [
+            "tags_json",
+            "details_json",
+            "route_tokens_json",
+            "savax_route_json",
+        ] {
+            assert!(opp.iter().any(|c| c == col), "missing opportunities.{col}");
+        }
+        store.ensure_paper_tables().unwrap();
+        let fills = columns("paper_fills");
+        assert!(fills.iter().any(|c| c == "tags_json"));
+    }
+
+    #[test]
+    fn v17_round_trips_tags_and_upgrades_a_v16_file() {
+        use crate::explorer::store::OpportunityInput;
+        use alloy::primitives::{address, Address, U256};
+
+        let path = legacy_db_path("v17-roundtrip");
+        remove_db(&path);
+        let pool = address!("0x00000000000000000000000000000000000000aa");
+        {
+            let store = ExplorerStore::open(&path).unwrap();
+            store
+                .insert_opportunities(&[OpportunityInput {
+                    run_id: "legacy",
+                    chain: "avalanche",
+                    block_number: 1,
+                    tx_index: Some(0),
+                    strategy: "multi_hop_arb",
+                    pool_a: Some(pool),
+                    pool_b: None,
+                    token_in: Some(Address::ZERO),
+                    token_out: Some(Address::ZERO),
+                    input_amount: Some(U256::ZERO),
+                    expected_profit: Some(U256::ZERO),
+                    gas_cost_wei: Some(U256::ZERO),
+                    path: None,
+                    timestamp: Some(1),
+                    mempool_only: false,
+                    confidence: None,
+                    sender: None,
+                    tx_hash: None,
+                    detection_path: None,
+                    canonical_id: Some("legacy-row"),
+                    tags_json: None,
+                    details_json: None,
+                    route_tokens_json: None,
+                    savax_route_json: None,
+                }])
+                .unwrap();
+
+            // Simulate a file written before v17: drop the four columns and
+            // rewind the version head.
+            store
+                .connection()
+                .execute_batch(
+                    "ALTER TABLE opportunities DROP COLUMN tags_json;
+                     ALTER TABLE opportunities DROP COLUMN details_json;
+                     ALTER TABLE opportunities DROP COLUMN route_tokens_json;
+                     ALTER TABLE opportunities DROP COLUMN savax_route_json;
+                     PRAGMA user_version = 16;",
+                )
+                .unwrap();
+        }
+
+        let store = ExplorerStore::open(&path).unwrap();
+        assert_eq!(store.user_version().unwrap(), 17);
+        let legacy = store.opportunities_by_run("legacy").unwrap();
+        assert_eq!(legacy.len(), 1);
+        assert!(legacy[0].tags.is_empty(), "old rows read with empty tags");
+
+        store
+            .insert_opportunities(&[OpportunityInput {
+                run_id: "tagged",
+                chain: "avalanche",
+                block_number: 2,
+                tx_index: Some(1),
+                strategy: "multi_hop_arb",
+                pool_a: Some(pool),
+                pool_b: None,
+                token_in: Some(Address::ZERO),
+                token_out: Some(Address::ZERO),
+                input_amount: Some(U256::ZERO),
+                expected_profit: Some(U256::ZERO),
+                gas_cost_wei: Some(U256::ZERO),
+                path: None,
+                timestamp: Some(2),
+                mempool_only: false,
+                confidence: None,
+                sender: None,
+                tx_hash: None,
+                detection_path: None,
+                canonical_id: Some("tagged-row"),
+                tags_json: Some(r#"["flash_arb","long_tail"]"#),
+                details_json: Some(r#"{"fot_tax_bps":300}"#),
+                route_tokens_json: Some(r#"["0x0000000000000000000000000000000000000001","0x0000000000000000000000000000000000000002"]"#),
+                savax_route_json: None,
+            }])
+            .unwrap();
+        let tagged = store.opportunities_by_run("tagged").unwrap();
+        assert_eq!(tagged.len(), 1);
+        assert_eq!(tagged[0].tags, vec!["flash_arb", "long_tail"]);
+        assert_eq!(
+            tagged[0]
+                .details
+                .as_ref()
+                .and_then(|d| d.get("fot_tax_bps"))
+                .and_then(|v| v.as_u64()),
+            Some(300)
+        );
+        assert_eq!(tagged[0].route_tokens.as_ref().map(Vec::len), Some(2));
+        drop(store);
+        remove_db(&path);
     }
 
     #[test]

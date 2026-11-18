@@ -61,6 +61,10 @@ pub struct DexMetrics {
 pub struct AggregationResult {
     pub summary: SummaryMetrics,
     pub by_strategy: std::collections::HashMap<String, StrategyMetrics>,
+    /// Per-tag rollup. A row with N tags contributes to each bucket, so tag
+    /// totals overlap by design and do not sum to `summary`.
+    #[serde(default)]
+    pub by_tag: std::collections::HashMap<String, StrategyMetrics>,
     pub by_dex: Vec<DexMetrics>,
 }
 
@@ -82,6 +86,62 @@ fn ui_strategy_name(strategy: Strategy) -> &'static str {
         Strategy::TwoHopArb | Strategy::MultiHopArb => "arb",
         Strategy::Jit => "jit",
         Strategy::Backrun => "backrun",
+    }
+}
+
+/// Shared rollup for a strategy or tag bucket.
+fn metrics_for(
+    name: &str,
+    opps: &[&MevOpportunity],
+    token_prices: &std::collections::HashMap<Address, f64>,
+) -> StrategyMetrics {
+    let count = opps.len();
+    let mut gross = 0.0_f64;
+    let mut gas = 0.0_f64;
+    let mut profitable = 0_usize;
+    let mut best_opp = 0.0_f64;
+    let mut gross_wei = 0_u128;
+    let mut gas_wei = 0_u128;
+    let mut usd = 0.0_f64;
+    for opp in opps {
+        let pw = opp.expected_profit.to::<u128>();
+        let gw = opp.gas_cost_wei;
+        let pe = wei_to_eth(pw);
+        let ge = wei_to_eth(gw);
+        gross += pe;
+        gas += ge;
+        gross_wei += pw;
+        gas_wei += gw;
+        if pe - ge > 0.0 {
+            profitable += 1;
+        }
+        if pe > best_opp {
+            best_opp = pe;
+        }
+        let token_price = token_prices
+            .get(&opp.token_out)
+            .or_else(|| token_prices.get(&Address::ZERO))
+            .copied()
+            .unwrap_or(0.0);
+        usd += (pe - ge) * token_price;
+    }
+    let net = gross - gas;
+    let net_wei = (gross_wei as i128) - (gas_wei as i128);
+    let roi = if gas > 0.0 { (net / gas) * 100.0 } else { 0.0 };
+    StrategyMetrics {
+        strategy: name.to_string(),
+        count,
+        profitable,
+        gross_revenue: gross,
+        gas_fees: gas,
+        net_profit: net,
+        net_profit_usd: usd,
+        roi,
+        avg_per_opp: if count > 0 { gross / count as f64 } else { 0.0 },
+        best_opp,
+        gross_revenue_wei: gross_wei,
+        net_profit_wei: net_wei,
+        total_gas_cost_wei: gas_wei,
     }
 }
 
@@ -124,6 +184,7 @@ pub fn aggregate_with_prices(
                 total_gas_cost_wei: 0,
             },
             by_strategy: std::collections::HashMap::new(),
+            by_tag: std::collections::HashMap::new(),
             by_dex: dexes
                 .iter()
                 .map(|d| DexMetrics {
@@ -152,6 +213,8 @@ pub fn aggregate_with_prices(
     }
 
     let mut by_strategy: std::collections::HashMap<String, Vec<&MevOpportunity>> =
+        std::collections::HashMap::new();
+    let mut by_tag: std::collections::HashMap<String, Vec<&MevOpportunity>> =
         std::collections::HashMap::new();
     let mut by_dex: std::collections::HashMap<String, Vec<&MevOpportunity>> =
         std::collections::HashMap::new();
@@ -205,6 +268,9 @@ pub fn aggregate_with_prices(
 
         let sname = ui_strategy_name(opp.strategy).to_string();
         by_strategy.entry(sname).or_default().push(opp);
+        for tag in &opp.tags {
+            by_tag.entry(tag.clone()).or_default().push(opp);
+        }
 
         let mut seen = std::collections::HashSet::new();
         if let Some(&dex_name) = pool_to_dex.get(&opp.pool_a) {
@@ -222,81 +288,19 @@ pub fn aggregate_with_prices(
     let net_profit = gross_revenue - total_gas;
     let summary_net_wei = (summary_gross_wei as i128) - (summary_gas_wei as i128);
 
-    let mut best_strategy: Option<String> = None;
-    let mut best_strat_net = 0.0_f64;
-    let mut strategy_metrics = std::collections::HashMap::new();
-
-    for (sname, opps) in &by_strategy {
-        let count = opps.len();
-        let mut strat_gross = 0.0_f64;
-        let mut strat_gas = 0.0_f64;
-        let mut strat_profitable = 0_usize;
-        let mut best_opp = 0.0_f64;
-        let mut gross_wei = 0_u128;
-        let mut gas_wei = 0_u128;
-
-        let mut strat_usd = 0.0_f64;
-        for opp in opps {
-            let pw = opp.expected_profit.to::<u128>();
-            let gw = opp.gas_cost_wei;
-            let pe = wei_to_eth(pw);
-            let ge = wei_to_eth(gw);
-            strat_gross += pe;
-            strat_gas += ge;
-            gross_wei += pw;
-            gas_wei += gw;
-            if pe - ge > 0.0 {
-                strat_profitable += 1;
-            }
-            if pe > best_opp {
-                best_opp = pe;
-            }
-            // Per-token USD: use token_out price if available, else native fallback
-            let token_price = token_prices
-                .get(&opp.token_out)
-                .or_else(|| token_prices.get(&Address::ZERO))
-                .copied()
-                .unwrap_or(0.0);
-            strat_usd += (pe - ge) * token_price;
-        }
-
-        let strat_net = strat_gross - strat_gas;
-        let net_wei = (gross_wei as i128) - (gas_wei as i128);
-        let roi = if strat_gas > 0.0 {
-            (strat_net / strat_gas) * 100.0
-        } else {
-            0.0
-        };
-        let avg = if count > 0 {
-            strat_gross / count as f64
-        } else {
-            0.0
-        };
-
-        if strat_net > best_strat_net {
-            best_strat_net = strat_net;
-            best_strategy = Some(sname.clone());
-        }
-
-        strategy_metrics.insert(
-            sname.clone(),
-            StrategyMetrics {
-                strategy: sname.clone(),
-                count,
-                profitable: strat_profitable,
-                gross_revenue: strat_gross,
-                gas_fees: strat_gas,
-                net_profit: strat_net,
-                net_profit_usd: strat_usd,
-                roi,
-                avg_per_opp: avg,
-                best_opp,
-                gross_revenue_wei: gross_wei,
-                net_profit_wei: net_wei,
-                total_gas_cost_wei: gas_wei,
-            },
-        );
-    }
+    let strategy_metrics: std::collections::HashMap<String, StrategyMetrics> = by_strategy
+        .iter()
+        .map(|(name, opps)| (name.clone(), metrics_for(name, opps, token_prices)))
+        .collect();
+    let tag_metrics: std::collections::HashMap<String, StrategyMetrics> = by_tag
+        .iter()
+        .map(|(name, opps)| (name.clone(), metrics_for(name, opps, token_prices)))
+        .collect();
+    let best_strategy = strategy_metrics
+        .values()
+        .filter(|m| m.net_profit > 0.0)
+        .max_by(|a, b| a.net_profit.total_cmp(&b.net_profit))
+        .map(|m| m.strategy.clone());
 
     let mut dex_metrics: Vec<DexMetrics> = dexes
         .iter()
@@ -362,6 +366,7 @@ pub fn aggregate_with_prices(
             total_gas_cost_wei: summary_gas_wei,
         },
         by_strategy: strategy_metrics,
+        by_tag: tag_metrics,
         by_dex: dex_metrics,
     }
 }
@@ -418,6 +423,7 @@ fn fill_as_opportunity(fill: &PaperFill) -> Option<MevOpportunity> {
     opp.expected_profit = alloy::primitives::U256::from(fill.gross_wei);
     opp.gas_cost_wei = fill.gas_wei;
     opp.mempool_only = fill.mempool_only;
+    opp.tags = fill.tags.clone();
     opp.canonical_id = Some(fill.canonical_id.clone().unwrap_or_else(|| {
         format!(
             "paper_fill|{}|{}|{}|{:?}|{}",
@@ -513,6 +519,44 @@ mod tests {
         );
         let arb = &agg.by_strategy["arb"];
         assert_eq!(arb.count, 2);
+    }
+
+    #[test]
+    fn aggregate_rolls_up_overlapping_tag_buckets() {
+        let pool_a = address!("aaaa000000000000000000000000000000000001");
+        let pool_b = address!("bbbb000000000000000000000000000000000002");
+        let mut first = opp(TestOppParams {
+            block: 10,
+            tx: 0,
+            strategy: Strategy::TwoHopArb,
+            pool_a,
+            pool_b,
+            profit_wei: ETH,
+            gas_wei: ETH / 4,
+            cid: Some("c1"),
+        });
+        first.add_tag("flash_arb");
+        first.add_tag("long_tail");
+        let mut second = opp(TestOppParams {
+            block: 11,
+            tx: 0,
+            strategy: Strategy::TwoHopArb,
+            pool_a,
+            pool_b,
+            profit_wei: ETH,
+            gas_wei: ETH / 4,
+            cid: Some("c2"),
+        });
+        second.add_tag("flash_arb");
+
+        let agg = aggregate(&[first, second], &[], 1.0);
+        assert_eq!(agg.by_tag["flash_arb"].count, 2);
+        assert_eq!(agg.by_tag["long_tail"].count, 1);
+        assert_eq!(
+            agg.by_tag["flash_arb"].count + agg.by_tag["long_tail"].count,
+            3,
+            "tag buckets overlap by design"
+        );
     }
 
     #[test]
@@ -692,6 +736,7 @@ mod tests {
             exec_gas_used: None,
             exec_net_wei: None,
             tx_hash: None,
+            tags: Vec::new(),
         }
     }
 

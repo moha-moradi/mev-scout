@@ -146,7 +146,10 @@ fn print_discovered_pools(
                 println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
             }
             DexType::Unknown => {
-                println!("  {dex}  {}  {}/{}  family=unknown{}", p.address, t0, t1, tvl_note);
+                println!(
+                    "  {dex}  {}  {}/{}  family=unknown{}",
+                    p.address, t0, t1, tvl_note
+                );
             }
         }
     }

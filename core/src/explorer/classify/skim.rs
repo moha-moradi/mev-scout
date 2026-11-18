@@ -304,7 +304,10 @@ mod tests {
     const TOKB: Address = address!("70000000000000000000000000000000000000b1");
 
     fn has_skim(input: &BlockInput) -> bool {
-        classify_block(input).events.iter().any(|e| e.kind == MevKind::Skim)
+        classify_block(input)
+            .events
+            .iter()
+            .any(|e| e.kind == MevKind::Skim)
     }
 
     fn has_reject(out: &crate::explorer::classify::ClassifyOutput, detail: &str) -> bool {
@@ -368,7 +371,11 @@ mod tests {
         let input = block_with_v2(vec![t], &[POOL_A]);
         let out = classify_block(&input);
         assert!(!has_skim(&input));
-        assert!(has_reject(&out, "decoded_swap_on_pool"), "{:?}", out.rejects);
+        assert!(
+            has_reject(&out, "decoded_swap_on_pool"),
+            "{:?}",
+            out.rejects
+        );
     }
 
     #[test]
@@ -548,5 +555,120 @@ mod tests {
         let ev = classify_kind(&block_with_v2(vec![t], &[POOL_A]), MevKind::Skim);
         assert_eq!(ev.contract, Some(EXEC));
         assert_eq!(ev.profit_amount, Some(U256::from(42)));
+    }
+
+    /// 3.1.2: counter-evidence is transaction-local. A swap (and its pool
+    /// log) in an earlier tx must not suppress an independent skim later in
+    /// the same block.
+    #[test]
+    fn swap_in_an_earlier_tx_does_not_suppress_a_later_independent_skim() {
+        let mut swap_tx = tx(
+            0,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, VICTIM, 200),
+            ],
+        );
+        swap_tx.log_emitters = vec![POOL_A];
+        let skim_tx = tx(
+            1,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 42)],
+        );
+
+        let input = block_with_v2(vec![swap_tx, skim_tx], &[POOL_A]);
+        let out = classify_block(&input);
+        let skims: Vec<_> = out
+            .events
+            .iter()
+            .filter(|e| e.kind == MevKind::Skim)
+            .collect();
+        assert_eq!(skims.len(), 1, "independent skim must survive: {out:?}");
+        assert_eq!(skims[0].tx_index, 1);
+        assert_eq!(skims[0].profit_amount, Some(U256::from(42)));
+        // The swap tx's own routine evidence is recorded, but nothing is
+        // anchored on the skim tx.
+        assert!(has_reject(&out, "pool_emitted_logs"), "{:?}", out.rejects);
+        assert!(
+            !out.rejects.iter().any(|r| r.tx_index == Some(1)),
+            "TX 0 evidence must not reject TX 1: {:?}",
+            out.rejects
+        );
+    }
+
+    /// 3.1.2: a pool log emitted by an earlier, unrelated tx does not reject a
+    /// later independent skim.
+    #[test]
+    fn pool_log_in_an_earlier_tx_does_not_reject_a_later_independent_skim() {
+        let mut log_tx = tx(0, VICTIM, true, vec![], vec![]);
+        log_tx.log_emitters = vec![POOL_A];
+        let skim_tx = tx(
+            1,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 42)],
+        );
+
+        let out = classify_block(&block_with_v2(vec![log_tx, skim_tx], &[POOL_A]));
+        let skims: Vec<_> = out
+            .events
+            .iter()
+            .filter(|e| e.kind == MevKind::Skim)
+            .collect();
+        assert_eq!(skims.len(), 1, "independent skim must survive: {out:?}");
+        assert_eq!(skims[0].tx_index, 1);
+        assert!(
+            !out.rejects.iter().any(|r| r.tx_index == Some(1)),
+            "TX 0 log must not reject TX 1: {:?}",
+            out.rejects
+        );
+    }
+
+    /// 3.1.2: isolation must not weaken the gate — the later tx's *own*
+    /// counter-evidence still rejects it.
+    #[test]
+    fn later_skim_is_still_rejected_by_its_own_counter_evidence() {
+        let swap_tx = tx(
+            0,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, VICTIM, 200),
+            ],
+        );
+        // The later tx both receives and pays: its own swap-like evidence.
+        let swap_like_tx = tx(
+            1,
+            ATK,
+            true,
+            vec![],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 1000),
+                transfer(1, USDC, POOL_A, ATK, 42),
+            ],
+        );
+
+        let out = classify_block(&block_with_v2(vec![swap_tx, swap_like_tx], &[POOL_A]));
+        assert!(
+            !out.events.iter().any(|e| e.kind == MevKind::Skim),
+            "own inbound evidence must reject: {out:?}"
+        );
+        assert!(
+            out.rejects.iter().any(|r| {
+                r.tx_index == Some(1)
+                    && r.reject_reason == RejectReason::SkimLooksLikeSwap.as_str()
+                    && r.detail.as_deref() == Some("pool_also_receives")
+            }),
+            "{:?}",
+            out.rejects
+        );
     }
 }

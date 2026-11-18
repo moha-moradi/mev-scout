@@ -9,11 +9,12 @@ mod calldata;
 mod plan;
 mod revm_backend;
 mod session;
+mod venues;
 
 pub use anvil::{anvil_args, AnvilNode};
 pub use artifacts::{creation_bytecode, deployed_bytecode, ABI_VERSION};
 pub use calldata::{encode_execute, EXECUTE_SIG};
-pub use plan::{plan_from_opportunity, ExecLeg, ExecPlan, PlanError};
+pub use plan::{plan_from_opportunity, ExecLeg, ExecPlan, PlanError, VenueRouters};
 pub use session::{execute_ledger, ExecContext};
 
 use std::str::FromStr;

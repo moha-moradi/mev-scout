@@ -199,6 +199,10 @@ pub struct OpportunityInput<'a> {
     pub tx_hash: Option<B256>,
     pub detection_path: Option<&'a str>,
     pub canonical_id: Option<&'a str>,
+    pub tags_json: Option<&'a str>,
+    pub details_json: Option<&'a str>,
+    pub route_tokens_json: Option<&'a str>,
+    pub savax_route_json: Option<&'a str>,
 }
 
 /// One cost · profit · volume row for the revenue report (per kind, per day,
@@ -700,6 +704,7 @@ mod tests {
         let mut back_evt = sample_event(120);
         back_evt.ts = 1_700_000_101;
         back_evt.kind = MevKind::Skim;
+        back_evt.details["values"] = serde_json::json!({"evidence_tier": "verified"});
         let mut arb_evt = sample_event(121);
         arb_evt.ts = 1_700_000_200;
         arb_evt.kind = MevKind::ArbAtomic;
@@ -785,6 +790,9 @@ mod tests {
         back.ts = day_b;
         back.tx_index = 4;
         back.kind = MevKind::Skim;
+        // Classify always demotes skim to Inferred before persist.
+        back.confidence = Confidence::Inferred;
+        back.details["values"] = serde_json::json!({"evidence_tier": "verified"});
         let mut swp_a = swap_leg(3, 0, usdc, 5_000_000);
         swp_a.pool = arb.pools[0];
         let mut swp_b = swap_leg(4, 0, usdc, 10_000_000);
@@ -818,11 +826,15 @@ mod tests {
             "volume {}",
             ov.volume_usd
         );
-        assert!((ov.gross_usd - 2.0).abs() < 1e-6, "gross {}", ov.gross_usd);
+        // 3.1.1: the skim keeps its row and observed amount, but its
+        // candidate value is not realized profit, so only the arb is priced.
+        assert!((ov.gross_usd - 1.0).abs() < 1e-6, "gross {}", ov.gross_usd);
         assert!(ov.net_usd < ov.gross_usd, "net subtracts gas");
         assert!(ov.gas_usd > 0.0);
         assert_eq!(ov.flash_fee_usd, 0.0);
-        assert_eq!(ov.quality.ops_priced, 2);
+        assert_eq!(ov.quality.ops_priced, 1);
+        assert_eq!(ov.quality.ops_unpriced, 1);
+        assert_eq!(ov.highest_single_usd, ov.gross_usd);
 
         let kinds = store.report_by_kind(0, None, None).unwrap();
         assert_eq!(kinds.len(), 2);
@@ -834,7 +846,11 @@ mod tests {
 
         let top = store.top_ops(0, 5, None, None).unwrap();
         assert_eq!(top.len(), 2);
-        assert!(top[0].net_profit_usd.unwrap() >= top[1].net_profit_usd.unwrap());
+        assert_eq!(top[0].kind, "arb_atomic");
+        assert!(top[0].net_profit_usd.unwrap() > 0.0);
+        // The skim row remains visible with its observed amount but no net.
+        assert_eq!(top[1].kind, "skim");
+        assert!(top[1].net_profit_usd.is_none());
 
         assert_eq!(store.blocks_in_window(0).unwrap(), 2);
         assert_eq!(store.blocks_in_window(day_b).unwrap(), 1);
@@ -844,8 +860,75 @@ mod tests {
             .unwrap();
         assert_eq!(ov_k.ops, 1);
         assert_eq!(
+            ov_k.gross_usd, 0.0,
+            "candidate value is not realized profit"
+        );
+        assert_eq!(ov_k.net_usd, 0.0);
+        assert_eq!(ov_k.quality.ops_unpriced, 1);
+        assert_eq!(ov_k.quality.ops_inferred, 1);
+        assert_eq!(
             store
                 .report_by_kind(0, Some(MevKind::Skim), None)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn report_announces_only_verified_skims() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let mut verified = sample_event(600);
+        verified.kind = MevKind::Skim;
+        verified.confidence = Confidence::Inferred;
+        verified.tx_index = 1;
+        verified.details["values"] = serde_json::json!({"evidence_tier": "verified"});
+        let mut candidate = sample_event(601);
+        candidate.kind = MevKind::Skim;
+        candidate.confidence = Confidence::Inferred;
+        candidate.tx_index = 2;
+        candidate.details["values"] = serde_json::json!({"evidence_tier": "candidate"});
+        let mut rejected = sample_event(602);
+        rejected.kind = MevKind::Skim;
+        rejected.confidence = Confidence::Inferred;
+        rejected.tx_index = 3;
+        rejected.details["values"] = serde_json::json!({"evidence_tier": "rejected"});
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 600,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaae"
+                ),
+                ts: 1_700_000_600,
+                tx_count: 5,
+                swaps: &[],
+                events: &[verified.clone(), candidate.clone(), rejected.clone()],
+                token_prices: &std::collections::HashMap::new(),
+            },
+        );
+
+        let ov = store.report_window_overview(0, None, None).unwrap();
+        assert_eq!(ov.ops, 1, "only the verified skim is announced");
+        let kinds = store.report_by_kind(0, None, None).unwrap();
+        let skim = kinds.iter().find(|r| r.label == "skim").unwrap();
+        assert_eq!(skim.ops, 1);
+        let top = store.top_ops(0, 5, Some(MevKind::Skim), None).unwrap();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].eoa, format!("{:#x}", verified.searcher));
+        assert_eq!(store.op_count_since(0).unwrap(), 1);
+
+        // Candidate/rejected rows remain queryable for audit.
+        assert_eq!(
+            store
+                .ops_for_tx(&format!("{:#x}", candidate.tx_hash))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .ops_for_tx(&format!("{:#x}", rejected.tx_hash))
                 .unwrap()
                 .len(),
             1
@@ -1466,6 +1549,10 @@ mod tests {
             tx_hash: None,
             detection_path: None,
             canonical_id: None,
+            tags_json: None,
+            details_json: None,
+            route_tokens_json: None,
+            savax_route_json: None,
         };
         let err = store.insert_opportunities(&[row(1), row(2)]).unwrap_err();
         assert!(

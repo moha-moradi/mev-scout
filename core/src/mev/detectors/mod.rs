@@ -4,10 +4,15 @@ pub(crate) mod ctx;
 pub mod jit;
 pub(crate) mod mempool;
 pub mod multi_hop;
+pub mod savax;
+pub mod tagging;
 pub mod two_hop;
 
 pub use crate::types::DetectionPath;
 pub use ctx::DetectCtx;
+pub use tagging::{
+    collect_tx_facts, stamp_route_tags, synth_route_swaps, ArbTagPolicy, BlockTagFacts,
+};
 
 /// Detection-path tag for opportunities found by replay/backtest.
 pub const REPLAY_PATH: &str = DetectionPath::Replay.as_str();

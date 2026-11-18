@@ -270,6 +270,7 @@ impl LedgerPolicy {
                     exec_gas_used: None,
                     exec_net_wei: None,
                     tx_hash: None,
+                    tags: opp.tags.clone(),
                 });
                 gross_total = gross_total.saturating_add(gross);
                 gas_total = gas_total.saturating_add(gas);
@@ -319,6 +320,7 @@ impl LedgerPolicy {
         opportunities: &[MevOpportunity],
         seeds: &SimSeeds,
         sim: &SimPolicy,
+        pm: Option<&crate::pool::state::PoolManager>,
     ) -> LedgerResult {
         let max_fills = self.max_fills_per_block.clamp(1, HARD_MAX_FILLS_PER_BLOCK);
         let mut wallet = self.starting_gas_wei;
@@ -410,7 +412,7 @@ impl LedgerPolicy {
                     continue;
                 }
 
-                let outcome = match simulate_candidate(opp, seeds, &mut overlay, &overlay_tx, sim) {
+                let outcome = match simulate_candidate(opp, seeds, &mut overlay, &overlay_tx, sim, pm) {
                     Ok(o) => o,
                     Err(fail) => {
                         skips.push(PaperSkip {
@@ -466,6 +468,7 @@ impl LedgerPolicy {
                     exec_gas_used: None,
                     exec_net_wei: None,
                     tx_hash: None,
+                    tags: opp.tags.clone(),
                 });
                 gross_total = gross_total.saturating_add(gross);
                 gas_total = gas_total.saturating_add(gas);
@@ -718,6 +721,7 @@ impl LedgerPolicy {
                     exec_gas_used: Some(attempt.gas_used),
                     exec_net_wei: Some(net),
                     tx_hash: attempt.tx_hash,
+                    tags: opp.tags.clone(),
                 });
                 gross_total = gross_total.saturating_add(gross);
                 gas_total = gas_total.saturating_add(gas);
@@ -962,7 +966,7 @@ mod tests {
             fee_bps: 0,
             max_candidates_per_block: 32,
         };
-        let r = policy.apply_simulated(&[o], &SimSeeds::new(), &sim);
+        let r = policy.apply_simulated(&[o], &SimSeeds::new(), &sim, None);
         assert!(r.fills.is_empty());
         assert_eq!(r.skips[0].reason, FillSkipReason::SimStrategyUnsupported);
     }
@@ -1032,7 +1036,7 @@ mod tests {
             fee_bps: 0,
             max_candidates_per_block: 32,
         };
-        let r = policy.apply_simulated(&[o1.clone(), o2], &seeds, &sim);
+        let r = policy.apply_simulated(&[o1.clone(), o2], &seeds, &sim, None);
         assert!(!r.fills.is_empty(), "first arb should fill");
         let first_net = r.fills[0].sim_net_wei;
         assert!(first_net > 0);
@@ -1129,8 +1133,8 @@ mod tests {
             max_candidates_per_block: 32,
         };
         let fee9 = SimPolicy { fee_bps: 9, ..zero };
-        let r0 = policy.apply_simulated(&[o.clone()], &seeds, &zero);
-        let r9 = policy.apply_simulated(&[o], &seeds, &fee9);
+        let r0 = policy.apply_simulated(&[o.clone()], &seeds, &zero, None);
+        let r9 = policy.apply_simulated(&[o], &seeds, &fee9, None);
         assert_eq!(r0.fills.len(), 1);
         assert_eq!(r9.fills.len(), 1);
         assert!(
@@ -1184,7 +1188,7 @@ mod tests {
             fee_bps: 0,
             max_candidates_per_block: 32,
         };
-        let r = policy.apply_simulated(&[o], &seeds, &sim);
+        let r = policy.apply_simulated(&[o], &seeds, &sim, None);
         assert!(r.fills.is_empty());
         assert!(r.skips.iter().any(|s| matches!(
             s.reason,

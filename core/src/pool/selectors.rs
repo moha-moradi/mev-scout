@@ -28,6 +28,7 @@ macro_rules! selector {
 // ── Uniswap V2 / forks ────────────────────────────────────────────────────
 
 selector!(GET_RESERVES, "getReserves()"); // 0x0902f1ac
+selector!(BALANCE_OF, "balanceOf(address)"); // 0x70a08231
 
 // ── Uniswap V3 / V4 / Pancake Infinity ───────────────────────────────────
 

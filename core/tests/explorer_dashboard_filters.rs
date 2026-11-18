@@ -172,6 +172,51 @@ fn emit_index_and_route_enrichment() {
 }
 
 #[test]
+fn dashboard_hides_non_verified_skims() {
+    let path = temp_db("skimtiers");
+    seed_rich(&path);
+    {
+        let store = ExplorerStore::open(&path).expect("open");
+        let conn = store.connection();
+        for (i, tier) in ["verified", "candidate", "rejected"].iter().enumerate() {
+            conn.execute(
+                "INSERT INTO mev_ops(
+                   block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence,
+                   details_json, detector, created_at
+                 ) VALUES(1, ?1, ?2, 1700000123, 'skim', '0xeoa-skim', NULL, 'inferred', ?3, 'test', 1700000123)",
+                rusqlite::params![
+                    10 + i as i64,
+                    format!("0xskim{i:059x}"),
+                    format!(r#"{{"values":{{"evidence_tier":"{tier}"}}}}"#),
+                ],
+            )
+            .expect("insert skim");
+        }
+    }
+    let snap = build(&BuildOptions {
+        db_path: path.clone(),
+        window: WindowSpec {
+            label: "all".into(),
+            since_ts: 1_700_000_000,
+            until_ts: 1_700_010_000,
+        },
+        ..BuildOptions::default()
+    })
+    .expect("build");
+    assert_eq!(snap.panels.kpi.ops, 5, "4 base ops + verified skim only");
+    assert_eq!(snap.panels.op_index.rows.len(), 5);
+    let skim_ops: i64 = snap
+        .panels
+        .kind_matrix
+        .iter()
+        .filter(|k| k.kind == "skim")
+        .map(|k| k.ops)
+        .sum();
+    assert_eq!(skim_ops, 1, "candidate/rejected skims stay hidden");
+    let _ = fs::remove_dir_all(path.parent().expect("parent"));
+}
+
+#[test]
 fn budget_clears_index_after_trim_stages() {
     let path = temp_db("budget");
     seed_rich(&path);

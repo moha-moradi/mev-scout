@@ -2,7 +2,7 @@ use crate::data::ExecutedLog;
 use crate::pool::decoders;
 use crate::pool::math::consts::Q128_SHIFT;
 use crate::pool::state::manager::PoolManager;
-use crate::pool::state::pool_types::PoolState;
+use crate::pool::state::pool_types::{PoolState, RateCacheEntry};
 use crate::utils::u128_from_be_bytes;
 use alloy::primitives::{Address, U256};
 
@@ -180,6 +180,11 @@ impl PoolManager {
                 self.process_balancer_swap_log(log);
                 continue;
             }
+            // Balancer cached-rate refresh (evidence for staleness tagging).
+            if topic0 == *crate::chain::events::BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC {
+                self.process_balancer_rate_cache_log(log);
+                continue;
+            }
             // Trader Joe LB Swap
             if topic0 == *decoders::LB_SWAP_TOPIC {
                 self.process_lb_swap_log(log);
@@ -293,6 +298,23 @@ impl PoolManager {
                             state.balances[i_out].saturating_sub(decoded.amount_out);
                     }
                 }
+            }
+        }
+    }
+
+    /// Record a Balancer `TokenRateCacheUpdated(uint256 indexed tokenIndex, uint256 rate)`.
+    fn process_balancer_rate_cache_log(&mut self, log: &ExecutedLog) {
+        if log.topics.len() < 2 || log.data.len() < 32 {
+            return;
+        }
+        let idx = U256::from_be_slice(log.topics[1].as_slice()).saturating_to::<usize>();
+        let rate = u128_from_be_bytes(&log.data[..32]);
+        if let Some(PoolState::Balancer(state)) = self.pool_mut(&log.address) {
+            if idx < state.rate_cache.len() {
+                state.rate_cache[idx] = Some(RateCacheEntry {
+                    rate_wad: rate,
+                    block: 0,
+                });
             }
         }
     }

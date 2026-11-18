@@ -72,6 +72,13 @@ pub struct ArbPair {
     pub pool_b: Address,
     pub shared_token: Address,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Measured transfer tax for a token, learned from replayed swaps.
+pub struct TaxEstimate {
+    pub bps: u16,
+    pub samples: u32,
+}
+
 #[derive(Debug)]
 pub struct PoolManager {
     pub(crate) pools: HashMap<Address, PoolState>,
@@ -85,7 +92,12 @@ pub struct PoolManager {
     pub(crate) dirty_pools: HashSet<Address>,
     /// Tokens learned to be transfer-taxed at runtime: declared swap
     /// amounts exceeded what the ERC20 contract actually moved. Session-only.
-    pub(crate) dynamic_fot: HashSet<Address>,
+    /// The value is the conservative measured tax in basis points.
+    pub(crate) dynamic_fot: HashMap<Address, TaxEstimate>,
+    /// Apply measured transfer taxes to arb quotes (default true). When off,
+    /// dynamically taxed tokens are excluded instead — the conservative
+    /// pre-tax behavior. Static-registry FoT tokens are always excluded.
+    pub(crate) tax_quoting: bool,
     /// Address of the wrapped native token (WMATIC/WETH/WBNB) per chain.
     pub(crate) wrapped_native: Option<Address>,
     /// Address of the Balancer V2 vault for flash loans and pool state queries.
@@ -126,7 +138,7 @@ struct UndoLog {
     /// `dirty_pools` as it was when recording began.
     dirty_before: Option<HashSet<Address>>,
     /// `dynamic_fot` as it was when recording began.
-    fot_before: Option<HashSet<Address>>,
+    fot_before: Option<HashMap<Address, TaxEstimate>>,
     /// Token index snapshot, captured only if `add_pool` replaced an
     /// existing pool (would otherwise duplicate index entries).
     token_index_before: Option<HashMap<Address, Vec<Address>>>,
@@ -143,7 +155,8 @@ impl PoolManager {
             token_index: HashMap::new(),
             pairs_cache: Mutex::new(None),
             dirty_pools: HashSet::new(),
-            dynamic_fot: HashSet::new(),
+            dynamic_fot: HashMap::new(),
+            tax_quoting: true,
             wrapped_native: None,
             balancer_vault: None,
             known_set: HashSet::new(),
@@ -444,6 +457,14 @@ impl PoolManager {
         cached
     }
 
+    /// Keep only pools matching `keep`, rebuilding the token index and pair
+    /// cache. Used by parity/tests to bound the venue set after hydration.
+    pub fn retain_pools<F: FnMut(&PoolState) -> bool>(&mut self, mut keep: F) {
+        self.pools.retain(|_, state| keep(state));
+        self.rebuild_token_index();
+        *self.pairs_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// Mark a pool as dirty (state changed). Dirty pools restrict subsequent
     /// incremental detection passes via [`ScanScope::Dirty`].
     pub fn mark_dirty_pool(&mut self, address: Address) {
@@ -467,12 +488,40 @@ impl PoolManager {
     /// Whether `token` is known to be transfer-taxed: listed in the static FOT
     /// registry or dynamically learned from replayed swaps this session.
     pub fn is_taxed_token(&self, token: &Address) -> bool {
-        is_fee_on_transfer_token(token) || self.dynamic_fot.contains(token)
+        is_fee_on_transfer_token(token) || self.dynamic_fot.contains_key(token)
+    }
+
+    /// Measured (or conservative) transfer tax in bps for a token.
+    /// Static registry tokens carry no measured value and stay excluded.
+    pub fn tax_bps(&self, token: &Address) -> Option<u16> {
+        self.dynamic_fot.get(token).map(|t| t.bps)
+    }
+
+    /// Whether arb quotes apply measured transfer taxes per leg.
+    pub fn tax_quoting(&self) -> bool {
+        self.tax_quoting
+    }
+
+    /// Configure [`Self::tax_quoting`]. Off restores the conservative
+    /// behavior: dynamically taxed tokens are excluded from arb detection.
+    pub fn set_tax_quoting(&mut self, enabled: bool) {
+        self.tax_quoting = enabled;
     }
 
     /// Mark a token as transfer-taxed for the remainder of the run.
     pub fn flag_taxed_token(&mut self, token: Address) {
-        self.dynamic_fot.insert(token);
+        self.dynamic_fot
+            .entry(token)
+            .or_insert(TaxEstimate { bps: 0, samples: 1 });
+    }
+
+    /// Set a measured tax directly (tests and externally supplied estimates).
+    pub fn set_tax_bps(&mut self, token: Address, bps: u16) {
+        let entry = self
+            .dynamic_fot
+            .entry(token)
+            .or_insert(TaxEstimate { bps: 0, samples: 1 });
+        entry.bps = bps;
     }
 
     /// Learn taxed tokens from one transaction's logs.
@@ -481,9 +530,10 @@ impl PoolManager {
     /// ERC20 contracts actually transferred to/from the pool in the same
     /// transaction. A persistent shortfall beyond [`TAX_SHORTFALL_MARGIN`]
     /// means value vanished inside a token transfer (sell/buy tax), so the
-    /// token is flagged and excluded by the arb detectors via
-    /// [`Self::is_taxed_token`]. Rebase tokens are skipped — their supply
-    /// mechanics mimic taxes without being one.
+    /// token is flagged and the measured bps are applied per leg in arb
+    /// quoting and state-sim (`[live] fot_quote = false` falls back to
+    /// exclusion). Rebase tokens are skipped — their supply mechanics mimic
+    /// taxes without being one.
     pub fn learn_taxes_from_tx(&mut self, logs: &[ExecutedLog]) {
         // Pass 1: actual ERC20 movements touching tracked pools, per (pool, token).
         let mut incoming: TransferTotals = HashMap::new();
@@ -674,13 +724,27 @@ impl PoolManager {
         }
     }
 
-    fn flag_if_shortfall(set: &mut HashSet<Address>, token: Address, actual: u128, declared: u128) {
+    fn flag_if_shortfall(
+        set: &mut HashMap<Address, TaxEstimate>,
+        token: Address,
+        actual: u128,
+        declared: u128,
+    ) {
         if is_rebase_token(&token) {
             return; // elastic supply mimics taxes without being one
         }
         let limit = declared as f64 * (1.0 - TAX_SHORTFALL_MARGIN);
-        if (actual as f64) < limit {
-            set.insert(token);
+        if (actual as f64) < limit && declared > 0 {
+            let bps = declared
+                .saturating_sub(actual)
+                .saturating_mul(10_000)
+                .saturating_div(declared)
+                .min(9_999) as u16;
+            let entry = set
+                .entry(token)
+                .or_insert(TaxEstimate { bps: 0, samples: 0 });
+            entry.bps = entry.bps.max(bps);
+            entry.samples = entry.samples.saturating_add(1);
         }
     }
 }
@@ -828,6 +892,7 @@ impl Clone for PoolManager {
             pairs_cache: Mutex::new(cache),
             dirty_pools: self.dirty_pools.clone(),
             dynamic_fot: self.dynamic_fot.clone(),
+            tax_quoting: self.tax_quoting,
             wrapped_native: self.wrapped_native,
             balancer_vault: self.balancer_vault,
             known_set: self.known_set.clone(),
@@ -1026,7 +1091,7 @@ mod manager_tests {
         ];
         pm.learn_taxes_from_tx(&logs);
         assert!(
-            !pm.dynamic_fot.contains(&rb),
+            !pm.dynamic_fot.contains_key(&rb),
             "rebase tokens must be exempt from dynamic tax flagging"
         );
     }

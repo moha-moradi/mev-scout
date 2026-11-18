@@ -44,6 +44,7 @@ pub(crate) mod results;
 pub mod scenario_targets;
 #[cfg(any(test, feature = "test-util"))]
 mod scenarios;
+pub(crate) mod skim_evidence;
 pub mod store;
 pub(crate) mod strategy_tags;
 #[cfg(any(test, feature = "test-util"))]

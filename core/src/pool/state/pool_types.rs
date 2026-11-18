@@ -372,6 +372,16 @@ pub struct BalancerPoolState {
     /// Rate provider addresses for each token (same order as balances).
     /// Used by strategy 7.7 (Balancer rate provider staleness).
     pub rate_providers: Vec<Option<Address>>,
+    /// Last `TokenRateCacheUpdated` value per token index (evidence for the
+    /// staleness tag; quoting keeps using `scaling_factors`).
+    pub rate_cache: Vec<Option<RateCacheEntry>>,
+}
+
+/// Last cached Balancer token rate observed from a `TokenRateCacheUpdated` log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateCacheEntry {
+    pub rate_wad: u128,
+    pub block: u64,
 }
 
 /// Runtime state for a Fluid DEX pool (Instadapp unified liquidity).

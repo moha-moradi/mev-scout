@@ -63,6 +63,7 @@ impl ExplorerStore {
               exec_gas_used INTEGER,
               exec_net_wei TEXT,
               tx_hash TEXT,
+              tags_json TEXT,
               FOREIGN KEY(session_id) REFERENCES paper_sessions(session_id)
             );
             CREATE INDEX IF NOT EXISTS paper_fills_session
@@ -139,8 +140,8 @@ impl ExplorerStore {
                gross_wei, gas_wei, net_wei, wallet_before, wallet_after,
                pools_json, mempool_only,
                sim_mode, sim_gross_wei, sim_net_wei, borrowed_wei, repay_ok, state_drift,
-               exec_mode, exec_status, exec_gas_used, exec_net_wei, tx_hash
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+               exec_mode, exec_status, exec_gas_used, exec_net_wei, tx_hash, tags_json
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)",
             rusqlite::params![
                 session_id,
                 f.block_number as i64,
@@ -165,6 +166,11 @@ impl ExplorerStore {
                 f.exec_gas_used.map(|v| v as i64),
                 f.exec_net_wei.map(|v| v.to_string()),
                 f.tx_hash.as_deref(),
+                if f.tags.is_empty() {
+                    None
+                } else {
+                    serde_json::to_string(&f.tags).ok()
+                },
             ],
         )?;
         Ok(())
@@ -254,7 +260,7 @@ impl ExplorerStore {
                     gross_wei, gas_wei, net_wei, wallet_before, wallet_after,
                     pools_json, mempool_only,
                     sim_mode, sim_gross_wei, sim_net_wei, borrowed_wei, repay_ok, state_drift,
-                    exec_mode, exec_status, exec_gas_used, exec_net_wei, tx_hash
+                    exec_mode, exec_status, exec_gas_used, exec_net_wei, tx_hash, tags_json
              FROM paper_fills
              WHERE session_id = ?1
              ORDER BY block_number, tx_index",
@@ -314,6 +320,11 @@ impl ExplorerStore {
                 exec_gas_used: r.get::<_, Option<i64>>(19)?.map(|v| v as u64),
                 exec_net_wei: r.get::<_, Option<String>>(20)?.and_then(|s| s.parse().ok()),
                 tx_hash: r.get(21)?,
+                tags: r
+                    .get::<_, Option<String>>(22)?
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default(),
             })
         })?;
         let mut out = Vec::new();
@@ -370,6 +381,8 @@ mod tests {
         opp.expected_profit = U256::from(1_000u64);
         opp.gas_cost_wei = 100;
         opp.canonical_id = Some("cid".into());
+        opp.add_tag("flash_arb");
+        opp.add_tag("long_tail");
         let policy = LedgerPolicy {
             starting_gas_wei: 10_000,
             reserve_wei: 0,
@@ -394,5 +407,6 @@ mod tests {
         assert_eq!(fills[0].net_wei, 900);
         assert_eq!(fills[0].sim_mode, SimMode::Assumed);
         assert_eq!(fills[0].sim_net_wei, 900);
+        assert_eq!(fills[0].tags, vec!["flash_arb", "long_tail"]);
     }
 }

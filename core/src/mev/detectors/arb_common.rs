@@ -101,10 +101,49 @@ pub(crate) fn normalize_profit_native(
         .map(U256::from)
 }
 
-/// Fee-on-transfer filter: quotes assume the full output is received, but
-/// sell-tax tokens take a cut on transfer — producing phantom opportunities.
-pub(super) fn is_fot_pair(pm: &PoolManager, token_in: Address, token_out: Address) -> bool {
-    pm.is_taxed_token(&token_in) || pm.is_taxed_token(&token_out)
+/// Route filter for taxed tokens.
+///
+/// Static-registry FoT tokens carry no measured bps, so they are always
+/// excluded: without a rate the quote cannot be corrected and would overstate
+/// output. Dynamically measured taxes are applied per leg by
+/// [`quote_leg_taxed`]; when `[live] fot_quote = false` those tokens fall back
+/// to exclusion instead (the conservative pre-tax behavior).
+pub(super) fn excludes_taxed_route(pm: &PoolManager, tokens: &[Address]) -> bool {
+    tokens.iter().any(|t| {
+        crate::pool::state::is_fee_on_transfer_token(t)
+            || (!pm.tax_quoting() && pm.tax_bps(t).is_some())
+    })
+}
+
+/// Measured transfer tax applied to a quote leg, or 0 when quoting is off or
+/// the token is untaxed.
+fn tax_bps_for(pm: &PoolManager, token: Address) -> u128 {
+    if !pm.tax_quoting() {
+        return 0;
+    }
+    pm.tax_bps(&token)
+        .map(|bps| (bps as u128).min(9_999))
+        .unwrap_or(0)
+}
+
+/// One exact-in leg with both transfers taxed:
+/// the pool receives `amount·(10000−in_bps)/10000`, the taker receives
+/// `gross_out·(10000−out_bps)/10000` of the pool's quote.
+pub(super) fn quote_leg_taxed(
+    pm: &PoolManager,
+    pool: &crate::pool::state::PoolState,
+    token_in: Address,
+    token_out: Address,
+    amount: u128,
+) -> Option<u128> {
+    let in_bps = tax_bps_for(pm, token_in);
+    let out_bps = tax_bps_for(pm, token_out);
+    let pool_in = amount.saturating_sub(amount.saturating_mul(in_bps) / 10_000);
+    if pool_in == 0 {
+        return None;
+    }
+    let gross = pool.quote_dir(pool_in, token_in, token_out)?;
+    Some(gross.saturating_sub(gross.saturating_mul(out_bps) / 10_000))
 }
 
 /// Per-block dedup gate: returns `true` when the opportunity should be emitted.
@@ -156,6 +195,7 @@ pub(super) struct ArbOpportunityInput {
     pub(super) slippage: SlippageProfits,
     pub(super) gas_cost_wei: u128,
     pub(super) path: Option<Vec<Address>>,
+    pub(super) route_tokens: Option<Vec<Address>>,
 }
 
 /// Build a fully-populated `MevOpportunity` from the shared arb fields.
@@ -189,6 +229,10 @@ pub(super) fn build_arb_opportunity(input: ArbOpportunityInput) -> MevOpportunit
         sender: None,
         tx_hash: None,
         detection_path: Some(super::DetectionPath::Replay),
+        tags: Vec::new(),
+        route_tokens: input.route_tokens,
+        savax_route: None,
+        details: None,
     }
 }
 
@@ -399,6 +443,7 @@ mod tests {
             },
             gas_cost_wei: 21_000,
             path: None,
+            route_tokens: None,
         });
         assert_eq!(opp.detection_path, Some(DetectionPath::Replay));
         assert_eq!(opp.strategy, Strategy::TwoHopArb);

@@ -12,9 +12,7 @@ use crate::chain::events::{
     LB_BIN_REWARD_UPDATED_TOPIC, LB_CLAIM_REWARDS_TOPIC, LB_TRANSFER_BATCH_TOPIC,
 };
 use crate::data::LogData;
-use crate::explorer::types::{
-    LbRewardAccumulatorFact, LbTransferBatchFact, RewardClaimFact,
-};
+use crate::explorer::types::{LbRewardAccumulatorFact, LbTransferBatchFact, RewardClaimFact};
 use crate::utils::topic_address;
 
 fn is_padded_address(topic: &B256) -> bool {
@@ -83,12 +81,7 @@ pub fn decode_lb_reward_accumulator(log: &LogData) -> Option<LbRewardAccumulator
     if rewards.is_empty() {
         return None;
     }
-    let bin_id = u32::from_be_bytes([
-        log.data[28],
-        log.data[29],
-        log.data[30],
-        log.data[31],
-    ]);
+    let bin_id = u32::from_be_bytes([log.data[28], log.data[29], log.data[30], log.data[31]]);
     Some(LbRewardAccumulatorFact {
         tx_index: 0,
         log_index: 0,

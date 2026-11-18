@@ -6975,3 +6975,27 @@ That separation is the foundation for a reliable MEV research/backtesting system
 ---
 
 *This document covers 53 strategies across 8 categories, seven expansion surfaces in Part IV (§20–§26): position refinancing arb, automation/keeper-network execution, owner-side liquidation-protection salvage, Fluid (DEX + lending vaults), new-gen lending liquidations (incl. Silo V2 / Spark), crvUSD LLAMMA soft-liq arb, and Compound V3 absorb + buyCollateral. Core catalog: V2 pool mechanics, order flow, bundle/positional strategies, liquidations, oracle/rebase/peg, cross-domain, protocol niches (expanded), and emerging — plus implementation-difficulty rankings, capital mapping, income estimates, codebase status, and on-chain validation. **Part V (§27–§83)** is the engineering specification of the detection and opportunity engine: normalized data model, protocol registry, the seven detector contracts (arbitrage, liquidation, sandwich, backrun, front-run, JIT, JIT+arbitrage), REVM simulation layer, exact P&L accounting, state reconstruction, storage, counterfactual simulation, testing, determinism, performance, MVP scope, CLI/config, quality gates and definition of done. Merged from `mev_strategies_complete_v2.md` (53 strategies, 8 categories, 2,716 lines), `mev_strategies_analysis_summary.md` (analysis cross-referenced with MEV Scout codebase status: 7 detectors coded, 46 planned), and `mev_detection_and_opportunity_engine_spec.md` (now merged here; its section numbers were shifted by +26 — old §N → §(N+26) — and its file is no longer maintained separately). Validation report updated July 26, 2026 via `mev-scout dune-query` against Dune Analytics API (Polygon, Ethereum, Arbitrum); all 17 validation queries executed; table discovery queries used to identify correct Dune schema names.*
+
+---
+
+## Live ↔ explorer parity scope (2026-11-18)
+
+The live detectors stamp the same `ArbAtomic` sub-tags the explorer classifier
+emits (`core/src/types/tags.rs`): `backrun`, `flash_arb`, `long_tail`,
+`curve_imbalance`, `rate_provider_staleness`, `fot_arb`, `rebase_arb`,
+`savax_rate_arb`, `epoch_transition`, `gmx_adl_arb`. Tag conditions are not
+re-implemented: live synthesizes the candidate route as `SwapFact`s and calls
+`explorer::strategy_tags::arb_strategy_tags`, so the two halves cannot drift.
+
+Documented N/A (explicit, never a silent drop):
+
+- `forwarded_profit` is a realized-only explorer concept and is out of scope for
+  live detection.
+- The static FoT registry (`core/data/fot_tokens.json`) is Ethereum-only; on
+  Avalanche `fot_arb` can only come from dynamically measured taxes
+  (`PoolManager::learn_taxes_from_tx`, `[live] fot_quote`).
+- The static rebase registry has no Avalanche entries, so `rebase_arb` is
+  structurally absent on AVAX.
+- `Uniswap V4 / Pancake Infinity` state-sim uses the V3 family; exec has no leg
+  for them. `Metric / Fluid` have neither sim nor exec. Both are counted skips
+  (`SimPathUnavailable`, `ExecVenueUnsupported`), never fills.

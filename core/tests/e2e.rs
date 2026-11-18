@@ -147,6 +147,7 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             scaling_factors: vec![],
             bpt_index: None,
             rate_providers: vec![],
+            rate_cache: vec![],
         }),
         DexType::Solidly | DexType::Camelot => PoolState::UniswapV2(UniswapV2PoolState {
             info,

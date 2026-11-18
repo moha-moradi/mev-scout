@@ -9,12 +9,13 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
-use alloy::primitives::{Address, Bytes, B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
+use crate::chain::savax::{fetch_savax_exchange_rate, SavaxRateCache};
 use crate::data::{BlockData, ReceiptData, TxData};
 use crate::explorer::classify::{self, BlockContext, BlockInput, TxInput};
 use crate::explorer::decode;
@@ -174,35 +175,6 @@ impl IngestConfig {
         cfg.interest_lookback_blocks = config.explorer.interest_lookback_blocks;
         cfg.jit_pool_fee_bps = config.explorer.jit_pool_fee_bps;
         cfg
-    }
-}
-
-/// sAVAX exchange-rate reads, keyed by [`pricing::hour_bucket`].
-/// A success is reused for the hour. A failure is remembered too: public
-/// nodes prune historical state, and retrying `eth_call` on every block
-/// serializes the backfill. Tagging falls back to route co-presence either way.
-#[derive(Debug, Default)]
-pub struct SavaxRateCache {
-    by_hour: HashMap<u64, U256>,
-    missed: HashSet<u64>,
-}
-
-impl SavaxRateCache {
-    fn get(&self, hour: u64) -> Option<U256> {
-        self.by_hour.get(&hour).copied()
-    }
-
-    fn insert(&mut self, hour: u64, rate: U256) {
-        self.missed.remove(&hour);
-        self.by_hour.insert(hour, rate);
-    }
-
-    fn missed(&self, hour: u64) -> bool {
-        self.missed.contains(&hour)
-    }
-
-    fn miss(&mut self, hour: u64) {
-        self.missed.insert(hour);
     }
 }
 
@@ -692,7 +664,15 @@ pub async fn index_block_fetched(
     })?;
     let mut events: Vec<MevEvent> = classify::filter_unresolved(classified.events);
     classify::stamp_jit_tx_hashes(&mut events, &jit_hashes);
-    let ops = events.len();
+    // Phase 3.3: reconcile each skim against historical pair/recipient
+    // balances before it can be announced. Non-verified tiers stay in the
+    // store for audit but are filtered out of headline reports.
+    crate::explorer::skim_evidence::verify_skim_events(rpc, &mut events, block_number, &input.txs)
+        .await;
+    let ops = events
+        .iter()
+        .filter(|e| crate::explorer::skim_evidence::is_announced(e))
+        .count();
 
     // Reconcile JIT positions before any valuation: only receipt-backed
     // settled cashflows may become profit, and the old fee estimate is not a
@@ -1224,42 +1204,6 @@ async fn fill_jit_valuation(
 pub async fn safe_head(rpc: &RpcClient, cfg: &IngestConfig) -> anyhow::Result<u64> {
     let head = rpc.get_block_number().await?;
     Ok(head.saturating_sub(cfg.confirmations))
-}
-
-/// Benqi sAVAX `getPooledAvaxByShares(1e18)` → AVAX wad per 1 sAVAX (plan P3.16).
-async fn fetch_savax_exchange_rate(
-    rpc: &RpcClient,
-    savax: Option<Address>,
-    block: u64,
-    ts: u64,
-    cache: &mut SavaxRateCache,
-) -> Option<U256> {
-    let savax = savax.filter(|a| !a.is_zero())?;
-    let hour = pricing::hour_bucket(ts);
-    if let Some(rate) = cache.get(hour) {
-        return Some(rate);
-    }
-    if cache.missed(hour) {
-        return None;
-    }
-    let mut data = crate::pool::selectors::SAVAX_GET_POOLED_AVAX_BY_SHARES.to_vec();
-    data.extend_from_slice(&U256::from(10u64.pow(18)).to_be_bytes::<32>());
-    match rpc.call(savax, Bytes::from(data), block).await {
-        Ok(ret) if ret.len() >= 32 => {
-            let rate = U256::from_be_slice(&ret[..32]);
-            cache.insert(hour, rate);
-            Some(rate)
-        }
-        Ok(_) => {
-            cache.miss(hour);
-            None
-        }
-        Err(e) => {
-            debug!(block, "sAVAX exchangeRate eth_call failed: {e}");
-            cache.miss(hour);
-            None
-        }
-    }
 }
 
 fn known_token_cache(chain_id: u64) -> std::sync::Arc<crate::cache::TokenCache> {
@@ -2205,7 +2149,7 @@ mod tests {
             tx_type: 2,
             from: Address::from([0x11; 20]),
             to: Some(Address::from([0x33; 20])),
-            input: Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]),
+            input: alloy::primitives::Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]),
             value: U256::from(5u64),
             gas_limit: 100_000,
             max_fee_per_gas: 30,
@@ -2227,7 +2171,7 @@ mod tests {
                 log_index: Some(42),
                 address: token,
                 topics: vec![B256::from([0x77; 32])],
-                data: Bytes::from(vec![0xaa, 0xbb]),
+                data: alloy::primitives::Bytes::from(vec![0xaa, 0xbb]),
             }],
             contract_address: None,
         };

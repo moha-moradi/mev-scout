@@ -579,6 +579,8 @@ fn load_ops_window(
     }
     let sql = format!(
         "SELECT {} FROM mev_ops WHERE ts >= ?1 AND ts <= ?2
+         AND (kind != 'skim' OR
+              json_extract(details_json, '$.values.evidence_tier') = 'verified')
          ORDER BY block_number ASC, tx_index ASC, id ASC",
         cols.join(", ")
     );

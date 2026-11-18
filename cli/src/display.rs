@@ -36,6 +36,7 @@ pub fn render_results_table(
 ) {
     let mut table = Table::new();
     let has_confidence = all_opportunities.iter().any(|opp| opp.confidence.is_some());
+    let has_tags = all_opportunities.iter().any(|opp| !opp.tags.is_empty());
 
     if let Some(pm) = pool_manager {
         let mut headers = vec![
@@ -49,6 +50,9 @@ pub fn render_results_table(
         ];
         if has_confidence {
             headers.push("Confidence");
+        }
+        if has_tags {
+            headers.push("Tags");
         }
         table.set_header(headers);
 
@@ -78,6 +82,13 @@ pub fn render_results_table(
                         .map_or("-".to_string(), |c| format!("{:.2}", c)),
                 );
             }
+            if has_tags {
+                row.push(if opp.tags.is_empty() {
+                    "-".to_string()
+                } else {
+                    opp.tags.join(",")
+                });
+            }
             table.add_row(row);
         }
     } else {
@@ -91,6 +102,9 @@ pub fn render_results_table(
         ];
         if has_confidence {
             headers.push("Confidence");
+        }
+        if has_tags {
+            headers.push("Tags");
         }
         table.set_header(headers);
 
@@ -108,6 +122,13 @@ pub fn render_results_table(
                     opp.confidence
                         .map_or("-".to_string(), |c| format!("{:.2}", c)),
                 );
+            }
+            if has_tags {
+                row.push(if opp.tags.is_empty() {
+                    "-".to_string()
+                } else {
+                    opp.tags.join(",")
+                });
             }
             table.add_row(row);
         }

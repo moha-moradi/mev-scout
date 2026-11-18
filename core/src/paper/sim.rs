@@ -316,21 +316,55 @@ fn next_token(pool: &PoolState, token_in: Address) -> Option<Address> {
 
 /// Walk `path` mutating `overlay` via [`quote_swap_post`].
 ///
+/// `route_tokens` (when present) is the detector's exact hop sequence. Without
+/// it, multi-token Curve/Balancer pools fall back to `next_token`, which can
+/// only guess.
+///
+/// `pm` supplies the measured transfer-tax map and the `fot_quote` gate; when
+/// present and enabled, each leg's pool input and received output are taxed the
+/// same way the detector quoted them, and the reserves move by the pool-side
+/// amount only.
+///
 /// Returns final output amount, or `None` if a leg is missing / unquotable.
 pub fn walk_quote_post(
     overlay: &mut HashMap<Address, PoolState>,
     path: &[Address],
+    route_tokens: Option<&[Address]>,
     token_in: Address,
     amount: u128,
+    pm: Option<&PoolManager>,
 ) -> Option<u128> {
     let mut current = amount;
     let mut current_token = token_in;
-    for addr in path {
+    let tax_on = pm.is_some_and(|p| p.tax_quoting());
+    for (i, addr) in path.iter().enumerate() {
         let pool = overlay.get_mut(addr)?;
-        let token_out = next_token(pool, current_token)?;
-        let (out, post) = quote_swap_post(pool, current_token, current, token_out)?;
+        let token_out = route_tokens
+            .and_then(|tokens| tokens.get(i + 1).copied())
+            .or_else(|| next_token(pool, current_token))?;
+        let (pool_in, tax_out_bps) = if tax_on {
+            let pm = pm?;
+            let in_bps = pm
+                .tax_bps(&current_token)
+                .map(|b| (b as u128).min(9_999))
+                .unwrap_or(0);
+            let out_bps = pm
+                .tax_bps(&token_out)
+                .map(|b| (b as u128).min(9_999))
+                .unwrap_or(0);
+            (
+                current.saturating_sub(current.saturating_mul(in_bps) / 10_000),
+                out_bps,
+            )
+        } else {
+            (current, 0)
+        };
+        if pool_in == 0 {
+            return None;
+        }
+        let (gross, post) = quote_swap_post(pool, current_token, pool_in, token_out)?;
         apply_post_state(pool, &post);
-        current = out;
+        current = gross.saturating_sub(gross.saturating_mul(tax_out_bps) / 10_000);
         current_token = token_out;
     }
     Some(current)
@@ -368,6 +402,7 @@ pub fn simulate_candidate(
     overlay: &mut HashMap<Address, PoolState>,
     overlay_tx: &HashMap<Address, usize>,
     policy: &SimPolicy,
+    pm: Option<&PoolManager>,
 ) -> Result<SimOutcome, SimFail> {
     if !SimPolicy::is_simulatable(opp.strategy) {
         return Err(SimFail::StrategyUnsupported);
@@ -377,6 +412,15 @@ pub fn simulate_candidate(
     let path = pools_of_opp(opp);
     if path.is_empty() {
         return Err(SimFail::PathUnavailable);
+    }
+    if let Some(route) = opp.route_tokens.as_deref() {
+        let excluded = |t: &Address| {
+            crate::pool::state::is_fee_on_transfer_token(t)
+                || pm.is_some_and(|p| !p.tax_quoting() && p.tax_bps(t).is_some())
+        };
+        if route.iter().any(excluded) {
+            return Err(SimFail::PathUnavailable);
+        }
     }
 
     let state_drift = ensure_pools_seeded(overlay, overlay_tx, snapshot, &path)?;
@@ -399,8 +443,54 @@ pub fn simulate_candidate(
         return Err(SimFail::PathUnavailable);
     }
 
-    let out = walk_quote_post(&mut scratch, &path, opp.token_in, borrowed)
-        .ok_or(SimFail::PathUnavailable)?;
+    let out = if let Some(route) = &opp.savax_route {
+        let rate = if route.rate_wad > U256::from(u128::MAX) {
+            return Err(SimFail::PathUnavailable);
+        } else {
+            route.rate_wad.to::<u128>()
+        };
+        if rate == 0 {
+            return Err(SimFail::PathUnavailable);
+        }
+        let one = 10u128.pow(18);
+        match route.direction {
+            crate::types::SavaxDirection::Redeem => {
+                let shares = walk_quote_post(
+                    &mut scratch,
+                    &path,
+                    opp.route_tokens.as_deref(),
+                    opp.token_in,
+                    borrowed,
+                    pm,
+                )
+                .ok_or(SimFail::PathUnavailable)?;
+                (U256::from(shares).saturating_mul(route.rate_wad) / U256::from(one)).to::<u128>()
+            }
+            crate::types::SavaxDirection::Mint => {
+                let shares = borrowed.saturating_mul(one) / rate;
+                if shares == 0 {
+                    return Err(SimFail::PathUnavailable);
+                }
+                let tokens = opp
+                    .route_tokens
+                    .as_deref()
+                    .ok_or(SimFail::PathUnavailable)?;
+                let savax = *tokens.first().ok_or(SimFail::PathUnavailable)?;
+                walk_quote_post(&mut scratch, &path, Some(tokens), savax, shares, pm)
+                    .ok_or(SimFail::PathUnavailable)?
+            }
+        }
+    } else {
+        walk_quote_post(
+            &mut scratch,
+            &path,
+            opp.route_tokens.as_deref(),
+            opp.token_in,
+            borrowed,
+            pm,
+        )
+        .ok_or(SimFail::PathUnavailable)?
+    };
 
     let fee = policy.flash_loan_fee(borrowed);
     let repay_ok = out >= borrowed.saturating_add(fee);
@@ -531,5 +621,237 @@ mod tests {
         let (rec, capped) = record_seeds_for_block(&mut seeds, &pm, &[], 32);
         assert_eq!((rec, capped), (0, 0));
         assert!(seeds.is_empty());
+    }
+
+    #[test]
+    fn walk_quote_post_applies_learned_tax_to_pool_side_amounts() {
+        let t0 = address!("0x0000000000000000000000000000000000000001");
+        let t1 = address!("0x0000000000000000000000000000000000000002");
+        let pa = address!("0x00000000000000000000000000000000000000aa");
+        let pb = address!("0x00000000000000000000000000000000000000bb");
+        let mut overlay = HashMap::new();
+        overlay.insert(pa, v2(pa, t0, t1, 1_000_000, 1_000_000));
+        overlay.insert(pb, v2(pb, t0, t1, 1_000_000, 1_000_000));
+        let route = [t0, t1, t0];
+        let amount = 10_000u128;
+
+        let untaxed = walk_quote_post(
+            &mut overlay.clone(),
+            &[pa, pb],
+            Some(&route),
+            t0,
+            amount,
+            None,
+        )
+        .expect("untaxed walk");
+
+        let mut pm = PoolManager::new();
+        pm.set_tax_bps(t0, 200);
+        pm.set_tax_bps(t1, 100);
+        let mut taxed_overlay = overlay.clone();
+        let taxed = walk_quote_post(
+            &mut taxed_overlay,
+            &[pa, pb],
+            Some(&route),
+            t0,
+            amount,
+            Some(&pm),
+        )
+        .expect("taxed walk");
+        assert!(taxed < untaxed, "taxed out {taxed} < untaxed {untaxed}");
+
+        // The pool only ever sees the post-tax input (10_000 − 2% = 9_800).
+        match taxed_overlay.get(&pa) {
+            Some(PoolState::UniswapV2(state)) => {
+                let (t0_reserve, t1_reserve) = if state.info.token0 == t0 {
+                    (state.reserve0, state.reserve1)
+                } else {
+                    (state.reserve1, state.reserve0)
+                };
+                assert_eq!(t0_reserve, 1_000_000 + 9_800);
+                assert!(t1_reserve < 1_000_000);
+            }
+            other => panic!("expected V2 pool, got {other:?}"),
+        }
+
+        // Quoting disabled: no tax, and learned-tax routes are excluded by sim.
+        let mut off = PoolManager::new();
+        off.set_tax_bps(t0, 200);
+        off.set_tax_quoting(false);
+        let plain = walk_quote_post(
+            &mut overlay.clone(),
+            &[pa, pb],
+            Some(&route),
+            t0,
+            amount,
+            Some(&off),
+        )
+        .expect("quote gate off walks untaxed");
+        assert_eq!(plain, untaxed);
+    }
+
+    fn savax_pool(addr: Address, wrapped: Address, savax: Address, rw: u128, rs: u128) -> PoolState {
+        v2(addr, wrapped, savax, rw, rs)
+    }
+
+    fn savax_opp(
+        pool: Address,
+        wrapped: Address,
+        savax: Address,
+        direction: crate::types::SavaxDirection,
+        rate_wad: U256,
+        amount: u128,
+    ) -> MevOpportunity {
+        let mut opp = MevOpportunity::new(5, 0, Strategy::MultiHopArb, pool, 0);
+        opp.token_in = wrapped;
+        opp.token_out = wrapped;
+        opp.path = Some(vec![pool]);
+        opp.route_tokens = Some(match direction {
+            crate::types::SavaxDirection::Redeem => vec![wrapped, savax],
+            crate::types::SavaxDirection::Mint => vec![savax, wrapped],
+        });
+        opp.savax_route = Some(crate::types::SavaxRoute {
+            pool,
+            direction,
+            rate_wad,
+            shares: U256::ZERO,
+            min_out_wad: U256::ZERO,
+        });
+        opp.canonical_id = Some(crate::types::compute_savax_canonical_id(pool, direction));
+        opp.input_amount = U256::from(amount);
+        opp.expected_profit = U256::from(1u64);
+        opp.gas_cost_wei = 0;
+        opp
+    }
+
+    #[test]
+    fn savax_redeem_simulates_virtual_rate_leg() {
+        let wrapped = address!("b31f66aa3c1e785363f0875a1b74e27b85fd66c7");
+        let savax = address!("2b2c81e08f1af8835a78bb2a90ae924ace0ea4be");
+        let pool = address!("0x00000000000000000000000000000000000000aa");
+        let state = savax_pool(pool, wrapped, savax, 1_000_000, 1_000_000);
+        let opp = savax_opp(
+            pool,
+            wrapped,
+            savax,
+            crate::types::SavaxDirection::Redeem,
+            U256::from(1_100_000_000_000_000_000u64),
+            10_000,
+        );
+        let mut seeds = SimSeeds::new();
+        seeds.insert(
+            opp.canonical_id.clone().unwrap(),
+            PoolSnapshot {
+                block_number: 5,
+                tx_index: 0,
+                pools: vec![(pool, state)],
+            },
+        );
+        let policy = SimPolicy {
+            mode: SimMode::StateSim,
+            ..Default::default()
+        };
+        let out = simulate_candidate(
+            &opp,
+            &seeds,
+            &mut HashMap::new(),
+            &HashMap::new(),
+            &policy,
+            None,
+        )
+        .expect("redeem sim");
+        assert!(out.sim_gross_wei > 0);
+        assert!(out.repay_ok);
+    }
+
+    #[test]
+    fn savax_mint_simulates_virtual_rate_leg() {
+        let wrapped = address!("b31f66aa3c1e785363f0875a1b74e27b85fd66c7");
+        let savax = address!("2b2c81e08f1af8835a78bb2a90ae924ace0ea4be");
+        let pool = address!("0x00000000000000000000000000000000000000ab");
+        // Pool prices sAVAX above the mint rate (2 vs 1.1).
+        let state = savax_pool(pool, wrapped, savax, 2_000_000, 1_000_000);
+        let opp = savax_opp(
+            pool,
+            wrapped,
+            savax,
+            crate::types::SavaxDirection::Mint,
+            U256::from(1_100_000_000_000_000_000u64),
+            10_000,
+        );
+        let mut seeds = SimSeeds::new();
+        seeds.insert(
+            opp.canonical_id.clone().unwrap(),
+            PoolSnapshot {
+                block_number: 5,
+                tx_index: 0,
+                pools: vec![(pool, state)],
+            },
+        );
+        let policy = SimPolicy {
+            mode: SimMode::StateSim,
+            ..Default::default()
+        };
+        let out = simulate_candidate(
+            &opp,
+            &seeds,
+            &mut HashMap::new(),
+            &HashMap::new(),
+            &policy,
+            None,
+        )
+        .expect("mint sim");
+        assert!(out.sim_gross_wei > 0);
+        assert!(out.repay_ok);
+    }
+
+    #[test]
+    fn unsupported_venue_is_a_skip_never_a_fill() {
+        use crate::pool::state::MetricPoolState;
+        let t0 = address!("0x0000000000000000000000000000000000000001");
+        let t1 = address!("0x0000000000000000000000000000000000000002");
+        let pool = address!("0x00000000000000000000000000000000000000ac");
+        let state = PoolState::Metric(MetricPoolState::new(crate::pool::state::PoolInfo {
+            address: pool,
+            token0: t0,
+            token1: t1,
+            fee: 30,
+            dex_type: crate::dex_type::DexType::Metric,
+            ..Default::default()
+        }));
+        let mut opp = MevOpportunity::new(6, 0, Strategy::TwoHopArb, pool, 0);
+        opp.token_in = t0;
+        opp.token_out = t1;
+        opp.path = Some(vec![pool]);
+        opp.route_tokens = Some(vec![t0, t1]);
+        opp.canonical_id = Some("metric-row".into());
+        opp.input_amount = U256::from(1_000u64);
+        let mut seeds = SimSeeds::new();
+        seeds.insert(
+            "metric-row".into(),
+            PoolSnapshot {
+                block_number: 6,
+                tx_index: 0,
+                pools: vec![(pool, state)],
+            },
+        );
+        let policy = SimPolicy {
+            mode: SimMode::StateSim,
+            ..Default::default()
+        };
+        let err = simulate_candidate(
+            &opp,
+            &seeds,
+            &mut HashMap::new(),
+            &HashMap::new(),
+            &policy,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err, SimFail::PathUnavailable);
+        assert_eq!(
+            err.to_skip(),
+            crate::paper::types::FillSkipReason::SimPathUnavailable
+        );
     }
 }

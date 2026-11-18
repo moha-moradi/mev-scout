@@ -199,24 +199,39 @@ impl PoolState {
     /// their smallest non-input token index, while the exit token flips across
     /// the pool's canonical `(token0, token1)` pair.
     pub fn quote_walk(&self, token_in: Address, amount_in: u128) -> Option<(u128, Address)> {
-        let quote_out = match self {
-            PoolState::Curve(c) => *c.token_index.keys().filter(|k| **k != token_in).min()?,
-            PoolState::Balancer(b) => *b.token_index.keys().filter(|k| **k != token_in).min()?,
+        let quote_out = self.walk_next_token(token_in)?;
+        let out = self.quote_dir(amount_in, token_in, quote_out)?;
+        Some((out, quote_out))
+    }
+
+    /// Token a walk leg exits into. Multi-token Curve/Balancer pools pick the
+    /// smallest non-input token; every other pool flips across its pair.
+    /// Shared with route token-sequence capture so sim/exec never re-derive it.
+    pub fn walk_next_token(&self, token_in: Address) -> Option<Address> {
+        match self {
+            PoolState::Curve(c) => c
+                .token_index
+                .keys()
+                .filter(|k| **k != token_in)
+                .min()
+                .copied(),
+            PoolState::Balancer(b) => b
+                .token_index
+                .keys()
+                .filter(|k| **k != token_in)
+                .min()
+                .copied(),
             _ => {
                 let (t0, t1) = self.token_pair();
                 if t0 == token_in {
-                    t1
+                    Some(t1)
                 } else if t1 == token_in {
-                    t0
+                    Some(t0)
                 } else {
-                    return None;
+                    None
                 }
             }
-        };
-        let out = self.quote_dir(amount_in, token_in, quote_out)?;
-        let (t0, t1) = self.token_pair();
-        let next = if t0 == token_in { t1 } else { t0 };
-        Some((out, next))
+        }
     }
 
     /// Largest input any single leg can trade in its best direction — the

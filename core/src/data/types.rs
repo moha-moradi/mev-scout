@@ -135,3 +135,14 @@ pub struct ExecutedLog {
     pub topics: Vec<B256>,
     pub data: Bytes,
 }
+
+impl From<&ExecutedLog> for LogData {
+    fn from(log: &ExecutedLog) -> Self {
+        LogData {
+            log_index: None,
+            address: log.address,
+            topics: log.topics.clone(),
+            data: log.data.clone(),
+        }
+    }
+}
