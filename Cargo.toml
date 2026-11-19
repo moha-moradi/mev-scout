@@ -2,6 +2,18 @@
 resolver = "2"
 members = ["core", "cli"]
 
+# Keep dev artifacts small: line tables for our crates only, no debuginfo for
+# dependencies, and no incremental cache (large due to many feature/test combos).
+[profile.dev]
+debug = 1
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.build-override]
+debug = false
+
 [workspace.lints.rust]
 warnings = "deny"
 
