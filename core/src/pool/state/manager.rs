@@ -824,10 +824,12 @@ impl PoolManager {
             if intermediate.is_zero() || intermediate == native {
                 continue;
             }
-            // Check if intermediate trades with native
-            if self.find_pair_pool(&intermediate, &native).is_none() {
+            let Some(native_pool) = self
+                .find_pair_pool(&intermediate, &native)
+                .and_then(|address| self.get(&address))
+            else {
                 continue;
-            }
+            };
             // Step 1: token -> intermediate via unified dispatcher
             let mid_amount = match pool {
                 PoolState::UniswapV2(v2) => {
@@ -848,9 +850,12 @@ impl PoolManager {
             if mid_amount == 0 {
                 continue;
             }
-            // Step 2: intermediate -> native
-            let native_amount = self.normalize_to_native(intermediate, mid_amount)?;
-            return Some(native_amount);
+            // A recursive normalizer here can cycle forever when dust quotes round to zero.
+            if let Some(native_amount) =
+                crate::pool::math::quote_exact_in(native_pool, intermediate, native, mid_amount)
+            {
+                return Some(native_amount);
+            }
         }
         None
     }
@@ -940,7 +945,7 @@ pub fn check_dedup_key(
 mod manager_tests {
     use super::*;
     use crate::data::ExecutedLog;
-    use crate::pool::state::pool_types::UniswapV2PoolState;
+    use crate::pool::state::pool_types::{PoolInfo, UniswapV2PoolState};
     use alloy::primitives::{address, Bytes, B256};
 
     const POOL: Address = address!("aa00000000000000000000000000000000000001");
@@ -962,6 +967,51 @@ mod manager_tests {
             reserve1: 1_000_000,
         }));
         pm
+    }
+
+    #[test]
+    fn native_normalization_dust_cycle_terminates() {
+        let native = Address::repeat_byte(9);
+        let mut pm = fixture().with_wrapped_native(native);
+        for (address, token) in [
+            (Address::repeat_byte(10), T_IN),
+            (Address::repeat_byte(11), T_OUT),
+        ] {
+            pm.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
+                info: PoolInfo {
+                    address,
+                    token0: token,
+                    token1: native,
+                    fee: 30,
+                    dex_type: crate::dex_type::DexType::UniswapV2,
+                    ..Default::default()
+                },
+                reserve0: 1_000_000,
+                reserve1: 1_000_000,
+            }));
+        }
+        assert_eq!(pm.normalize_to_native(T_IN, 1), None);
+        assert!(pm.normalize_to_native(T_IN, 1_000).is_some());
+    }
+
+    #[test]
+    fn native_normalization_keeps_two_hop_fallback() {
+        let native = Address::repeat_byte(9);
+        let mut pm = fixture().with_wrapped_native(native);
+        pm.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
+            info: PoolInfo {
+                address: Address::repeat_byte(10),
+                token0: T_OUT,
+                token1: native,
+                fee: 30,
+                dex_type: crate::dex_type::DexType::UniswapV2,
+                ..Default::default()
+            },
+            reserve0: 1_000_000,
+            reserve1: 1_000_000,
+        }));
+        assert!(pm.normalize_to_native(T_IN, 1_000).is_some());
+        assert_eq!(pm.normalize_to_native(T_IN, 1), None);
     }
 
     fn word(addr: Address) -> B256 {

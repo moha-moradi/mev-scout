@@ -1,202 +1,179 @@
-//! Live ↔ explorer per-tag parity on the frozen Avalanche window
-//! `99833048..=99836394`.
-//!
-//! Gated like every other live-RPC test: `MEV_SCOUT_E2E=1` + `RPC_URL`,
-//! otherwise it skips with no network I/O. The run is `#[ignore]`d because it
-//! replays ~3.3k blocks.
-//!
-//! Requirements (external data, reported explicitly when missing):
-//! * An **archive-capable** RPC: pool states are hydrated at `from − 1`.
-//! * A discovery cache with `pool_info` rows. Defaults to
-//!   `cache/avalanche-mev-scout.sqlite`; the test copies it to a temp file so
-//!   the repo cache is never mutated. Override with `MEV_SCOUT_PARITY_CACHE_DB`.
-//! * An explorer DB containing the window's `arb_atomic` rows. Defaults to
-//!   `cache/explorer-avalanche.sqlite`; override with
-//!   `MEV_SCOUT_PARITY_EXPLORER_DB`.
-//!
-//! Optional: `MEV_SCOUT_PARITY_CONFIG` (default `mev-scout.toml`),
-//! `MEV_SCOUT_PARITY_FETCH_RPC` (default Avalanche publicnode; block/receipt
-//! fetching only — the archive RPC is used for pool-state hydration),
-//! `MEV_SCOUT_PARITY_FROM` / `MEV_SCOUT_PARITY_TO` to narrow the window.
-//!
-//! Comparison: live log-only replay (same detectors/tags as `live`) is joined
-//! to explorer rows per block on `tx_hash`, falling back to route-pool
-//! intersection. For every explorer `arb_atomic` tag in the supported set
-//! (all ten except `forwarded_profit`, and the chain-unreachable static
-//! `fot_arb`/`rebase_arb`), a matched live row must carry the tag.
-use std::collections::{HashMap, HashSet};
+//! Historical live-detector benchmark; opt in with MEV_SCOUT_E2E=1 and RPC_URL.
+//! Only RPC_URL is used. The explorer reference is read-only; replay data and
+//! reports live in an isolated MEV_SCOUT_PARITY_OUTPUT directory.
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, B256};
+use anyhow::{ensure, Context};
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::chain::savax::{fetch_savax_exchange_rate, SavaxRateCache};
 use mev_scout_core::config::Config;
 use mev_scout_core::dex_type::DexType;
-use mev_scout_core::explorer::store::ExplorerStore;
+use mev_scout_core::explorer::store::{ExplorerStore, MevOpRow};
 use mev_scout_core::explorer::MevKind;
 use mev_scout_core::fetch::Fetcher;
 use mev_scout_core::jobs::{init_rpc, load_pool_registry};
 use mev_scout_core::mev::detectors::ArbTagPolicy;
-use mev_scout_core::paper::{LedgerPolicy, SimMode, SimPolicy};
-use mev_scout_core::pipeline::{aggregate_fills, BacktestRunner};
-use mev_scout_core::pool::state::PoolManager;
+use mev_scout_core::paper::{LedgerPolicy, SimMode, SimPolicy, SimSeeds};
+use mev_scout_core::pipeline::BacktestRunner;
+use mev_scout_core::pool::state::{PoolInfo, PoolManager};
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::resolver::ResolvedRange;
-use mev_scout_core::types::{GasConfig, RangeMode};
+use mev_scout_core::types::{GasConfig, MevOpportunity, RangeMode};
+use serde_json::{json, Value};
 
-mod common;
-use common::*;
+const FROM: u64 = 99_833_048;
+const TO: u64 = 99_836_394;
+const VENDOR_CORPUS: &str =
+    include_str!("../../docs/benchmarks/mevlive_avax_arb_recall_2026-11-09.md");
+const NA_TAGS: &[&str] = &["forwarded_profit", "fot_arb", "rebase_arb"];
 
-const DEFAULT_FROM: u64 = 99_833_048;
-const DEFAULT_TO: u64 = 99_836_394;
-
-/// Tags whose explorer side is a live target. `fot_arb` and `rebase_arb` come
-/// only from the static registry (Ethereum-only; no AVAX entries) and
-/// `forwarded_profit` is realized-only — all three are documented N/A.
-const EXCLUDED_TAGS: &[&str] = &["fot_arb", "rebase_arb", "forwarded_profit"];
-
-fn repo_path(rel: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace root")
-        .join(rel)
+fn repo_path(raw: impl AsRef<Path>) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(raw)
 }
 
-fn resolve_path(raw: &str) -> PathBuf {
-    let path = PathBuf::from(raw);
+fn env_path(name: &str, default: &str) -> PathBuf {
+    let path = PathBuf::from(std::env::var(name).unwrap_or_else(|_| default.into()));
     if path.is_absolute() {
         path
     } else {
-        repo_path(raw)
+        repo_path(path)
     }
 }
 
-fn env_u64(name: &str) -> Option<u64> {
-    std::env::var(name).ok().and_then(|v| v.parse().ok())
+fn env_number(name: &str, default: u64) -> anyhow::Result<u64> {
+    match std::env::var(name) {
+        Ok(value) => value.parse().with_context(|| format!("invalid {name}")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(e) => Err(e.into()),
+    }
 }
 
-fn temp_copy(src: &Path, tag: &str) -> anyhow::Result<PathBuf> {
-    let dst = std::env::temp_dir().join(format!(
-        "mev-scout-parity-{tag}-{}.sqlite",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&dst);
-    std::fs::copy(src, &dst)?;
-    Ok(dst)
+fn vendor_hashes() -> anyhow::Result<BTreeMap<B256, u64>> {
+    let section = VENDOR_CORPUS
+        .split("## Matched (5)")
+        .nth(1)
+        .context("vendor tables missing")?
+        .split("## Our ops in the same block window")
+        .next()
+        .context("vendor tables missing")?;
+    let mut hashes = BTreeMap::new();
+    for line in section.lines() {
+        let cells: Vec<_> = line
+            .split('|')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let Some(block) = cells.first().and_then(|s| s.parse::<u64>().ok()) else {
+            continue;
+        };
+        if let Some(hash) = cells
+            .last()
+            .and_then(|s| s.trim_matches('`').parse::<B256>().ok())
+        {
+            hashes.insert(hash, block);
+        }
+    }
+    ensure!(
+        hashes.len() == 47,
+        "frozen vendor corpus must have 47 unique hashes"
+    );
+    Ok(hashes)
 }
 
-fn explorer_tags(details_json: Option<&str>) -> HashSet<String> {
-    details_json
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-        .and_then(|v| v.get("tags").and_then(|t| t.as_array()).cloned())
-        .map(|tags| {
-            tags.iter()
-                .filter_map(|t| t.as_str().map(str::to_string))
-                .collect()
+fn tags(row: &MevOpRow) -> anyhow::Result<BTreeSet<String>> {
+    let details: Value = serde_json::from_str(
+        row.details_json
+            .as_deref()
+            .context("missing reference details")?,
+    )?;
+    let Some(values) = details.get("tags") else {
+        return Ok(BTreeSet::new());
+    };
+    values
+        .as_array()
+        .context("tags is not an array")?
+        .iter()
+        .map(|v| Ok(v.as_str().context("non-string tag")?.to_owned()))
+        .collect()
+}
+
+fn route_pools(row: &MevOpRow) -> anyhow::Result<HashSet<Address>> {
+    let route: Value = serde_json::from_str(
+        row.route_json
+            .as_deref()
+            .context("missing reference route")?,
+    )?;
+    route
+        .as_array()
+        .context("route is not an array")?
+        .iter()
+        .map(|leg| {
+            Ok(leg
+                .get("pool")
+                .and_then(Value::as_str)
+                .context("route pool missing")?
+                .parse()?)
         })
-        .unwrap_or_default()
+        .collect()
 }
 
-fn explorer_pools(route_json: Option<&str>) -> HashSet<Address> {
-    route_json
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-        .and_then(|v| v.as_array().cloned())
-        .map(|legs| {
-            legs.iter()
-                .filter_map(|leg| {
-                    leg.get("pool")
-                        .and_then(|p| p.as_str())
-                        .and_then(|s| s.parse::<Address>().ok())
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+fn candidate_pools(opp: &MevOpportunity) -> HashSet<Address> {
+    mev_scout_core::paper::pools_of_opp(opp)
+        .into_iter()
+        .collect()
 }
 
-fn live_pools(opp: &mev_scout_core::types::MevOpportunity) -> HashSet<Address> {
-    let mut pools: HashSet<Address> = opp.path.clone().unwrap_or_default().into_iter().collect();
-    if !opp.pool_a.is_zero() {
-        pools.insert(opp.pool_a);
-    }
-    if !opp.pool_b.is_zero() {
-        pools.insert(opp.pool_b);
-    }
-    pools
+fn strict_match(hash: B256, pools: &HashSet<Address>, opp: &MevOpportunity) -> bool {
+    opp.tx_hash == Some(hash) && !pools.is_disjoint(&candidate_pools(opp))
 }
 
-/// Seed the block-cache registry from the explorer's realized swaps in the
-/// parity window when the discovery cache is empty. Venue mapping mirrors
-/// `Amm::as_str`; on-chain init fills fees, full token sets, balances and bin
-/// steps. When explorer `arb_atomic` rows exist, only their route pools are
-/// seeded: those are the pools a parity comparison can actually need, and
-/// hydrating every swap venue in a 3.3k-block window is needless RPC load.
-fn seed_registry_from_explorer(
+fn snapshot_cache(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    ensure!(
+        !dst.exists(),
+        "refusing to overwrite benchmark cache {}",
+        dst.display()
+    );
+    let conn =
+        rusqlite::Connection::open_with_flags(src, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let integrity: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+    ensure!(integrity == "ok", "invalid source cache: {integrity}");
+    // VACUUM INTO includes committed WAL data without copying live sidecars.
+    conn.execute(
+        "VACUUM INTO ?1",
+        [dst.to_str().context("UTF-8 cache path")?],
+    )?;
+    Ok(())
+}
+
+fn seed_registry(
     cache: &SqliteStore,
     explorer: &ExplorerStore,
     from: u64,
     to: u64,
-) -> usize {
-    let mut wanted: HashSet<Address> = HashSet::new();
-    if let Ok(mut stmt) = explorer.connection().prepare(
-        "SELECT route_json FROM mev_ops
-         WHERE block_number BETWEEN ?1 AND ?2 AND kind = 'arb_atomic'",
-    ) {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![from as i64, to as i64], |r| {
-            r.get::<_, Option<String>>(0)
-        }) {
-            for row in rows.flatten() {
-                wanted.extend(explorer_pools(row.as_deref()));
-            }
-        }
-    }
-
-    let Ok(mut stmt) = explorer.connection().prepare(
-        "SELECT DISTINCT pool, amm, token_in, token_out FROM swaps
-         WHERE block_number BETWEEN ?1 AND ?2",
-    ) else {
-        return 0;
-    };
-    let Ok(rows) = stmt.query_map(rusqlite::params![from as i64, to as i64], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, Option<String>>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
-        ))
-    }) else {
-        return 0;
-    };
-    let mut seen: HashSet<Address> = HashSet::new();
-    let mut count = 0usize;
-    let venue_filter: Option<HashSet<String>> = std::env::var("MEV_SCOUT_PARITY_VENUES")
-        .ok()
-        .map(|raw| raw.split(',').map(|s| s.trim().to_string()).collect());
-    let include = |venue: &str| {
-        venue_filter
-            .as_ref()
-            .map(|set| set.contains(venue))
-            .unwrap_or(true)
-    };
-    for row in rows.flatten() {
-        let (pool, amm, token_in, token_out) = row;
-        let (Ok(address), Ok(tin), Ok(tout)) = (
-            pool.parse::<Address>(),
-            token_in.parse::<Address>(),
-            token_out.parse::<Address>(),
-        ) else {
-            continue;
-        };
-        if tin == tout || !seen.insert(address) {
+) -> anyhow::Result<usize> {
+    let existing: HashSet<_> = cache
+        .list_discovered_pools()?
+        .iter()
+        .map(|p| p.address)
+        .collect();
+    let mut stmt = explorer.connection().prepare(
+        "SELECT DISTINCT pool, amm FROM swaps WHERE block_number BETWEEN ?1 AND ?2 ORDER BY pool, amm")?;
+    let rows = stmt.query_map([from, to], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut count = 0;
+    let mut seen = HashSet::new();
+    for row in rows {
+        let (pool, amm) = row?;
+        let address: Address = pool.parse()?;
+        if existing.contains(&address) || !seen.insert(address) {
             continue;
         }
-        if !wanted.is_empty() && !wanted.contains(&address) {
-            continue;
-        }
-        let amm_name = amm.as_deref().unwrap_or("");
-        if !include(amm_name) {
-            continue;
-        }
-        let dex_type = match amm_name {
+        let dex_type = match amm.as_str() {
             "v2" => DexType::UniswapV2,
             "v3" => DexType::UniswapV3,
             "solidly" => DexType::Solidly,
@@ -204,149 +181,275 @@ fn seed_registry_from_explorer(
             "balancer" => DexType::Balancer,
             "lb" => DexType::TraderJoeLB,
             "pendle" => DexType::Pendle,
+            "metric" => DexType::Metric,
+            "fluid" => DexType::Fluid,
             _ => continue,
         };
-        let (token0, token1) = if tin < tout { (tin, tout) } else { (tout, tin) };
-        let info = mev_scout_core::pool::state::PoolInfo {
+        // Let historical on-chain metadata establish token ordering, especially PT/SY.
+        cache.put_discovered_pool(&PoolInfo {
             address,
-            token0,
-            token1,
             dex_type,
             ..Default::default()
-        };
-        if cache.put_discovered_pool(&info).is_ok() {
-            count += 1;
+        })?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+#[derive(Default, serde::Serialize)]
+struct TagCounts {
+    reference: usize,
+    matched: usize,
+    missing: usize,
+}
+
+fn compare(
+    reference: &[MevOpRow],
+    candidates: &[MevOpportunity],
+    vendor: &BTreeMap<B256, u64>,
+) -> anyhow::Result<Value> {
+    ensure!(
+        !reference.is_empty(),
+        "empty reference is not a passing benchmark"
+    );
+    let mut by_block: HashMap<u64, Vec<&MevOpportunity>> = HashMap::new();
+    for opp in candidates {
+        by_block.entry(opp.block_number).or_default().push(opp);
+    }
+    let mut by_tag: BTreeMap<String, TagCounts> = BTreeMap::new();
+    let mut matches = 0;
+    let mut matched_vendor = BTreeSet::new();
+    let mut misses = Vec::new();
+    let mut tag_misses = Vec::new();
+    let mut nearby_only = 0;
+    let mut unsupported_reference_tags = BTreeMap::<String, usize>::new();
+    for row in reference {
+        let hash: B256 = row.tx_hash.parse()?;
+        let pools = route_pools(row)?;
+        let reference_tags = tags(row)?;
+        let block_candidates = by_block.get(&row.block_number).cloned().unwrap_or_default();
+        let matched: Vec<_> = block_candidates
+            .iter()
+            .filter(|opp| strict_match(hash, &pools, opp))
+            .collect();
+        if matched.is_empty() {
+            let nearby = block_candidates
+                .iter()
+                .filter(|opp| !pools.is_disjoint(&candidate_pools(opp)))
+                .count();
+            nearby_only += usize::from(nearby > 0);
+            misses.push(json!({"block":row.block_number,"tx_hash":hash,"tags":reference_tags,"same_block_pool_overlap_only":nearby}));
+        } else {
+            matches += 1;
+            if vendor.contains_key(&hash) {
+                matched_vendor.insert(hash);
+            }
+        }
+        for tag in reference_tags {
+            if NA_TAGS.contains(&tag.as_str()) {
+                *unsupported_reference_tags.entry(tag).or_default() += 1;
+                continue;
+            }
+            let count = by_tag.entry(tag.clone()).or_default();
+            count.reference += 1;
+            if matched.iter().any(|opp| opp.has_tag(&tag)) {
+                count.matched += 1;
+            } else {
+                count.missing += 1;
+                tag_misses.push(json!({"block":row.block_number,"tx_hash":hash,"tag":tag}));
+            }
         }
     }
-    count
+    let reference_hashes: BTreeSet<B256> = reference
+        .iter()
+        .map(|r| r.tx_hash.parse())
+        .collect::<Result<_, _>>()?;
+    let vendor_missing_reference: Vec<_> = vendor
+        .keys()
+        .filter(|h| !reference_hashes.contains(*h))
+        .collect();
+    let vendor_missed_live: Vec<_> = vendor
+        .keys()
+        .filter(|h| !matched_vendor.contains(*h))
+        .collect();
+    Ok(json!({
+        "strict_join":"same block AND tx_hash AND nonempty route-pool intersection",
+        "reference_ops":reference.len(),"matched_ops":matches,"unmatched_ops":misses.len(),
+        "same_block_pool_overlap_only":nearby_only,"by_tag":by_tag,
+        "na_reference_tags":unsupported_reference_tags,
+        "vendor_total":vendor.len(),"vendor_found_in_reference":vendor.len()-vendor_missing_reference.len(),
+        "vendor_strict_live_matches":matched_vendor.len(),"vendor_missing_reference":vendor_missing_reference,
+        "vendor_missed_live":vendor_missed_live,"missed_ops":misses,"missing_tags":tag_misses,
+        "parity_pass":matches == reference.len() && tag_misses.is_empty() && vendor_missed_live.is_empty()
+    }))
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "live RPC parity replay; set MEV_SCOUT_E2E=1 and RPC_URL"]
+#[ignore = "historical RPC benchmark; requires MEV_SCOUT_E2E=1 and RPC_URL"]
 async fn live_tag_parity_frozen_avax_window() -> anyhow::Result<()> {
-    let Some(rpc_url) = rpc_url() else {
-        eprintln!("skip: set MEV_SCOUT_E2E=1 and RPC_URL to run the parity replay");
-        return Ok(());
-    };
-    let from = env_u64("MEV_SCOUT_PARITY_FROM").unwrap_or(DEFAULT_FROM);
-    let to = env_u64("MEV_SCOUT_PARITY_TO").unwrap_or(DEFAULT_TO);
-    assert!(from > 0 && to >= from, "invalid parity window {from}..={to}");
+    ensure!(
+        std::env::var("MEV_SCOUT_E2E").as_deref() == Ok("1"),
+        "set MEV_SCOUT_E2E=1"
+    );
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("mev_scout_core=warn")
+        .with_ansi(false)
+        .try_init();
+    let rpc_url = std::env::var("RPC_URL").context("RPC_URL required; no fallback")?;
+    ensure!(!rpc_url.trim().is_empty(), "RPC_URL is empty");
+    ensure!(
+        std::env::var("MEV_SCOUT_PARITY_VENUES").is_err(),
+        "venue filtering is not full parity"
+    );
+    let from = env_number("MEV_SCOUT_PARITY_FROM", FROM)?;
+    let to = env_number("MEV_SCOUT_PARITY_TO", TO)?;
+    ensure!(
+        FROM <= from && from <= to && to <= TO,
+        "window outside frozen corpus"
+    );
+    let vendor: BTreeMap<_, _> = vendor_hashes()?
+        .into_iter()
+        .filter(|(_, b)| from <= *b && *b <= to)
+        .collect();
+    let explorer_path = env_path(
+        "MEV_SCOUT_PARITY_EXPLORER_DB",
+        "cache/explorer-avax-rerun-2026-11-13.sqlite",
+    );
+    let explorer = ExplorerStore::open_read_only(&explorer_path)?;
+    let reference = explorer.ops_in_range(from, to, &[MevKind::ArbAtomic], None)?;
+    let comparison_blocks: HashSet<_> = reference.iter().map(|row| row.block_number).collect();
+    ensure!(
+        !reference.is_empty(),
+        "reference has no arb_atomic rows in {from}..={to}"
+    );
+    let reference_blocks: u64 = explorer.connection().query_row(
+        "SELECT COUNT(*) FROM blocks_classified WHERE block BETWEEN ?1 AND ?2",
+        [from, to],
+        |r| r.get(0),
+    )?;
+    ensure!(
+        reference_blocks == to - from + 1,
+        "incomplete explorer reference: {reference_blocks} blocks"
+    );
 
-    let config_path = std::env::var("MEV_SCOUT_PARITY_CONFIG")
-        .map(|p| resolve_path(&p).to_string_lossy().into_owned())
-        .unwrap_or_else(|_| repo_path("mev-scout.toml").to_string_lossy().into_owned());
-    let mut config = Config::load_or_default(&config_path)?;
+    let output = env_path(
+        "MEV_SCOUT_PARITY_OUTPUT",
+        &format!("results/live-benchmark-{from}-{to}-{}", std::process::id()),
+    );
+    std::fs::create_dir_all(&output)?;
+    let mut rows_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output.join("blocks.jsonl"))?;
+    let mut live_file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output.join("opportunities.jsonl"))?;
+    let cache_path = output.join("replay.sqlite");
+    if std::env::var("MEV_SCOUT_PARITY_CACHE_DB").is_ok() {
+        snapshot_cache(&env_path("MEV_SCOUT_PARITY_CACHE_DB", ""), &cache_path)?;
+    }
+    let cache = SqliteStore::open(&cache_path)?;
+    let seeded = seed_registry(&cache, &explorer, from, to)?;
+    eprintln!(
+        "reference={} vendor={} newly_seeded={} output={}",
+        reference.len(),
+        vendor.len(),
+        seeded,
+        output.display()
+    );
+
+    let config_path = env_path("MEV_SCOUT_PARITY_CONFIG", "mev-scout.toml");
+    let mut config = Config::load(config_path.to_str().context("UTF-8 config path")?)?;
     config.chain = mev_scout_core::types::ChainName::Avalanche;
+    for chain in config.chains.values_mut() {
+        chain.rpc = None;
+    }
     config.rpc.rpc_url = Some(rpc_url);
     config.rpc.rpc_urls.clear();
-    if let Some(n) = env_u64("MEV_SCOUT_PARITY_MAX_PAIRS") {
-        config.backtest.max_pairs_per_token = n as usize;
-    }
-
-    let explorer_db = std::env::var("MEV_SCOUT_PARITY_EXPLORER_DB")
-        .map(|p| resolve_path(&p))
-        .unwrap_or_else(|_| repo_path("cache/explorer-avalanche.sqlite"));
-    if !explorer_db.exists() {
-        eprintln!(
-            "skip: explorer DB {} missing; run `explorer index` for the window first",
-            explorer_db.display()
-        );
-        return Ok(());
-    }
-
-    let cache_src = std::env::var("MEV_SCOUT_PARITY_CACHE_DB")
-        .map(|p| resolve_path(&p))
-        .unwrap_or_else(|_| repo_path("cache/avalanche-mev-scout.sqlite"));
-    if !cache_src.exists() {
-        eprintln!(
-            "skip: discovery cache {} missing; run `discover` for Avalanche first",
-            cache_src.display()
-        );
-        return Ok(());
-    }
-    let cache_path = temp_copy(&cache_src, "cache")?;
+    config.rpc.rpc_rps = vec![5.0];
+    config.rpc.rps_limit = 5.0;
+    config.rpc.block_concurrency = Some(2);
     config.output.db_path = cache_path.to_string_lossy().into_owned();
-
-    let started = std::time::Instant::now();
+    config.backtest.capture_pending = false;
     let validation = mev_scout_core::config::validation::validate_live(&config)?;
-    let chain = validation.chain_name;
-    let setup = init_rpc(&config, chain, true).await?;
-    eprintln!("rpc ready in {:?}", started.elapsed());
-    let cache = SqliteStore::open(config.effective_db_path(&chain))?;
-    let explorer = ExplorerStore::open_read_only(&explorer_db)?;
-
-    if cache.list_discovered_pools().map(|p| p.is_empty()).unwrap_or(true) {
-        let seeded = seed_registry_from_explorer(&cache, &explorer, from, to);
-        eprintln!("seeded {seeded} pools from explorer swaps");
-    }
-
-    let registry = load_pool_registry(&config, &chain);
-    if registry.tokens.is_empty() {
-        eprintln!(
-            "skip: pool registry is empty in {}; ingest pools before a parity run",
-            cache_path.display()
-        );
-        return Ok(());
-    }
-
-    let mut pool_manager = PoolManager::new();
-    pool_manager.set_max_pairs_per_token(config.backtest.max_pairs_per_token);
-    pool_manager.set_tax_quoting(config.live.fot_quote);
-    pool_manager.set_concurrency_limit(4);
+    let setup = init_rpc(&config, config.chain, true).await?;
+    ensure!(
+        setup.provider_configs.len() == 1,
+        "benchmark requires exactly one RPC"
+    );
+    let started = Instant::now();
+    let range = ResolvedRange {
+        start_block: from,
+        end_block: to,
+        block_count: to - from + 1,
+        mode: RangeMode::Range(from, to),
+    };
+    let fetcher = Fetcher::new(setup.rpc.clone(), cache.clone()).with_block_concurrency(2);
+    let fetched_progress = std::sync::atomic::AtomicU64::new(0);
+    let fetch_tick = || {
+        let done = fetched_progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if done.is_multiple_of(100) {
+            eprintln!(
+                "fetch progress {done} at {:.1}s",
+                started.elapsed().as_secs_f64()
+            );
+        }
+        true
+    };
+    let summary = fetcher.fetch_range(&range, Some(&fetch_tick)).await?;
+    ensure!(
+        summary.missing_after_fetch.is_empty(),
+        "fetch incomplete: {:?}",
+        summary.missing_after_fetch
+    );
+    eprintln!(
+        "fetch done: {} blocks in {:.1}s",
+        range.block_count,
+        started.elapsed().as_secs_f64()
+    );
+    let mut pm = PoolManager::new();
+    pm.set_max_pairs_per_token(config.backtest.max_pairs_per_token);
+    pm.set_tax_quoting(config.live.fot_quote);
+    pm.set_concurrency_limit(2);
     if let Some(vault) = validation.chain_config.balancer_vault {
-        pool_manager = pool_manager.with_balancer_vault(vault);
+        pm = pm.with_balancer_vault(vault);
     }
     if let Some(native) = validation.chain_config.wrapped_native_token {
-        pool_manager = pool_manager.with_wrapped_native(native);
+        pm = pm.with_wrapped_native(native);
     }
-    BacktestRunner::init_pools(
-        &mut pool_manager,
-        &setup.rpc,
-        from.saturating_sub(1),
-        Some(&cache),
-    )
-    .await;
-    eprintln!("pool init done in {:?}", started.elapsed());
-    let mut by_type: HashMap<String, usize> = HashMap::new();
-    for addr in pool_manager.pool_addresses() {
-        if let Some(state) = pool_manager.get(&addr) {
-            *by_type.entry(format!("{:?}", state.info().dex_type)).or_default() += 1;
+    BacktestRunner::init_pools(&mut pm, &setup.rpc, from - 1, Some(&cache)).await;
+    ensure!(
+        !pm.pool_addresses().is_empty(),
+        "no historical pool states hydrated"
+    );
+    let hydrated: HashSet<_> = pm.pool_addresses().into_iter().collect();
+    let mut missing_reference_pools = BTreeSet::new();
+    for op in &reference {
+        for pool in route_pools(op)? {
+            if !hydrated.contains(&pool) {
+                missing_reference_pools.insert(pool);
+            }
         }
     }
-    eprintln!("pools by type: {by_type:?}");
-    if let Ok(raw) = std::env::var("MEV_SCOUT_PARITY_VENUES") {
-        let venues: HashSet<String> = raw.split(',').map(|s| s.trim().to_string()).collect();
-        pool_manager.retain_pools(|state| {
-            let name = match state.info().dex_type {
-                DexType::UniswapV2 => "v2",
-                DexType::UniswapV3 => "v3",
-                DexType::Solidly => "solidly",
-                DexType::Curve => "curve",
-                DexType::Balancer => "balancer",
-                DexType::TraderJoeLB => "lb",
-                DexType::Pendle => "pendle",
-                _ => "other",
-            };
-            venues.contains(name)
-        });
-        eprintln!(
-            "venues restricted to {:?}: {} pools remain",
-            venues,
-            pool_manager.pool_addresses().len()
-        );
+    let registry = load_pool_registry(&config, &config.chain);
+    let chain = &validation.chain_config;
+    let wrapped_native = chain.wrapped_native_token.unwrap_or(Address::ZERO);
+    let mut blue_chips = chain.profit_stable_tokens.clone().unwrap_or_default();
+    if !wrapped_native.is_zero() {
+        blue_chips.push(wrapped_native);
     }
-    if pool_manager.pool_addresses().is_empty() {
-        eprintln!(
-            "skip: no pool state hydrated at block {}; an archive RPC is required",
-            from.saturating_sub(1)
-        );
-        return Ok(());
-    }
-
-    // sAVAX rate is resolved after the blocks are cached (see below), so the
-    // archive RPC only sees the single rate call.
-
-    let gas_config = GasConfig {
+    let policy = ArbTagPolicy {
+        blue_chips,
+        wrapped_native,
+        savax: chain.savax,
+        epoch_venue_pools: registry.epoch_venue.into_iter().collect(),
+        gmx_market_tokens: chain.gmx_market_tokens.clone().unwrap_or_default(),
+        gmx_event_emitters: chain.gmx_event_emitters.clone().unwrap_or_default(),
+        flash_financed: config.paper.sim_flash_loan,
+        savax_rate_wad: None,
+    };
+    let gas = GasConfig {
         gas_limit: config.gas.gas_limit,
         gas_model: validation.gas_model,
         priority_fee_gwei: config.gas.priority_fee_gwei,
@@ -355,249 +458,255 @@ async fn live_tag_parity_frozen_avax_window() -> anyhow::Result<()> {
         percentile_gas_price: None,
         calibration: Default::default(),
     };
-
-    let range = ResolvedRange {
-        start_block: from,
-        end_block: to,
-        block_count: to - from + 1,
-        mode: RangeMode::Range(from, to),
-    };
-    // Receipt fetching goes to a full node (publicnode serves historical
-    // getBlockReceipts); archive state stays on the configured RPC.
-    let fetch_url = std::env::var("MEV_SCOUT_PARITY_FETCH_RPC").unwrap_or_else(|_| {
-        "https://avalanche-c-chain-rpc.publicnode.com".to_string()
-    });
-    let fetch_rpc = mev_scout_core::rpc::RpcClient::from_urls(
-        &[fetch_url.as_str()],
-        validation.chain_config.chain_id,
-    )?;
-    eprintln!("fetching {} blocks from {from}", range.block_count);
-    let mut fetcher = Fetcher::new(fetch_rpc.clone(), cache.clone());
-    fetcher = fetcher.with_block_concurrency(8);
-    let tick: Option<&fn() -> bool> = None;
-    fetcher.fetch_range(&range, tick).await?;
-    eprintln!("fetch done in {:?}", started.elapsed());
-
-    let start_ts = cache
-        .get_block(from)?
-        .map(|b| b.timestamp)
-        .unwrap_or_else(mev_scout_core::utils::epoch_secs);
-    let mut savax_cache = SavaxRateCache::default();
-    let savax_rate = fetch_savax_exchange_rate(
-        &setup.rpc,
-        validation.chain_config.savax,
-        from,
-        start_ts,
-        &mut savax_cache,
-    )
-    .await;
-
-    let wrapped_native = validation
-        .chain_config
-        .wrapped_native_token
-        .unwrap_or(Address::ZERO);
-    let mut blue_chips = validation
-        .chain_config
-        .profit_stable_tokens
-        .clone()
-        .unwrap_or_default();
-    if !wrapped_native.is_zero() {
-        blue_chips.push(wrapped_native);
-    }
-    blue_chips.retain(|a| !a.is_zero());
-    let policy = ArbTagPolicy {
-        blue_chips,
-        wrapped_native,
-        savax: validation.chain_config.savax,
-        epoch_venue_pools: registry.epoch_venue.iter().copied().collect(),
-        gmx_market_tokens: validation
-            .chain_config
-            .gmx_market_tokens
-            .clone()
-            .unwrap_or_default(),
-        gmx_event_emitters: validation
-            .chain_config
-            .gmx_event_emitters
-            .clone()
-            .unwrap_or_default(),
-        flash_financed: config.paper.sim_flash_loan,
-        savax_rate_wad: savax_rate,
-    };
-
+    let handle = tokio::runtime::Handle::current();
     let replayer = BlockReplayer::new(
-        tokio::runtime::Handle::current(),
+        handle.clone(),
         cache.clone(),
-        fetch_rpc,
-        validation.chain_config.chain_id,
+        setup.rpc.clone(),
+        chain.chain_id,
     );
-    let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
+    let mut runner = BacktestRunner::new(replayer, pm, gas)
         .with_tag_policy(policy)
-        .with_sim_seeds(true, 32)
-        .with_record_rejections(false);
-
-    eprintln!("replaying (log-only) {from}..={to}");
-    // horizon > end → every block uses the log-only path (no historical EVM
-    // state needed per block; pool state is maintained from logs).
-    // The multi-hop DFS is deep; libtest's 2 MB Windows stack overflows on a
-    // 3.3k-block log-only replay. Run it on a dedicated stack, block by block,
-    // so a failure names its block instead of only "stack overflow".
-    let progress = |block: u64| {
-        eprintln!("replay block {block} at {:?}", started.elapsed());
-    };
-    let stack_mb = env_u64("MEV_SCOUT_PARITY_STACK_MB").unwrap_or(64) as usize;
-    let live_opps: Vec<mev_scout_core::types::MevOpportunity> = std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .name("parity-replay".into())
-            .stack_size(stack_mb * 1024 * 1024)
-            .spawn_scoped(scope, || -> anyhow::Result<Vec<_>> {
-                let mut all = Vec::new();
-                for block in from..=to {
-                    progress(block);
-                    match runner.sync_block_from_logs(block) {
-                        Ok((mut opps, _stats, _prices)) => {
-                            runner.finish_log_block();
-                            all.append(&mut opps);
-                        }
-                        Err(e) => {
-                            runner.rollback_log_block();
-                            anyhow::bail!("block {block}: {e}");
-                        }
-                    }
-                }
-                Ok(all)
-            })
-            .expect("spawn replay thread")
-            .join()
-            .expect("replay thread panicked")
-    })?;
-    eprintln!("replay done in {:?}", started.elapsed());
-    let live_opps: Vec<_> = live_opps
-        .into_iter()
-        .filter(|o| o.strategy != mev_scout_core::types::Strategy::Jit)
-        .collect();
-    eprintln!("live rows: {}", live_opps.len());
-
-    // State-sim the run's candidates against the captured pool snapshots,
-    // exactly like `live --sim state` (no exec): fills vs counted skips.
-    let seeds = runner.take_sim_seeds();
+        .with_sim_seeds(true, config.paper.sim_max_candidates_per_block)
+        .with_min_profit_wei(config.backtest.min_profit_wei)
+        .with_max_candidates_per_tx(config.backtest.max_candidates_per_tx);
     let sim_policy = SimPolicy {
         mode: SimMode::StateSim,
         flash_loan: config.paper.sim_flash_loan,
         fee_bps: validation.flash_loan_provider.fee_rate_bps(),
         max_candidates_per_block: config.paper.sim_max_candidates_per_block,
     };
-    let ledger = LedgerPolicy {
-        starting_gas_wei: mev_scout_core::paper::default_starting_gas_wei(),
-        reserve_wei: 0,
-        max_fills_per_block: mev_scout_core::paper::HARD_MAX_FILLS_PER_BLOCK,
-    }
-    .apply_simulated(&live_opps, &seeds, &sim_policy, Some(runner.pool_manager()));
-    let mut skip_counts: HashMap<String, usize> = HashMap::new();
-    for skip in &ledger.skips {
-        *skip_counts.entry(format!("{:?}", skip.reason)).or_default() += 1;
-    }
-    let by_tag = aggregate_fills(&ledger.fills, 0.0).by_tag;
-    let tag_fills: HashMap<String, usize> =
-        by_tag.iter().map(|(tag, m)| (tag.clone(), m.count)).collect();
+    let mut ledger_policy = LedgerPolicy::default();
+    let mut comparison_candidates = Vec::new();
+    let mut total_candidate_count = 0usize;
+    let mut simulation_candidates = Vec::new();
+    let mut skip_counts = BTreeMap::<String, usize>::new();
+    let mut fills_by_tag = BTreeMap::<String, usize>::new();
+    let mut fill_count = 0usize;
+    let mut seed_mismatch_count = 0usize;
+    let mut missing_rate_blocks = 0usize;
+    let mut seeds_capped = 0usize;
+    let mut rate_cache = SavaxRateCache::default();
+    let mut rate_hour = None;
+    let replay_started = Instant::now();
     eprintln!(
-        "state-sim: {} seeds, {} fills, {} skips {skip_counts:?}, fills by tag {tag_fills:?}",
-        seeds.len(),
-        ledger.fills.len(),
-        ledger.skips.len(),
+        "hydrated={} missing_reference_pools={} max_pairs={} replay starting",
+        hydrated.len(),
+        missing_reference_pools.len(),
+        config.backtest.max_pairs_per_token
     );
-
-    // Index live rows by block for the join.
-    let mut live_by_block: HashMap<u64, Vec<&mev_scout_core::types::MevOpportunity>> = HashMap::new();
-    for opp in &live_opps {
-        live_by_block.entry(opp.block_number).or_default().push(opp);
-    }
-
-    let ops = explorer.ops_in_range(from, to, &[MevKind::ArbAtomic], None)?;
-
-    let mut explorer_tag_counts: HashMap<String, usize> = HashMap::new();
-    let mut live_tag_counts: HashMap<String, usize> = HashMap::new();
-    for opp in &live_opps {
-        for tag in &opp.tags {
-            *live_tag_counts.entry(tag.clone()).or_default() += 1;
-        }
-    }
-
-    let active_venues = std::env::var("MEV_SCOUT_PARITY_VENUES")
-        .ok()
-        .map(|raw| -> HashSet<String> { raw.split(',').map(|s| s.trim().to_string()).collect() });
-    let venue_enabled = |venue: &str| {
-        active_venues
-            .as_ref()
-            .map(|set| set.contains(venue))
-            .unwrap_or(true)
-    };
-    let mut missing: Vec<(u64, String, String)> = Vec::new(); // (block, hash, tag)
-    let mut unmatched_ops = 0usize;
-    let mut compared = 0usize;
-    let mut venue_skipped: HashMap<String, usize> = HashMap::new();
-    for op in &ops {
-        let tags = explorer_tags(op.details_json.as_deref());
-        for tag in &tags {
-            *explorer_tag_counts.entry(tag.clone()).or_default() += 1;
-        }
-        let Some(candidates) = live_by_block.get(&op.block_number) else {
-            unmatched_ops += 1;
-            continue;
-        };
-        let hash = op.tx_hash.to_lowercase();
-        let pools = explorer_pools(op.route_json.as_deref());
-        let matched: Vec<_> = candidates
-            .iter()
-            .filter(|live| {
-                live.tx_hash
-                    .is_some_and(|h| format!("{h}").eq_ignore_ascii_case(&hash))
-                    || !pools.is_disjoint(&live_pools(live))
-            })
-            .collect();
-        if matched.is_empty() {
-            unmatched_ops += 1;
-            continue;
-        }
-        compared += 1;
-        let live_tags: HashSet<String> =
-            matched.iter().flat_map(|o| o.tags.iter().cloned()).collect();
-        for tag in &tags {
-            if EXCLUDED_TAGS.contains(&tag.as_str()) {
-                continue;
-            }
-            // Venue-scoped tags cannot be produced while their venue set is
-            // filtered out of the replay; report them instead of failing.
-            if tag == "curve_imbalance" && !venue_enabled("curve") {
-                *venue_skipped.entry(tag.clone()).or_default() += 1;
-                continue;
-            }
-            if tag == "rate_provider_staleness" && !venue_enabled("balancer") {
-                *venue_skipped.entry(tag.clone()).or_default() += 1;
-                continue;
-            }
-            if !live_tags.contains(tag) {
-                missing.push((op.block_number, hash.clone(), tag.clone()));
-            }
-        }
-    }
-
-    eprintln!("explorer arb_atomic rows: {}", ops.len());
-    eprintln!("joined rows: {compared} (unmatched: {unmatched_ops})");
-    eprintln!("explorer tags: {explorer_tag_counts:?}");
-    eprintln!("live tags: {live_tag_counts:?}");
-    if !venue_skipped.is_empty() {
-        eprintln!("venue-scoped tags not checked in this run: {venue_skipped:?}");
-    }
-    if !missing.is_empty() {
-        for (block, hash, tag) in missing.iter().take(50) {
-            eprintln!("MISSING tag {tag} block {block} tx {hash}");
-        }
-        anyhow::bail!(
-            "live tag parity failed: {} explorer tag(s) missing from matched live rows",
-            missing.len()
+    for block in from..=to {
+        let header = cache.get_block(block)?.context("cached header missing")?;
+        let reference_hash: String = explorer.connection().query_row(
+            "SELECT block_hash FROM blocks WHERE block_number=?1",
+            [block],
+            |r| r.get(0),
+        )?;
+        ensure!(
+            header.hash == reference_hash.parse::<B256>()?,
+            "reference/cache hash mismatch at {block}"
         );
+        let hour = header.timestamp / 3600;
+        if rate_hour != Some(hour) {
+            let rate = fetch_savax_exchange_rate(
+                &setup.rpc,
+                chain.savax,
+                block,
+                header.timestamp,
+                &mut rate_cache,
+            )
+            .await;
+            runner.set_savax_rate(rate);
+            rate_hour = Some(hour);
+        }
+        if chain.savax.is_some() && rate_cache.get(hour).is_none() {
+            missing_rate_blocks += 1;
+        }
+        let (mut opps, _, _) = runner
+            .sync_block_from_logs(block)
+            .with_context(|| format!("replay block {block}"))?;
+        runner.finish_log_block();
+        let seeds = runner.take_sim_seeds();
+        seeds_capped += runner.take_seeds_capped();
+        let mut local_seeds = SimSeeds::new();
+        // Never reuse a snapshot from another transaction/block for a repeated route ID.
+        for (index, opp) in opps.iter_mut().enumerate() {
+            let old = opp.canonical_id.clone();
+            let id = format!(
+                "{block}|{}|{index}|{}",
+                opp.tx_index,
+                old.as_deref().unwrap_or("missing")
+            );
+            if let Some(seed) = old.as_ref().and_then(|id| seeds.get(id)) {
+                if seed.block_number == block && seed.tx_index == opp.tx_index {
+                    local_seeds.insert(id.clone(), seed.clone());
+                } else {
+                    seed_mismatch_count += 1;
+                }
+            }
+            opp.canonical_id = Some(id);
+        }
+        let ledger = ledger_policy.apply_simulated(
+            &opps,
+            &local_seeds,
+            &sim_policy,
+            Some(runner.pool_manager()),
+        );
+        ledger_policy.starting_gas_wei = ledger.ending_gas_wei;
+        for skip in &ledger.skips {
+            *skip_counts.entry(format!("{:?}", skip.reason)).or_default() += 1;
+        }
+        for fill in &ledger.fills {
+            for tag in &fill.tags {
+                *fills_by_tag.entry(tag.clone()).or_default() += 1;
+            }
+        }
+        fill_count += ledger.fills.len();
+        total_candidate_count += opps.len();
+        #[derive(serde::Serialize)]
+        struct BlockOutput<'a> {
+            block: u64,
+            candidates: usize,
+            captured_seeds: usize,
+            valid_seeds: usize,
+            fills: &'a [mev_scout_core::paper::PaperFill],
+            skips: &'a [mev_scout_core::paper::PaperSkip],
+        }
+        serde_json::to_writer(
+            &mut rows_file,
+            &BlockOutput {
+                block,
+                candidates: opps.len(),
+                captured_seeds: seeds.len(),
+                valid_seeds: local_seeds.len(),
+                fills: &ledger.fills,
+                skips: &ledger.skips,
+            },
+        )?;
+        writeln!(&mut rows_file)?;
+        if comparison_blocks.contains(&block) {
+            let accepted: HashSet<_> = ledger
+                .fills
+                .iter()
+                .filter_map(|fill| fill.canonical_id.as_ref())
+                .collect();
+            for opp in &opps {
+                serde_json::to_writer(&mut live_file, opp)?;
+                writeln!(&mut live_file)?;
+                if opp
+                    .canonical_id
+                    .as_ref()
+                    .is_some_and(|id| accepted.contains(id))
+                {
+                    simulation_candidates.push(opp.clone());
+                }
+            }
+            comparison_candidates.extend(opps);
+        }
+        let done = block - from + 1;
+        if done == 1 || done.is_multiple_of(100) || block == to {
+            rows_file.flush()?;
+            live_file.flush()?;
+            let elapsed = replay_started.elapsed().as_secs_f64();
+            eprintln!(
+                "replay {done}/{} {:.2} blocks/s ETA {:.0}s candidates={} fills={fill_count}",
+                range.block_count,
+                done as f64 / elapsed,
+                (range.block_count - done) as f64 * elapsed / done as f64,
+                total_candidate_count
+            );
+        }
     }
-    eprintln!("live tag parity: OK (no missing supported tag)");
-    let _ = std::fs::remove_file(&cache_path);
+    let comparison = compare(&reference, &comparison_candidates, &vendor)?;
+    let simulated_comparison = compare(&reference, &simulation_candidates, &vendor)?;
+    let report = json!({
+        "from":from,"to":to,"processed_blocks":range.block_count,
+        "reference_db":explorer_path,"reference_schema":explorer.user_version()?,
+        "mode":"historical receipt-driven live detectors + state quotes, NOT EVM execution",
+        "rpc_providers":1,"cached_blocks":summary.cached,"fetched_blocks":summary.fetched,
+        "registry":"retrospective swap-derived pool universe; not a discovery recall test",
+        "opportunities_file_scope":"all candidates on blocks containing reference arbs; per-block counts cover the whole range",
+        "hydrated_pools":hydrated.len(),"missing_reference_pools":missing_reference_pools,
+        "max_pairs_per_token":config.backtest.max_pairs_per_token,"candidate_count":total_candidate_count,
+        "fills":fill_count,"fills_by_tag":fills_by_tag,"skips":skip_counts,
+        "rejected_snapshot_mismatches":seed_mismatch_count,"seeds_capped":seeds_capped,
+        "missing_savax_rate_blocks":missing_rate_blocks,"elapsed_secs":started.elapsed().as_secs_f64(),
+        "simulation_limitations":["state quotes are not EVM-confirmed profit", "tax map is the block-final learned map", "receipt replay uses existing venue state approximations"],
+        "comparison":comparison,"simulated_comparison":simulated_comparison
+    });
+    std::fs::write(
+        output.join("summary.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    eprintln!(
+        "BENCHMARK reference={} matched={} vendor={}/{} candidates={} fills={} report={}",
+        reference.len(),
+        comparison["matched_ops"],
+        comparison["vendor_strict_live_matches"],
+        vendor.len(),
+        total_candidate_count,
+        fill_count,
+        output.join("summary.json").display()
+    );
+    ensure!(
+        comparison["parity_pass"] == true,
+        "parity NOT achieved; complete metrics in {}",
+        output.join("summary.json").display()
+    );
     Ok(())
+}
+
+#[test]
+fn frozen_vendor_corpus_has_47_unique_hashes() {
+    assert_eq!(vendor_hashes().unwrap().len(), 47);
+}
+
+#[test]
+fn join_requires_hash_and_pool() {
+    let hash = B256::repeat_byte(1);
+    let pool = Address::repeat_byte(2);
+    let mut opp = MevOpportunity::new(FROM, 0, mev_scout_core::types::Strategy::TwoHopArb, pool, 0);
+    let pools = HashSet::from([pool]);
+    assert!(!strict_match(hash, &pools, &opp));
+    opp.tx_hash = Some(hash);
+    assert!(strict_match(hash, &pools, &opp));
+    assert!(!strict_match(
+        hash,
+        &HashSet::from([Address::repeat_byte(3)]),
+        &opp
+    ));
+}
+
+#[test]
+fn unmatched_rows_fail_parity_and_count_missing_tags() {
+    let row = MevOpRow {
+        id: 1,
+        block_number: FROM,
+        tx_index: Some(0),
+        tx_hash: B256::repeat_byte(1).to_string(),
+        ts: 0,
+        kind: "arb_atomic".into(),
+        eoa: String::new(),
+        contract: None,
+        confidence: "inferred".into(),
+        canonical_id: None,
+        profit_token: None,
+        profit_amount: None,
+        profit_usd: None,
+        volume_usd: None,
+        gas_cost_usd: None,
+        flashloan_fee_usd: None,
+        net_profit_usd: None,
+        route_json: Some(json!([{"pool":Address::repeat_byte(2)}]).to_string()),
+        victim_hashes: None,
+        details_json: Some(json!({"tags":["long_tail"]}).to_string()),
+        detector: "test".into(),
+        created_at: 0,
+        subkind: None,
+    };
+    let report = compare(&[row], &[], &BTreeMap::new()).unwrap();
+    assert_eq!(report["parity_pass"], false);
+    assert_eq!(report["unmatched_ops"], 1);
+    assert_eq!(report["by_tag"]["long_tail"]["missing"], 1);
+    assert!(compare(&[], &[], &BTreeMap::new()).is_err());
 }
