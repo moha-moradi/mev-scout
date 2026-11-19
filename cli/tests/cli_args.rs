@@ -80,20 +80,27 @@ fn explorer_help_lists_subcommands() {
             "explorer --help still lists removed subcommand '{removed}'"
         );
     }
-    for flag in [
+    for removed in [
         "--dashboard",
         "--db",
-        "--out",
         "--format",
         "--repeat",
         "--kind",
         "--confidence",
     ] {
         assert!(
-            out.stdout.contains(flag),
-            "explorer --help missing retained flag '{flag}'"
+            !out.stdout.contains(removed),
+            "explorer --help still lists removed flag '{removed}'"
         );
     }
+    assert!(
+        out.stdout.contains("--out"),
+        "explorer --help missing retained flag '--out'"
+    );
+    assert!(
+        !out.stdout.contains("--window"),
+        "range flags belong on the index subcommand, not bare explorer"
+    );
     for removed in [
         "--windows",
         "--top",
@@ -468,9 +475,9 @@ fn default_subcommand_matches_live_defaults() {
     }
 }
 
-/// Bare `explorer` is the all-time revenue report; dashboard is a mode flag.
+/// Bare `explorer` emits the all-time HTML dashboard; `--out` is its only flag.
 #[test]
-fn bare_explorer_is_all_time_report() {
+fn bare_explorer_emits_dashboard_by_default() {
     use clap::Parser;
     use mev_scout_cli::cli::{Cli, Command};
 
@@ -478,89 +485,22 @@ fn bare_explorer_is_all_time_report() {
     match cli.command {
         Some(Command::Explorer(a)) => {
             assert!(a.command.is_none(), "bare explorer has no subcommand");
-            assert!(a.kind.is_none());
-            assert!(a.resolved_confidence().is_none());
-            assert!(!a.dashboard.any_set(), "dashboard off by default");
-            assert!(!a.bare_flags_set());
+            assert!(a.out.is_none(), "output path is auto-derived by default");
         }
         other => panic!("expected Explorer, got {other:?}"),
     }
 
-    let cli = Cli::parse_from([
-        "mev-scout",
-        "explorer",
-        "--kind",
-        "sandwich",
-        "--confidence",
-        "exact",
-    ]);
+    let cli = Cli::parse_from(["mev-scout", "explorer", "--out", "custom.html"]);
     match cli.command {
         Some(Command::Explorer(a)) => {
-            assert!(a.command.is_none());
-            assert!(a.bare_flags_set());
-            assert_eq!(a.kind.as_deref(), Some("sandwich"));
-            assert_eq!(a.resolved_confidence(), Some("exact"));
-        }
-        other => panic!("expected Explorer, got {other:?}"),
-    }
-
-    let cli = Cli::parse_from([
-        "mev-scout",
-        "explorer",
-        "--dashboard",
-        "--db",
-        "snapshot.sqlite",
-        "--format",
-        "json",
-    ]);
-    match cli.command {
-        Some(Command::Explorer(a)) => {
-            assert!(a.dashboard.dashboard);
-            assert!(a.bare_flags_set());
-            assert_eq!(a.dashboard.resolved_format(), "json");
-            assert_eq!(
-                a.dashboard.resolved_out(),
-                std::path::PathBuf::from("results/dash.html")
-            );
+            assert_eq!(a.out, Some(std::path::PathBuf::from("custom.html")));
         }
         other => panic!("expected Explorer, got {other:?}"),
     }
 }
 
-/// `--confidence` accepts exactly the documented values; `all` and omission both
-/// mean "no filter" (`None`), while `exact`/`inferred` resolve to that level so
-/// the report queries filter on the `mev_ops.confidence` column.
-#[test]
-fn explorer_confidence_flag_resolves_to_documented_values() {
-    use clap::Parser;
-    use mev_scout_cli::cli::{Cli, Command};
-
-    let all = Cli::parse_from(["mev-scout", "explorer", "--confidence", "all"]);
-    match all.command {
-        Some(Command::Explorer(a)) => {
-            assert!(a.bare_flags_set());
-            assert!(
-                a.resolved_confidence().is_none(),
-                "'all' must mean no filter"
-            );
-        }
-        other => panic!("expected Explorer, got {other:?}"),
-    }
-
-    let exact = Cli::parse_from(["mev-scout", "explorer", "--confidence", "exact"]);
-    match exact.command {
-        Some(Command::Explorer(a)) => assert_eq!(a.resolved_confidence(), Some("exact")),
-        other => panic!("expected Explorer, got {other:?}"),
-    }
-
-    let inferred = Cli::parse_from(["mev-scout", "explorer", "--confidence", "inferred"]);
-    match inferred.command {
-        Some(Command::Explorer(a)) => assert_eq!(a.resolved_confidence(), Some("inferred")),
-        other => panic!("expected Explorer, got {other:?}"),
-    }
-}
-
-/// `explorer index` is a bounded historical backfill (default 7 days).
+/// `explorer index` is a bounded historical backfill (default 7 days) that
+/// exits through the HTML dashboard.
 #[test]
 fn explorer_index_defaults_to_backfill_shape() {
     use clap::Parser;
@@ -573,7 +513,7 @@ fn explorer_index_defaults_to_backfill_shape() {
                 assert!(i.window.is_none());
                 assert!(i.from_block.is_none());
                 assert!(i.to_block.is_none());
-                assert!(!i.dashboard);
+                assert!(a.out.is_none());
             }
             other => panic!("expected Index, got {other:?}"),
         },
@@ -603,7 +543,6 @@ fn explorer_index_defaults_to_backfill_shape() {
         "65000000",
         "--to-block",
         "65001000",
-        "--dashboard",
     ]);
     match cli.command {
         Some(Command::Explorer(a)) => match a.command {
@@ -611,11 +550,81 @@ fn explorer_index_defaults_to_backfill_shape() {
                 assert_eq!(i.from_block, Some(65_000_000));
                 assert_eq!(i.to_block, Some(65_001_000));
                 assert!(i.window.is_none());
-                assert!(i.dashboard);
             }
             other => panic!("expected Index, got {other:?}"),
         },
         other => panic!("expected Explorer, got {other:?}"),
+    }
+}
+
+/// `--out` is global within the explorer group: both positions parse.
+#[test]
+fn explorer_out_flag_accepts_both_positions() {
+    use clap::Parser;
+    use mev_scout_cli::cli::{Cli, Command, ExplorerCommand};
+
+    for args in [
+        [
+            "mev-scout",
+            "explorer",
+            "index",
+            "--window",
+            "24h",
+            "--out",
+            "x.html",
+        ],
+        [
+            "mev-scout",
+            "explorer",
+            "--out",
+            "x.html",
+            "index",
+            "--window",
+            "24h",
+        ],
+    ] {
+        let cli = Cli::parse_from(args);
+        match cli.command {
+            Some(Command::Explorer(a)) => {
+                assert_eq!(a.out, Some(std::path::PathBuf::from("x.html")));
+                assert!(matches!(a.command, Some(ExplorerCommand::Index(_))));
+            }
+            other => panic!("expected Explorer, got {other:?}"),
+        }
+    }
+}
+
+/// Removed explorer flags are unknown arguments on both bare explorer and index.
+#[test]
+fn explorer_removed_flags_are_rejected() {
+    for flag in [
+        &["--db", "snapshot.sqlite"][..],
+        &["--format", "json"][..],
+        &["--repeat", "60s"][..],
+        &["--confidence", "exact"][..],
+        &["--kind", "sandwich"][..],
+        &["--dashboard"][..],
+    ] {
+        for prefix in [
+            &["explorer"][..],
+            &["explorer", "index", "--window", "1d"][..],
+        ] {
+            let mut args: Vec<&str> = prefix.to_vec();
+            args.extend_from_slice(flag);
+            let ws = temp_ws(&format!(
+                "args_explorer_removed_{}",
+                args.join("_").replace(['-', '/', '.'], "_")
+            ));
+            let out = run(&ws, &args);
+            expect_fail(&out, &format!("removed explorer flag {args:?}"));
+            let combined = out.combined();
+            assert!(
+                combined.contains("unexpected argument")
+                    || combined.contains("unrecognized")
+                    || combined.contains("unknown"),
+                "expected clap unknown-arg rejection for {args:?}, got:\n{combined}"
+            );
+        }
     }
 }
 
@@ -678,84 +687,6 @@ fn explorer_index_rejects_loop_flag() {
         combined.contains("unexpected argument") || combined.contains("unrecognized"),
         "expected clap unknown-arg rejection for --loop, got:\n{combined}"
     );
-}
-
-/// Unknown `--confidence` values are rejected at the clap level (offline),
-/// so an invalid value never reaches the report SQL path.
-#[test]
-fn explorer_invalid_confidence_value_fails_at_clap() {
-    let ws = temp_ws("args_explorer_confidence_invalid");
-    let out = run(&ws, &["explorer", "--confidence", "bogus"]);
-    expect_fail(&out, "explorer --confidence bogus");
-    assert!(
-        out.combined().contains("invalid value") && out.combined().contains("bogus"),
-        "expected clap rejection for --confidence 'bogus', got:\n{}",
-        out.combined()
-    );
-}
-
-/// Report/dashboard flags on a subcommand are rejected.
-#[test]
-fn explorer_index_rejects_bare_mode_flags() {
-    let ws = temp_ws("args_explorer_index_report_flags");
-    let out = run(
-        &ws,
-        &[
-            "-f",
-            &cfg(),
-            "explorer",
-            "--kind",
-            "sandwich",
-            "index",
-            "--window",
-            "1d",
-        ],
-    );
-    expect_fail(&out, "explorer --kind index");
-    assert!(
-        out.combined().contains("belong on bare `explorer`"),
-        "expected bare-mode flag rejection, got:\n{}",
-        out.combined()
-    );
-
-    let out = run(
-        &ws,
-        &[
-            "-f",
-            &cfg(),
-            "explorer",
-            "--dashboard",
-            "index",
-            "--window",
-            "1d",
-        ],
-    );
-    expect_fail(&out, "explorer --dashboard index");
-    assert!(
-        out.combined().contains("belong on bare `explorer`"),
-        "expected dashboard mode rejection with index, got:\n{}",
-        out.combined()
-    );
-}
-
-/// Dashboard-only options require `--dashboard`, and filters conflict with it.
-#[test]
-fn explorer_dashboard_flag_requirements() {
-    for args in [
-        &["explorer", "--db", "snapshot.sqlite"][..],
-        &["explorer", "--out", "dash.json"][..],
-        &["explorer", "--format", "json"][..],
-        &["explorer", "--repeat", "60s"][..],
-        &["explorer", "--dashboard", "--kind", "sandwich"][..],
-        &["explorer", "--dashboard", "--confidence", "exact"][..],
-    ] {
-        let ws = temp_ws(&format!(
-            "args_explorer_dashboard_{}",
-            args.join("_").replace(['-', '/', '.'], "_")
-        ));
-        let out = run(&ws, args);
-        expect_fail(&out, &format!("explorer dashboard args {args:?}"));
-    }
 }
 
 #[test]

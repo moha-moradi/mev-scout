@@ -24,7 +24,7 @@ fn setup_logging(verbose: bool, quiet: bool) {
 }
 
 /// Pick the presentation sink: indicatif bar for `live` and `explorer index`,
-/// noop otherwise (bare explorer report, config, discover, …).
+/// noop otherwise (bare explorer dashboard, config, discover, …).
 fn make_sink(cmd: &Command) -> Box<dyn JobProgress> {
     use mev_scout_cli::cli::ExplorerCommand;
     match cmd {

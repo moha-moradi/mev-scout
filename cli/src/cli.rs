@@ -1,4 +1,6 @@
 //! CLI argument parsing via clap, defining the command-line interface for mev-scout.
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand};
 
 /// MEV Scout — MEV opportunity scanner & backtester for EVM-compatible chains.
@@ -66,108 +68,31 @@ pub enum Command {
     Live(LiveArgs),
 
     /// Realized-MEV explorer: forensic reconstruction of extracted MEV from
-    /// raw chain data. Bare `explorer` prints the all-time revenue report;
-    /// use `index` to populate history.
+    /// raw chain data. Bare `explorer` emits the all-time HTML dashboard;
+    /// use `index` to populate history for a range, then emit its dashboard.
     Explorer(ExplorerArgs),
 }
 
-/// Explorer subcommand group. Omitted → all-time revenue report.
+/// Explorer subcommand group. Omitted → all-time HTML dashboard.
 #[derive(Subcommand, Debug, Clone)]
 pub enum ExplorerCommand {
-    /// Index a historical block range into the explorer store.
+    /// Index a historical block range into the explorer store, then emit the
+    /// HTML dashboard for that range.
     ///
     /// Backfills a trailing `--window` (default 7d) or an exact
-    /// `--from-block`/`--to-block` range, then exits. Idempotent, resumable.
+    /// `--from-block`/`--to-block` range. Idempotent, resumable.
     Index(IndexArgs),
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ExplorerArgs {
-    /// Subcommand; omitted → all-time revenue report or `--dashboard`.
+    /// Subcommand; omitted → all-time HTML dashboard.
     #[command(subcommand)]
     pub command: Option<ExplorerCommand>,
 
-    /// Render an all-time forensic HTML/JSON/CSV dashboard instead of the report.
-    #[command(flatten)]
-    pub dashboard: DashboardArgs,
-
-    /// Filter the report to one kind.
-    #[arg(long, value_name = "KIND", conflicts_with = "dashboard")]
-    pub kind: Option<String>,
-
-    /// Filter to exact / inferred / all confidence (default all).
-    #[arg(
-        long,
-        value_name = "LEVEL",
-        value_parser = ["exact", "inferred", "all"],
-        conflicts_with = "dashboard"
-    )]
-    pub confidence: Option<String>,
-}
-
-impl ExplorerArgs {
-    /// True when any bare-`explorer` mode flag was set on the command line.
-    pub fn bare_flags_set(&self) -> bool {
-        self.kind.is_some() || self.confidence.is_some() || self.dashboard.any_set()
-    }
-
-    /// Resolved confidence filter for the report (`None` = all).
-    pub fn resolved_confidence(&self) -> Option<&str> {
-        match self.confidence.as_deref() {
-            None | Some("all") => None,
-            Some(c) => Some(c),
-        }
-    }
-}
-
-/// Dashboard mode/options for bare `explorer --dashboard`.
-#[derive(Args, Debug, Clone, Default)]
-pub struct DashboardArgs {
-    /// Emit a static dashboard instead of the revenue report.
-    #[arg(long, conflicts_with_all = ["kind", "confidence"])]
-    pub dashboard: bool,
-
-    /// Explorer SQLite path (offline). Default: config per-chain path.
-    #[arg(long, value_name = "PATH", requires = "dashboard")]
-    pub db: Option<std::path::PathBuf>,
-
-    /// Output path (default: results/dash.html).
-    #[arg(long, value_name = "PATH", requires = "dashboard")]
-    pub out: Option<std::path::PathBuf>,
-
-    /// `html` (default), `json`, or `csv` (report-compatible columns).
-    #[arg(
-        long,
-        value_name = "FMT",
-        value_parser = ["html", "json", "csv"],
-        requires = "dashboard"
-    )]
-    pub format: Option<String>,
-
-    /// Rewrite the output every N seconds (atomic). Accepts humantime (`30s`).
-    #[arg(long, value_name = "DURATION", requires = "dashboard")]
-    pub repeat: Option<String>,
-}
-
-impl DashboardArgs {
-    /// True when dashboard mode or any dashboard-only option was supplied.
-    pub fn any_set(&self) -> bool {
-        self.dashboard
-            || self.db.is_some()
-            || self.out.is_some()
-            || self.format.is_some()
-            || self.repeat.is_some()
-    }
-
-    pub fn resolved_out(&self) -> std::path::PathBuf {
-        self.out
-            .clone()
-            .unwrap_or_else(|| std::path::PathBuf::from("results/dash.html"))
-    }
-
-    pub fn resolved_format(&self) -> &str {
-        self.format.as_deref().unwrap_or("html")
-    }
+    /// Output HTML path (default: `results/explorer-<chain>-<range>.html`).
+    #[arg(long, value_name = "PATH", global = true)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -201,10 +126,6 @@ pub struct IndexArgs {
         help_heading = "Range"
     )]
     pub to_block: Option<u64>,
-
-    /// Emit one all-time HTML dashboard after a successful backfill.
-    #[arg(long)]
-    pub dashboard: bool,
 }
 
 #[derive(Args, Debug, Clone)]

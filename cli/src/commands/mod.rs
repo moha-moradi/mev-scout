@@ -11,7 +11,7 @@ mod report;
 
 pub use config::cmd_config;
 pub use discover::cmd_discover;
-pub use explorer::{cmd_backfill, cmd_explorer_report, run_dashboard};
+pub use explorer::cmd_backfill;
 pub use live::cmd_live;
 pub use report::cmd_report;
 
@@ -50,23 +50,12 @@ impl CliCommand for LiveArgs {
 impl CliCommand for ExplorerArgs {
     async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
         use crate::cli::ExplorerCommand;
-
-        if self.command.is_some() && self.bare_flags_set() {
-            anyhow::bail!("--kind / --confidence / dashboard options belong on bare `explorer`");
-        }
+        use mev_scout_core::explorer::dashboard::WindowSpec;
 
         match &self.command {
-            None => {
-                let _ = progress;
-                if self.dashboard.dashboard {
-                    run_dashboard(config, &self.dashboard).await
-                } else {
-                    cmd_explorer_report(config, self.kind.as_deref(), self.resolved_confidence())
-                        .await
-                }
-            }
+            None => explorer::emit_dashboard(config, self.out.clone(), "all", WindowSpec::all()),
             Some(ExplorerCommand::Index(a)) => {
-                cmd_backfill(
+                let outcome = cmd_backfill(
                     config,
                     a.window.as_deref(),
                     a.from_block,
@@ -74,10 +63,19 @@ impl CliCommand for ExplorerArgs {
                     progress,
                 )
                 .await?;
-                if a.dashboard {
-                    run_dashboard(config, &crate::cli::DashboardArgs::default()).await?;
-                }
-                Ok(())
+                let range_label = explorer::index_range_label(
+                    a.window.as_deref(),
+                    a.from_block.is_some() && a.to_block.is_some(),
+                    outcome.from_block,
+                    outcome.to_block,
+                );
+                let window = explorer::index_window(
+                    config,
+                    &range_label,
+                    outcome.from_block,
+                    outcome.to_block,
+                );
+                explorer::emit_dashboard(config, self.out.clone(), &range_label, window)
             }
         }
     }

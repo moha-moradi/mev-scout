@@ -6,8 +6,8 @@ It is not a validator, not a public RPC, and not a bot host.
 
 `mev-scout` only needs the C-Chain (`chain_id = 43114`): `live` (the default
 scan; the old `run` command is this) and `explorer index`. There is no *served*
-web UI; `explorer --dashboard` emits a static HTML/JSON file from the explorer
-SQLite (read-only, no migrate). Deep historical `eth_call` stays on the public
+web UI; `explorer` / `explorer index` emit a static HTML dashboard from the
+explorer SQLite (read-only, no migrate). Deep historical `eth_call` stays on the public
 archive URL in `mev-scout.local.toml`.
 
 **Target:** AvalancheGo **≥ v1.15** (post-Helicon). Do not set `eth-apis`.

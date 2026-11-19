@@ -79,9 +79,13 @@ mev-scout discover --blocks 2000
 # Re-render the latest run offline
 mev-scout report
 
-# Index realized MEV (trailing 7 days / --window), then summarize
+# Index realized MEV for a range (trailing 7 days / --window / blocks),
+# then emit the matching HTML dashboard
 mev-scout explorer index
 mev-scout explorer index --window 24h
+mev-scout explorer index --from-block 65000000 --to-block 65001000
+
+# All-time HTML dashboard from the explorer DB
 mev-scout explorer
 ```
 
@@ -94,7 +98,7 @@ mev-scout explorer
 | `discover` | Find pools (hybrid TVL ranking; `[discover].source` for factory-only) | [§3.3](docs/CLI.md#33-discover--build-the-pool-universe) |
 | `live` | Detect at tip → opportunities + virtual P&L ledger | [§3.2](docs/CLI.md#32-live--the-default-command) |
 | `report` | Re-render a recorded run from SQLite | [§3.5](docs/CLI.md#35-report--re-render-saved-results) |
-| `explorer` | All-time realized revenue report (bare); `index` for ingest; `--dashboard` for a static artifact | [§3.6](docs/CLI.md#36-explorer--realized-mev-forensics) |
+| `explorer` | HTML dashboard of realized MEV: bare = all-time; `index` = backfill a range then emit its dashboard | [§3.6](docs/CLI.md#36-explorer--realized-mev-forensics) |
 
 `run` and `paper` were folded into `live`, which detects at chain tip and
 always runs its paper ledger (`--initial-balance`, `--reserve`). Opt-in
@@ -103,18 +107,21 @@ or executed FlashArb net (see [§3.7](docs/CLI.md#37-ledger-was-paper)).
 At session end it prints and persists cost, remaining balance, net P&L and a
 per-strategy breakdown; `report` shows a run's ledger session alongside its
 results. `--max-fills-per-block` moved to `[paper]` in the TOML.
-Bare `explorer` is the revenue report; `explorer index` is historical backfill
-only (default trailing 7 days).
+Bare `explorer` renders the all-time HTML dashboard; `explorer index` is
+historical backfill that always finishes with the dashboard for its range
+(default trailing 7 days).
 
 Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live
 --blocks` sets the one-shot window (default 64); `--loop` follows the tip.
 `discover` takes optional `--blocks` / `--block` / `--from-block`/`--to-block`,
 and `--incremental`. Source and enrich live under `[discover]` in TOML.
-Bare `explorer` reports everything in the explorer DB and takes
-`--kind` / `--confidence` (`exact`|`inferred`|`all`); `explorer --dashboard`
-renders a static all-time artifact (`--db` works offline). `explorer index` takes
-`--window` (`Nh`/`Nd`/`Nw`, default `7d`) or `--from-block`/`--to-block`
-(bounded; mutually exclusive), plus `--dashboard` for a one-shot post-index HTML snapshot.
+Bare `explorer` renders the all-time HTML dashboard from the explorer DB the
+config points at; `explorer index` takes `--window` (`Nh`/`Nd`/`Nw`, default
+`7d`) or `--from-block`/`--to-block` (bounded; mutually exclusive) and always
+emits the dashboard for that indexed range afterwards. The only output file
+flag is `--out <PATH>`; without it the path is
+`results/explorer-<chain>-<range>.html`. The dashboard is HTML-only and is
+opened in the default browser (best-effort).
 
 ## Layout
 

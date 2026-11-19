@@ -1,16 +1,17 @@
-//! Offline `explorer --dashboard` CLI contract.
+//! Offline `explorer` dashboard CLI contract: config-owned DB, HTML-only output.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 mod common;
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::{TimedOutput, BIN};
 use rusqlite::Connection;
 
-fn run(args: &[&str]) -> TimedOutput {
+fn run(cwd: &Path, args: &[&str]) -> TimedOutput {
     let mut cmd = Command::new(BIN);
+    cmd.current_dir(cwd);
     cmd.args(args);
     let out = cmd.output().expect("spawn");
     TimedOutput {
@@ -26,10 +27,7 @@ fn seed_db(path: &PathBuf) {
         fs::create_dir_all(parent).expect("dir");
     }
     let _ = fs::remove_file(path);
-    // Create via the library so schema is at head, then reopen to insert.
-    // Integration test only has rusqlite — build a minimal head-compatible file
-    // by invoking the binary's sibling approach: create empty then let open migrate
-    // isn't available. Seed a v0-compatible file the dashboard can still read.
+    // Minimal v0-compatible file the dashboard can still read (never migrates).
     let conn = Connection::open(path).expect("open");
     conn.execute_batch(
         "CREATE TABLE blocks_classified(
@@ -57,27 +55,35 @@ fn seed_db(path: &PathBuf) {
     .expect("seed");
 }
 
+/// Single-chain config pointing `[explorer] db_path` at the seeded fixture.
+fn write_cfg(ws: &Path, db: &Path) -> String {
+    let db = db.to_str().expect("utf8").replace('\\', "/");
+    let cfg = ws.join("cfg.toml");
+    fs::write(
+        &cfg,
+        format!("chain = \"avalanche\"\n\n[explorer]\ndb_path = \"{db}\"\n"),
+    )
+    .expect("cfg");
+    cfg.to_str().expect("utf8").to_string()
+}
+
 #[test]
-fn dashboard_html_offline_no_config() {
+fn explorer_bare_writes_html_from_config_db() {
     let ws = std::env::temp_dir().join(format!("mev_cli_dash_{}", std::process::id()));
     let _ = fs::remove_dir_all(&ws);
     fs::create_dir_all(ws.join("cache")).expect("ws");
     let db = ws.join("cache").join("explorer-avalanche.sqlite");
     seed_db(&db);
     let before = fs::read(&db).expect("before");
-    let out = ws.join("dash.html");
+    let cfg = write_cfg(&ws, &db);
+    let out = ws.join("out").join("dash.html");
 
-    let r = run(&[
-        "explorer",
-        "--dashboard",
-        "--db",
-        db.to_str().expect("utf8"),
-        "--out",
-        out.to_str().expect("utf8"),
-        "--format",
-        "html",
-    ]);
+    let r = run(
+        &ws,
+        &["-f", &cfg, "explorer", "--out", out.to_str().expect("utf8")],
+    );
     assert!(r.success, "stderr={}", r.combined());
+    assert!(r.stdout.contains("dashboard written"), "{}", r.stdout);
     assert!(out.exists(), "html missing");
     let html = fs::read_to_string(&out).expect("read html");
     assert!(html.contains("id=\"snapshot\""));
@@ -105,83 +111,71 @@ fn dashboard_html_offline_no_config() {
 }
 
 #[test]
-fn dashboard_csv_offline_report_header() {
-    let ws = std::env::temp_dir().join(format!("mev_cli_dash_csv_{}", std::process::id()));
+fn explorer_bare_default_output_name_tracks_chain_and_range() {
+    let ws = std::env::temp_dir().join(format!("mev_cli_dash_name_{}", std::process::id()));
     let _ = fs::remove_dir_all(&ws);
     fs::create_dir_all(ws.join("cache")).expect("ws");
     let db = ws.join("cache").join("explorer-avalanche.sqlite");
     seed_db(&db);
-    let out = ws.join("dash.csv");
+    let cfg = write_cfg(&ws, &db);
 
-    let r = run(&[
-        "explorer",
-        "--dashboard",
-        "--db",
-        db.to_str().expect("utf8"),
-        "--out",
-        out.to_str().expect("utf8"),
-        "--format",
-        "csv",
-    ]);
-    assert!(r.success, "{}", r.combined());
-    let csv = fs::read_to_string(&out).expect("csv");
-    assert!(csv.starts_with(
-        "window,section,label,ops,volume_usd,gross_usd,gas_usd,flash_fee_usd,net_usd"
-    ));
-    assert!(csv.contains(",overview,total,"));
-    assert!(csv.starts_with("window,"), "all-time CSV header");
-    assert!(csv.contains("\nall,overview,total,"));
-    let _ = fs::remove_dir_all(&ws);
-}
-
-#[test]
-fn dashboard_json_offline() {
-    let ws = std::env::temp_dir().join(format!("mev_cli_dash_json_{}", std::process::id()));
-    let _ = fs::remove_dir_all(&ws);
-    fs::create_dir_all(ws.join("cache")).expect("ws");
-    let db = ws.join("cache").join("explorer-avalanche.sqlite");
-    seed_db(&db);
-    let out = ws.join("dash.json");
-
-    let r = run(&[
-        "explorer",
-        "--dashboard",
-        "--db",
-        db.to_str().expect("utf8"),
-        "--out",
-        out.to_str().expect("utf8"),
-        "--format",
-        "json",
-    ]);
-    assert!(r.success, "{}", r.combined());
-    let v: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&out).expect("json")).expect("parse");
-    assert_eq!(v["api_version"], 1);
-    assert_eq!(v["db"]["user_version"], 0);
-    assert_eq!(v["coverage"]["ops_in_window"], 1);
-    assert_eq!(v["panels"]["kpi"]["ops"], 1);
-    assert_eq!(v["window"]["label"], "all");
+    let r = run(&ws, &["-f", &cfg, "explorer"]);
+    assert!(r.success, "stderr={}", r.combined());
+    let out = ws.join("results").join("explorer-avalanche-all.html");
+    assert!(out.exists(), "default output missing: {}", out.display());
+    assert!(
+        r.stdout.contains("explorer-avalanche-all.html"),
+        "{}",
+        r.stdout
+    );
     let _ = fs::remove_dir_all(&ws);
 }
 
 #[test]
 fn dashboard_help_lists_retained_flags_only() {
-    let r = run(&["explorer", "--help"]);
+    let ws = std::env::temp_dir().join(format!("mev_cli_dash_help_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&ws);
+    fs::create_dir_all(&ws).expect("ws");
+    let r = run(&ws, &["explorer", "--help"]);
     assert!(r.success, "{}", r.combined());
     let text = r.combined();
-    for kept in ["--dashboard", "--db", "--out", "--format", "--repeat"] {
-        assert!(text.contains(kept), "missing retained flag {kept}");
-    }
+    assert!(text.contains("--out"), "missing retained flag --out");
+    assert!(text.contains("index"), "missing index subcommand");
     for removed in [
         "--window",
         "--with-gaps",
         "--max-ops",
         "--evidence",
         "--budget-mb",
+        "--dashboard",
+        "--db",
+        "--format",
+        "--repeat",
+        "--kind",
+        "--confidence",
     ] {
         assert!(
             !text.contains(removed),
             "help still lists removed flag {removed}"
         );
     }
+    let _ = fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn index_help_shows_range_and_out_flags() {
+    let ws = std::env::temp_dir().join(format!("mev_cli_dash_help_idx_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&ws);
+    fs::create_dir_all(&ws).expect("ws");
+    let r = run(&ws, &["explorer", "index", "--help"]);
+    assert!(r.success, "{}", r.combined());
+    let text = r.combined();
+    for kept in ["--window", "--from-block", "--to-block", "--out"] {
+        assert!(text.contains(kept), "missing retained flag {kept}");
+    }
+    assert!(
+        !text.contains("--dashboard"),
+        "help still lists removed flag --dashboard"
+    );
+    let _ = fs::remove_dir_all(&ws);
 }

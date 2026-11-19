@@ -1,11 +1,12 @@
 //! ``explorer index`` — index a historical block range (clock or exact) into
-//! the explorer store so the all-time revenue report has realized data.
+//! the explorer store, then emit the range's dashboard.
 //! Idempotent and gap-resumable via `blocks_classified`.
 use super::*;
 
 use crate::job_progress::JobProgress;
 
 use mev_scout_core::chain::timing::blocks_per_day;
+use mev_scout_core::config::{validation, Config};
 use mev_scout_core::explorer::ingest::{
     run_range, safe_head, IngestConfig, PoolViews, RangeRequest,
 };
