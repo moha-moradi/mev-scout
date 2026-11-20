@@ -920,13 +920,13 @@ fn apply_leg(
     );
     if leg.amount_in_human.is_none() {
         leg.amount_in_human = humanize(
-            leg.amount_in.as_deref(),
+            leg.amount_in_net.as_deref().or(leg.amount_in.as_deref()),
             tin.as_deref().and_then(parse_addr).and_then(|a| tokens.get(&a)).and_then(|m| m.decimals),
         );
     }
     if leg.amount_out_human.is_none() {
         leg.amount_out_human = humanize(
-            leg.amount_out.as_deref(),
+            leg.amount_out_net.as_deref().or(leg.amount_out.as_deref()),
             tout.as_deref().and_then(parse_addr).and_then(|a| tokens.get(&a)).and_then(|m| m.decimals),
         );
     }

@@ -185,11 +185,33 @@ impl ExplorerStore {
         // and inserts the already-annotated rows.
         // One pass over the block's swaps: each event reads its tx's total, and
         // a missing quote on any leg marks that volume as a floor.
+        // Only a unique (pool, token_in) can bind a transfer unambiguously.
+        let mut unique_keys: HashMap<(u64, Address, Address), usize> = HashMap::new();
+        for s in swaps {
+            *unique_keys.entry((s.tx_index, s.pool, s.token_in)).or_default() += 1;
+        }
         let mut volume_by_tx: HashMap<u64, (f64, bool)> = HashMap::new();
         for s in swaps {
+            // Received amount beats the nominal swap amount: transfer taxes and
+            // V3 overpayments make the two differ.
+            let amount_in = if unique_keys
+                .get(&(s.tx_index, s.pool, s.token_in))
+                .copied()
+                == Some(1)
+            {
+                let net = transfers
+                    .iter()
+                    .filter(|t| {
+                        t.tx_index == s.tx_index && t.to == s.pool && t.token == s.token_in
+                    })
+                    .fold(U256::ZERO, |acc, t| acc.saturating_add(t.amount));
+                if net.is_zero() { s.amount_in } else { net }
+            } else {
+                s.amount_in
+            };
             let entry = volume_by_tx.entry(s.tx_index).or_insert((0.0, false));
             match token_prices.get(&s.token_in) {
-                Some(p) => entry.0 += crate::explorer::pricing::token_amount_to_usd(s.amount_in, p),
+                Some(p) => entry.0 += crate::explorer::pricing::token_amount_to_usd(amount_in, p),
                 None => entry.1 = true,
             }
         }

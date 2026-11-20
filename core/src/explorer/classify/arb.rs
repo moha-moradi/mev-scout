@@ -361,6 +361,7 @@ pub(super) fn classify_atomic_arbs(
             ..*arb_tag_opts
         };
         tags.extend(strategy_tags::arb_strategy_tags(&tx.swaps, &tag_opts));
+        let delivered = route_delivery(tx);
         let mut details = serde_json::json!({
             "mode": "realized",
             "tags": tags,
@@ -371,15 +372,23 @@ pub(super) fn classify_atomic_arbs(
                 "profit_token": format!("{profit_token:#x}"),
             },
             "other_residuals": other_positives,
-            "route": tx.swaps.iter().map(|s| serde_json::json!({
-                "pool": format!("{:#x}", s.pool),
-                "amm": s.amm.as_str(),
-                "token_in": format!("{:#x}", s.token_in),
-                "token_out": format!("{:#x}", s.token_out),
-                "token_source": s.token_source.as_str(),
-                "amount_in": s.amount_in.to_string(),
-                "amount_out": s.amount_out.to_string(),
-            })).collect::<Vec<_>>(),
+            "route": tx.swaps.iter().enumerate().map(|(i, s)| {
+                let (in_net, out_net) = delivered.get(i).copied().unwrap_or((None, None));
+                serde_json::json!({
+                    "pool": format!("{:#x}", s.pool),
+                    "amm": s.amm.as_str(),
+                    "token_in": format!("{:#x}", s.token_in),
+                    "token_out": format!("{:#x}", s.token_out),
+                    "token_source": s.token_source.as_str(),
+                    "amount_in": s.amount_in.to_string(),
+                    "amount_out": s.amount_out.to_string(),
+                    // Tokens actually received by this pool / delivered to the
+                    // next hop. Null when the flow is searcher-mediated or the
+                    // same (pool, token) appears in several swaps.
+                    "amount_in_net": in_net.map(|v| v.to_string()),
+                    "amount_out_net": out_net.map(|v| v.to_string()),
+                })
+            }).collect::<Vec<_>>(),
             "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
         });
         if tags.contains(&"savax_rate_arb") {
@@ -570,6 +579,49 @@ fn classify_reject(
         detail,
         created_at: crate::utils::epoch_secs(),
     }
+}
+
+/// Per swap leg: `(received_by_pool, delivered_to_next_hop)`.
+///
+/// Uses the receipt Transfer stream, so a transfer tax or an overpayment is
+/// visible instead of the nominal swap amount being trusted blindly. `None`
+/// means the amount is not attributable (searcher-mediated hop, ambiguous
+/// duplicate pool/token, or no matching transfer).
+fn route_delivery(tx: &TxInput) -> Vec<(Option<U256>, Option<U256>)> {
+    let mut counts: HashMap<(Address, Address), usize> = HashMap::new();
+    for s in &tx.swaps {
+        *counts.entry((s.pool, s.token_in)).or_default() += 1;
+    }
+    fn transfer_sum(tx: &TxInput, pred: impl Fn(&TransferFact) -> bool) -> Option<U256> {
+        let total = tx
+            .transfers
+            .iter()
+            .filter(|t| pred(t))
+            .fold(U256::ZERO, |acc, t| acc.saturating_add(t.amount));
+        (!total.is_zero()).then_some(total)
+    }
+    tx.swaps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let unique_in = counts.get(&(s.pool, s.token_in)).copied().unwrap_or(0) == 1;
+            let in_net = if unique_in {
+                transfer_sum(tx, |t| t.to == s.pool && t.token == s.token_in)
+            } else {
+                None
+            };
+            let out_net = tx
+                .swaps
+                .get(i + 1)
+                .filter(|n| n.token_in == s.token_out)
+                .and_then(|n| {
+                    transfer_sum(tx, |t| {
+                        t.from == s.pool && t.to == n.pool && t.token == s.token_out
+                    })
+                });
+            (in_net, out_net)
+        })
+        .collect()
 }
 
 /// Derive route geometry metadata for an atomic arb (spec /).

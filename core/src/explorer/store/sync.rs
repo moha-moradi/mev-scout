@@ -148,6 +148,37 @@ impl ExplorerStore {
         tx.commit()?;
         Ok(())
     }
+    /// Remove every derived fact for a finite block range so a detector or tag
+    /// change can reclassify those blocks in place. JIT open state is replayed
+    /// from the surviving ordered journals, so positions closed inside the
+    /// purged range return to `open` and are re-closed by the re-index.
+    pub fn purge_range(&self, from_block: u64, to_block: u64) -> anyhow::Result<()> {
+        if to_block < from_block {
+            anyhow::bail!("purge_range: to_block ({to_block}) < from_block ({from_block})");
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        let range = [from_block as i64, to_block as i64];
+        for sql in [
+            "DELETE FROM blocks_classified WHERE block BETWEEN ?1 AND ?2",
+            "DELETE FROM mev_ops WHERE block_number BETWEEN ?1 AND ?2",
+            "DELETE FROM transfers WHERE block_number BETWEEN ?1 AND ?2",
+            "DELETE FROM swaps WHERE block_number BETWEEN ?1 AND ?2",
+            "DELETE FROM txs WHERE block_number BETWEEN ?1 AND ?2",
+            "DELETE FROM tx_evidence WHERE block_number BETWEEN ?1 AND ?2",
+            "DELETE FROM blocks WHERE block_number BETWEEN ?1 AND ?2",
+            "DELETE FROM jit_open_positions WHERE opened_block BETWEEN ?1 AND ?2",
+            "DELETE FROM jit_blocks WHERE block_number BETWEEN ?1 AND ?2",
+            "DELETE FROM oracle_answers WHERE block_number BETWEEN ?1 AND ?2",
+            "DELETE FROM reserve_rates WHERE block_number BETWEEN ?1 AND ?2",
+            "DELETE FROM rejected_candidates WHERE block_number BETWEEN ?1 AND ?2",
+        ] {
+            tx.execute(sql, range)?;
+        }
+        super::jit_positions::replay_jit_positions(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Stored block hash for reorg detection.
     ///
     /// Compared by [`Self::reconcile_block_hash`] before a re-index.
@@ -237,6 +268,28 @@ mod tests {
         store.unwind_from(100).unwrap();
         assert!(!store.block_classified(100).unwrap());
         assert_eq!(rejected_count(&store, 100), 0);
+    }
+
+    #[test]
+    fn purge_range_clears_only_the_requested_blocks() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        for block in [100u64, 101, 102] {
+            store.mark_block_classified(block, 0).unwrap();
+            store
+                .insert_rejected_candidate("run_test", "polygon", &reject_row(block))
+                .unwrap();
+        }
+        store.purge_range(101, 101).unwrap();
+        assert!(store.block_classified(100).unwrap());
+        assert!(!store.block_classified(101).unwrap());
+        assert!(store.block_classified(102).unwrap());
+        assert_eq!(rejected_count(&store, 100), 1);
+        assert_eq!(rejected_count(&store, 101), 0);
+        assert_eq!(rejected_count(&store, 102), 1);
+
+        // Idempotent, and an inverted range is rejected.
+        store.purge_range(101, 101).unwrap();
+        assert!(store.purge_range(5, 4).is_err());
     }
 
     #[test]

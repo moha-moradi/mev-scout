@@ -16,11 +16,14 @@ const DEFAULT_BACKFILL_WINDOW: &str = "7d";
 const MAX_BACKFILL_SECS: u64 = 365 * 86_400;
 const SECS_PER_DAY: u64 = 86_400;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_backfill(
     config: &Config,
     window: Option<&str>,
     from_block: Option<u64>,
     to_block: Option<u64>,
+    reclassify: bool,
+    discover_pools: bool,
     progress: &dyn JobProgress,
 ) -> anyhow::Result<BackfillOutcome> {
     let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -66,10 +69,35 @@ pub async fn cmd_backfill(
         "range is absurdly large ({span} blocks) — use --from-block/--to-block deliberately"
     );
 
+    if discover_pools {
+        progress.log(&format!(
+            "Pool discovery — refreshing the scanner cache before indexing {chain}"
+        ));
+        crate::commands::cmd_discover(config, &crate::cli::DiscoverArgs::default(), progress).await?;
+    }
+
     let setup = init_rpc(config, chain, true).await?;
     let store = explorer_store(config, chain)?;
+    if reclassify {
+        store.purge_range(from, to)?;
+        progress.log(&format!(
+            "Reclassify — purged derived facts for {from}..={to} (JIT journals replayed)"
+        ));
+    }
     let registry = load_pool_registry(config, &chain);
     let bc = config.effective_block_concurrency(chain, &setup.provider_configs);
+    progress.log(&format!(
+        "Registry — {} token pairs, {} v2-like (skim), {} epoch venues",
+        registry.tokens.len(),
+        registry.v2_like.len(),
+        registry.epoch_venue.len()
+    ));
+    if registry.v2_like.is_empty() {
+        progress.log(
+            "WARNING: empty pool registry — skim detection is disabled and venue tags are missing; \
+             run `mev-scout discover` or pass `--discover-pools`",
+        );
+    }
 
     progress.log(&format!(
         "Historical backfill — {chain} indexing {from}..={to} (~{span} blocks, resumable, concurrency={bc})"

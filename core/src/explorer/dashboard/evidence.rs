@@ -263,6 +263,12 @@ pub struct RouteLeg {
     pub token_source: Option<String>,
     pub amount_in: Option<String>,
     pub amount_out: Option<String>,
+    /// Actual tokens received by the pool / delivered to the next hop
+    /// (receipt transfers). `None` when the flow is searcher-mediated.
+    #[serde(default)]
+    pub amount_in_net: Option<String>,
+    #[serde(default)]
+    pub amount_out_net: Option<String>,
     pub amount_in_human: Option<String>,
     pub amount_out_human: Option<String>,
     pub token_in_symbol: Option<String>,
@@ -349,17 +355,20 @@ pub fn parse_route(route_json: Option<&str>) -> Vec<RouteLeg> {
             let token_out = str_field(leg, "token_out");
             let amount_in = str_field(leg, "amount_in");
             let amount_out = str_field(leg, "amount_out");
+            let amount_in_net = str_field(leg, "amount_in_net");
+            let amount_out_net = str_field(leg, "amount_out_net");
             let (token_in_symbol, token_in_name) =
                 token_in.as_deref().map(token_meta).unwrap_or((None, None));
             let (token_out_symbol, token_out_name) =
                 token_out.as_deref().map(token_meta).unwrap_or((None, None));
+            // Display the amount the counterparty actually received.
             let amount_in_human = token_in
                 .as_deref()
-                .zip(amount_in.as_deref())
+                .zip(amount_in_net.as_deref().or(amount_in.as_deref()))
                 .and_then(|(tok, amt)| humanize_amount(tok, amt));
             let amount_out_human = token_out
                 .as_deref()
-                .zip(amount_out.as_deref())
+                .zip(amount_out_net.as_deref().or(amount_out.as_deref()))
                 .and_then(|(tok, amt)| humanize_amount(tok, amt));
             RouteLeg {
                 pool: str_field(leg, "pool"),
@@ -369,6 +378,8 @@ pub fn parse_route(route_json: Option<&str>) -> Vec<RouteLeg> {
                 token_source: str_field(leg, "token_source"),
                 amount_in,
                 amount_out,
+                amount_in_net,
+                amount_out_net,
                 amount_in_human,
                 amount_out_human,
                 token_in_symbol,

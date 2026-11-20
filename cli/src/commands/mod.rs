@@ -62,6 +62,8 @@ impl CliCommand for ExplorerArgs {
                     a.window.as_deref(),
                     a.from_block,
                     a.to_block,
+                    a.reclassify,
+                    a.discover_pools,
                     progress,
                 )
                 .await?;

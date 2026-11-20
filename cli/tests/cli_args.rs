@@ -514,6 +514,30 @@ fn explorer_index_defaults_to_backfill_shape() {
                 assert!(i.from_block.is_none());
                 assert!(i.to_block.is_none());
                 assert!(a.out.is_none());
+                assert!(!i.reclassify);
+                assert!(!i.discover_pools);
+            }
+            other => panic!("expected Index, got {other:?}"),
+        },
+        other => panic!("expected Explorer, got {other:?}"),
+    }
+
+    let cli = Cli::parse_from([
+        "mev-scout",
+        "explorer",
+        "index",
+        "--from-block",
+        "10",
+        "--to-block",
+        "20",
+        "--reclassify",
+        "--discover-pools",
+    ]);
+    match cli.command {
+        Some(Command::Explorer(a)) => match a.command {
+            Some(ExplorerCommand::Index(i)) => {
+                assert!(i.reclassify);
+                assert!(i.discover_pools);
             }
             other => panic!("expected Index, got {other:?}"),
         },

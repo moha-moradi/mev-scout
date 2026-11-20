@@ -444,7 +444,18 @@ mev-scout explorer index --window 6h
 mev-scout explorer index --window 30d
 mev-scout explorer index --from-block 65000000 --to-block 65001000
 mev-scout explorer index --window 24h --out results/custom.html
+# Re-run classifier/tag changes over already-indexed blocks:
+mev-scout explorer index --from-block 65000000 --to-block 65001000 --reclassify
+# Fill the scanner pool registry first (skim eligibility + venue tags):
+mev-scout explorer index --window 24h --discover-pools
 ```
+
+`--reclassify` deletes the range's derived facts (`mev_ops`, transfers,
+swaps, txs, evidence, blocks, JIT journals) and re-indexes it; JIT open state
+is replayed from the surviving journals. `--discover-pools` runs on-chain pool
+discovery before indexing. Without a populated scanner cache the run prints
+`WARNING: empty pool registry` because skim detection is disabled and venue
+tags are missing.
 
 Default output names: `results/explorer-<chain>-7d.html` (no range flag),
 `results/explorer-<chain>-<window>.html`, or

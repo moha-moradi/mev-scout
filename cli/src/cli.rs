@@ -126,9 +126,20 @@ pub struct IndexArgs {
         help_heading = "Range"
     )]
     pub to_block: Option<u64>,
+
+    /// Discard the range's stored facts and reclassify it, so detector/tag
+    /// changes apply to already-indexed blocks.
+    #[arg(long, help_heading = "Index")]
+    pub reclassify: bool,
+
+    /// Run on-chain pool discovery first. Fills the scanner cache used for
+    /// skim eligibility and venue tags (skipped when the registry is already
+    /// populated and this flag is absent).
+    #[arg(long = "discover-pools", help_heading = "Index")]
+    pub discover_pools: bool,
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 #[command(next_help_heading = "Block Range (optional — defaults to the chain lookback window)")]
 pub struct BlockRangeArgs {
     /// Last N blocks from chain tip (≥1)
@@ -174,7 +185,7 @@ pub struct ReportArgs {
     pub run_id: Option<String>,
 }
 
-#[derive(Args, Debug, Clone)]
+#[derive(Args, Debug, Clone, Default)]
 pub struct DiscoverArgs {
     #[command(flatten)]
     pub block_range: BlockRangeArgs,
