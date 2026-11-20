@@ -1,0 +1,17 @@
+# Temp config for explorer index runs — Dwellir only, low concurrency.
+chain = "avalanche"
+gas_model = "historical_exact"
+strategies = "all"
+output = "table"
+rpc_urls = [
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/${DWELLIR_AVALANCHE_KEY}/ext/bc/C/rpc",
+]
+rpc_rps = [10]
+rps_limit = 10
+block_concurrency = 2
+rpc_batch_blocks = 1
+
+[explorer]
+confirmations = 4
+poll_interval_ms = 2000
+arb_likely_parity = false

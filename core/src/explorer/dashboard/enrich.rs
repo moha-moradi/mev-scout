@@ -332,7 +332,7 @@ async fn fetch_missing(
         .filter(|a| {
             token_meta
                 .get(a)
-                .map_or(true, |m| {
+                .is_none_or(|m| {
                     m.symbol.is_empty() || m.name.is_none() || m.icon_url.is_none()
                 })
         })
@@ -369,7 +369,7 @@ async fn fetch_missing(
     let mut need_dec: Vec<Address> = tokens
         .iter()
         .copied()
-        .filter(|a| token_meta.get(a).map_or(true, |m| m.decimals.is_none()))
+        .filter(|a| token_meta.get(a).is_none_or(|m| m.decimals.is_none()))
         .collect();
     need_dec.sort_unstable_by_key(|a| format!("{a:#x}"));
     for chunk in need_dec.chunks(LLAMA_BATCH) {
@@ -410,7 +410,7 @@ async fn fetch_missing(
         .filter(|a| {
             token_meta
                 .get(a)
-                .map_or(true, |m| m.name.is_none() || m.icon_url.is_none())
+                .is_none_or(|m| m.name.is_none() || m.icon_url.is_none())
         })
         .collect();
     still.sort_unstable_by_key(|a| format!("{a:#x}"));
