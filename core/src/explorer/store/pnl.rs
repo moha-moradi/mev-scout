@@ -397,7 +397,7 @@ pub(super) fn liquidation_pnl(
         let p = token_prices.get(&asset)?;
         Some(crate::explorer::pricing::token_amount_to_usd(amount, p))
     };
-    let (collateral_usd, debt_usd, cross_asset) = match liq {
+    let (collateral_usd, debt_usd, cross_asset) = match liq.as_ref() {
         Some(d) => (
             price_usd(d.collateral_asset, d.collateral_amount),
             price_usd(d.debt_asset, d.debt_to_cover),
@@ -416,12 +416,36 @@ pub(super) fn liquidation_pnl(
     // Auditable inputs for the O-basis estimate. Bonus, slippage and protocol
     // fees are not observable in receipts, so the model names them as excluded
     // instead of silently folding them into the number.
+    let realized = {
+        let raw = |key: &str| -> Option<U256> {
+            details
+                .get(key)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<U256>().ok())
+        };
+        let (collateral_asset, debt_asset) = match liq.as_ref() {
+            Some(d) => (d.collateral_asset, d.debt_asset),
+            None => (Address::ZERO, Address::ZERO),
+        };
+        let collateral = raw("realized_collateral_net")
+            .and_then(|a| price_usd(collateral_asset, a));
+        let debt = raw("realized_debt_paid").and_then(|a| price_usd(debt_asset, a));
+        if collateral.is_none() && debt.is_none() {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!({
+                "collateral_usd": collateral,
+                "debt_usd": debt,
+            })
+        }
+    };
     details.insert(
         "pnl_components".into(),
         serde_json::json!({
             "model": "collateral_usd_minus_debt_usd",
             "collateral_usd": collateral_usd,
             "debt_usd": debt_usd,
+            "realized": realized,
             "excludes": ["liquidation_bonus", "slippage", "protocol_fees"],
         }),
     );

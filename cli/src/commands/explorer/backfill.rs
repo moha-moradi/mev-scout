@@ -70,10 +70,16 @@ pub async fn cmd_backfill(
     );
 
     if discover_pools {
+        // Scope discovery to the same range: scanning the chain's full
+        // lookback before a 1h/24h index is disproportionate, while active
+        // pools in the range still populate token pairs and venue tags.
         progress.log(&format!(
-            "Pool discovery — refreshing the scanner cache before indexing {chain}"
+            "Pool discovery — refreshing the scanner cache for {from}..={to} before indexing {chain}"
         ));
-        crate::commands::cmd_discover(config, &crate::cli::DiscoverArgs::default(), progress).await?;
+        let mut dargs = crate::cli::DiscoverArgs::default();
+        dargs.block_range.from_block = Some(from);
+        dargs.block_range.to_block = Some(to);
+        crate::commands::cmd_discover(config, &dargs, progress).await?;
     }
 
     let setup = init_rpc(config, chain, true).await?;

@@ -453,7 +453,9 @@ mev-scout explorer index --window 24h --discover-pools
 `--reclassify` deletes the range's derived facts (`mev_ops`, transfers,
 swaps, txs, evidence, blocks, JIT journals) and re-indexes it; JIT open state
 is replayed from the surviving journals. `--discover-pools` runs on-chain pool
-discovery before indexing. Without a populated scanner cache the run prints
+discovery scoped to the same block range before indexing (active pools in the
+range populate token pairs and venue tags; it does not scan the chain's full
+lookback). Without a populated scanner cache the run prints
 `WARNING: empty pool registry` because skim detection is disabled and venue
 tags are missing.
 

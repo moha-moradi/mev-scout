@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use alloy::primitives::Address;
 
 use crate::explorer::interest_attr;
-use crate::explorer::profit::DeltaLedger;
+use crate::explorer::profit::{deficit_amount, DeltaLedger};
 use crate::explorer::reject::RejectReason;
 use crate::explorer::types::{
     Confidence, LiquidationFact, MevEvent, MevKind, OracleUpdateFact, PnlBasis, ReserveDataFact,
@@ -115,6 +115,15 @@ pub(super) fn classify_liquidations(
             let interest_accrued = interest_evidence.is_some();
             // P&L basis O: seized − repaid components (USD at persist); flash
             // premium recorded as F component when present.
+            // Transfer-side amounts for audit: what the liquidator actually
+            // netted vs what the protocol event declared (same-tx sales make
+            // these differ).
+            let realized_collateral = (!liq.collateral_asset.is_zero())
+                .then(|| ledger.net(searcher, liq.collateral_asset))
+                .filter(|a| !a.is_zero());
+            let realized_debt = (!liq.debt_asset.is_zero())
+                .then(|| deficit_amount(&ledger, searcher, liq.debt_asset))
+                .filter(|a| !a.is_zero());
             let mut details = serde_json::json!({
                 "protocol": liq.protocol,
                 "user": format!("{:#x}", liq.user),
@@ -122,6 +131,8 @@ pub(super) fn classify_liquidations(
                 "debt_asset": format!("{:#x}", liq.debt_asset),
                 "collateral_amount": liq.collateral_amount.to_string(),
                 "debt_to_cover": liq.debt_to_cover.to_string(),
+                "realized_collateral_net": realized_collateral.map(|a| a.to_string()),
+                "realized_debt_paid": realized_debt.map(|a| a.to_string()),
                 "reconciled": reconciled,
                 "reasons": reasons,
                 "tags": tags,

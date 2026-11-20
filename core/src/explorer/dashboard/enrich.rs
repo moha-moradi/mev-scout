@@ -730,6 +730,10 @@ fn infer_route_insights(snapshot: &mut DashboardSnapshot) {
                 ev.details["transfer_tax"] = tax;
             }
             push_tag(ev, "transfer_tax");
+            // Observed pool→pool shortfall with a third-party cut is direct
+            // fee-on-transfer evidence, even when the token is not in the
+            // bundled FOT registry.
+            push_tag(ev, "fot_arb");
         }
     }
 }
