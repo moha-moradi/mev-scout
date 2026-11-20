@@ -3,7 +3,8 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-use mev_scout_core::explorer::dashboard::{build, render_html, BuildOptions, WindowSpec};
+use mev_scout_core::explorer::dashboard::{build, enrich, render_html, BuildOptions, WindowSpec};
+use mev_scout_core::types::ChainName;
 
 const MAX_OPS: usize = 2000;
 const MAX_EVIDENCE: usize = 500;
@@ -14,9 +15,12 @@ pub struct DashboardEmitArgs {
     pub db_path: PathBuf,
     pub out: PathBuf,
     pub window: WindowSpec,
+    /// Active chain (metadata API slugs) and its scanner cache DB (metadata cache).
+    pub chain: ChainName,
+    pub cache_db: PathBuf,
 }
 
-pub fn cmd_dashboard(args: &DashboardEmitArgs) -> anyhow::Result<()> {
+pub async fn cmd_dashboard(args: &DashboardEmitArgs) -> anyhow::Result<()> {
     let opts = BuildOptions {
         db_path: args.db_path.clone(),
         window: args.window.clone(),
@@ -26,7 +30,10 @@ pub fn cmd_dashboard(args: &DashboardEmitArgs) -> anyhow::Result<()> {
         with_gaps: false,
         gap_block_limit: GAP_BLOCK_LIMIT,
     };
-    let snap = build(&opts)?;
+    let mut snap = build(&opts)?;
+    // One-time DEX/token labels; cached in the scanner cache DB so later builds
+    // do no network work.
+    enrich::enrich(&mut snap, &args.cache_db, args.chain).await;
     if let Some(parent) = args.out.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;

@@ -93,7 +93,7 @@ pub(crate) fn index_range_label(
 }
 
 /// Emit one HTML dashboard, resolving the output path when `--out` is absent.
-pub(crate) fn emit_dashboard(
+pub(crate) async fn emit_dashboard(
     config: &Config,
     out: Option<PathBuf>,
     range_label: &str,
@@ -104,7 +104,10 @@ pub(crate) fn emit_dashboard(
         db_path: resolved_db_path(config),
         out,
         window,
+        chain: config.chain,
+        cache_db: PathBuf::from(config.effective_db_path(&config.chain)),
     })
+    .await
 }
 
 #[cfg(test)]

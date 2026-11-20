@@ -62,6 +62,10 @@ mod tests {
         assert!(!TEMPLATE.contains("id=\"overview-ops\""));
         assert!(!TEMPLATE.contains("Live operations"));
         assert!(TEMPLATE.contains("amount_in_human") || TEMPLATE.contains("token_in_symbol"));
+        assert!(
+            TEMPLATE.contains("data-sort=\"net\"") && TEMPLATE.contains("function sortOps"),
+            "operations list must sort by net"
+        );
         assert!(!TEMPLATE.contains("fonts.googleapis"));
         assert!(!TEMPLATE.contains("cdn.jsdelivr"));
         assert!(!TEMPLATE.contains("Fraunces"));

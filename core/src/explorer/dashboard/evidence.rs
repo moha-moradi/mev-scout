@@ -270,6 +270,22 @@ pub struct RouteLeg {
     /// `known_tokens.json` has no `name` field today — always `None` unless extended later.
     pub token_in_name: Option<String>,
     pub token_out_name: Option<String>,
+    /// Inline `data:` icon (cached) or remote icon URL.
+    #[serde(default)]
+    pub token_in_icon: Option<String>,
+    #[serde(default)]
+    pub token_out_icon: Option<String>,
+    /// DEX identity resolved from the pool (DexScreener), e.g. `traderjoe`.
+    #[serde(default)]
+    pub dex_id: Option<String>,
+    #[serde(default)]
+    pub dex_name: Option<String>,
+    /// Public pool page for the leg's external link.
+    #[serde(default)]
+    pub dex_url: Option<String>,
+    /// Venue label from the same source, e.g. `v2.2`.
+    #[serde(default)]
+    pub pool_label: Option<String>,
 }
 
 /// Sectioned evidence blob for one op (P10 drill-down).
@@ -359,6 +375,12 @@ pub fn parse_route(route_json: Option<&str>) -> Vec<RouteLeg> {
                 token_out_symbol,
                 token_in_name,
                 token_out_name,
+                token_in_icon: None,
+                token_out_icon: None,
+                dex_id: None,
+                dex_name: None,
+                dex_url: None,
+                pool_label: None,
             }
         })
         .collect()

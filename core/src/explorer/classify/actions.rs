@@ -1,10 +1,13 @@
 //! First-class LB/DLMM action events (Phase 2).
 //!
-//! `WithdrawnFromBins` / `DepositedToBins` previously reached only the JIT
-//! pass, and `ClaimRewards` had no decoder at all. A withdraw+claim tx
-//! therefore produced either nothing or a false-positive `Skim`. This pass
-//! turns those typed facts into `LiquidityRemove` / `LiquidityAdd` /
-//! `RewardClaim` rows.
+//! `WithdrawnFromBins` previously reached only the JIT pass, and
+//! `ClaimRewards` had no decoder at all. A withdraw+claim tx therefore
+//! produced either nothing or a false-positive `Skim`. This pass turns those
+//! typed facts into `LiquidityRemove` / `RewardClaim` rows.
+//!
+//! `DepositedToBins` is deliberately not emitted: adding liquidity is ordinary
+//! LP activity, not an extracted-MEV opportunity. Withdrawals and claims stay
+//! because they are the forensic evidence for skim/claim cases.
 //!
 //! Actions are **not P&L claims**: a bin withdrawal returns principal and an
 //! explicit reward payout is an `F`-basis field. Every event here is
@@ -31,7 +34,11 @@ pub(super) fn classify_actions(input: &BlockInput, jit_txs: &HashSet<u64>) -> Ve
             continue;
         }
         if !jit_txs.contains(&tx.tx_index) {
-            for j in tx.jit.iter().filter(|j| j.bin_amm && !j.is_collect) {
+            for j in tx
+                .jit
+                .iter()
+                .filter(|j| j.bin_amm && !j.is_collect && !j.is_mint)
+            {
                 events.push(lb_liquidity_event(input, tx, j));
             }
         }
@@ -68,17 +75,13 @@ fn bind_amount(amount: U256, tx: &TxInput, outbound: bool) -> Option<(Address, u
 }
 
 fn lb_liquidity_event(input: &BlockInput, tx: &TxInput, j: &JitFact) -> MevEvent {
-    let (kind, event_name) = if j.is_mint {
-        (MevKind::LiquidityAdd, "DepositedToBins")
-    } else {
-        (MevKind::LiquidityRemove, "WithdrawnFromBins")
-    };
+    let kind = MevKind::LiquidityRemove;
+    let event_name = "WithdrawnFromBins";
     // LB amounts are packed X/Y (token0/token1 of the pool). Bind each one to
-    // its same-amount Transfer leg; an unmatched amount stays unknown rather
-    // than being guessed from proximity.
-    let outbound = !j.is_mint;
-    let leg0 = bind_amount(j.amount0, tx, outbound);
-    let leg1 = bind_amount(j.amount1, tx, outbound);
+    // its same-amount outbound Transfer leg; an unmatched amount stays unknown
+    // rather than being guessed from proximity.
+    let leg0 = bind_amount(j.amount0, tx, true);
+    let leg1 = bind_amount(j.amount1, tx, true);
     let batches: Vec<u64> = tx
         .lb_transfer_batches
         .iter()
@@ -179,7 +182,7 @@ mod tests {
     use super::*;
     use crate::data::LogData;
     use crate::explorer::classify::{classify_block, decode_tx_logs_with_aliases};
-    use crate::explorer::test_fixtures::{block, tx};
+    use crate::explorer::test_fixtures::{block, jit, tx};
     use alloy::primitives::{address, b256, hex, Address, Bytes, B256};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -332,5 +335,21 @@ mod tests {
         // Padding helper must produce the exact indexed topics used above.
         assert_eq!(padded_addr(OWNER), T_OWNER);
         assert_eq!(padded_addr(REWARDER), T_REWARDER);
+    }
+
+    /// Adding bin liquidity is ordinary LP activity, not an extracted-MEV
+    /// opportunity: a `DepositedToBins`-only tx must emit no rows.
+    #[test]
+    fn bin_deposit_is_not_an_mev_opportunity() {
+        let mut mint = jit(0, true);
+        mint.bin_amm = true;
+        let mut input = block(vec![tx(0, OWNER, true, vec![], vec![])]);
+        input.txs[0].jit = vec![mint];
+        let out = classify_block(&input);
+        assert!(
+            out.events.iter().all(|e| e.kind != MevKind::LiquidityAdd),
+            "LP deposit emitted as an opportunity: {out:?}"
+        );
+        assert!(out.events.is_empty(), "mint-only tx produced {out:?}");
     }
 }

@@ -18,14 +18,17 @@ pub enum MevKind {
     Jit,
     /// UniV2-style `skim`: pair outbound Transfers with no Swap/Mint/Burn/Sync.
     Skim,
-    /// LB/DLMM bin deposit (`DepositedToBins`). A principal movement, not P&L:
-    /// emitted with `Confidence::Inferred` and no profit amount.
+    /// Legacy LB/DLMM bin deposit (`DepositedToBins`). No longer emitted — an
+    /// LP add is not an extracted-MEV opportunity — but kept readable so rows
+    /// written by older classifiers still parse. The dashboard filters them.
     LiquidityAdd,
     /// LB/DLMM bin withdrawal (`WithdrawnFromBins` + LB `TransferBatch`). A
     /// principal return, not P&L: `Confidence::Inferred`, no profit amount.
+    /// Kept as skim counter-evidence; excluded from dashboard MEV totals.
     LiquidityRemove,
     /// Explicit `ClaimRewards` payout (Pharaoh LB rewarder). Amount is a
-    /// reward field (`PnlBasis::F`), never a ledger residual.
+    /// reward field (`PnlBasis::F`), never a ledger residual. An LP action,
+    /// not an opportunity; excluded from dashboard MEV totals.
     RewardClaim,
     /// Exact-fingerprint operational execution: keeper or airdrop
     /// claim-and-sell. Not a residual bucket. The family is `subkind`.
@@ -33,8 +36,9 @@ pub enum MevKind {
 }
 
 impl MevKind {
-    /// Every emittable kind, in canonical order. Single source of truth for
-    /// coverage tests and CLI error messages.
+    /// Every kind the store accepts, in canonical order (legacy read-only
+    /// kinds included). Single source of truth for coverage tests and CLI
+    /// error messages.
     pub const ALL: &[MevKind] = &[
         MevKind::ArbAtomic,
         MevKind::Jit,
@@ -57,6 +61,17 @@ impl MevKind {
             MevKind::Skim => "skim",
             MevKind::Utility => "utility",
         }
+    }
+
+    /// Forensic action rows — LP add/remove and explicit reward claims — explain
+    /// fund movement but are not extracted-MEV opportunities. They stay in the
+    /// store (and back the withdraw+claim skim evidence) while the dashboard
+    /// excludes them from MEV totals.
+    pub fn is_forensic_action(self) -> bool {
+        matches!(
+            self,
+            MevKind::LiquidityAdd | MevKind::LiquidityRemove | MevKind::RewardClaim
+        )
     }
 
     /// Parse a stored kind label. Retired labels (`sandwich`, `frontrun`,

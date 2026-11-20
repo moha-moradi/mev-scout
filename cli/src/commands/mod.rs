@@ -53,7 +53,9 @@ impl CliCommand for ExplorerArgs {
         use mev_scout_core::explorer::dashboard::WindowSpec;
 
         match &self.command {
-            None => explorer::emit_dashboard(config, self.out.clone(), "all", WindowSpec::all()),
+            None => {
+                explorer::emit_dashboard(config, self.out.clone(), "all", WindowSpec::all()).await
+            }
             Some(ExplorerCommand::Index(a)) => {
                 let outcome = cmd_backfill(
                     config,
@@ -75,7 +77,7 @@ impl CliCommand for ExplorerArgs {
                     outcome.from_block,
                     outcome.to_block,
                 );
-                explorer::emit_dashboard(config, self.out.clone(), &range_label, window)
+                explorer::emit_dashboard(config, self.out.clone(), &range_label, window).await
             }
         }
     }

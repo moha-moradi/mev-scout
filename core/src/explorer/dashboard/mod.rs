@@ -4,6 +4,7 @@
 
 pub mod caps;
 pub mod csv;
+pub mod enrich;
 pub mod evidence;
 pub mod reduce;
 pub mod render;
@@ -16,6 +17,7 @@ use rusqlite::OptionalExtension;
 use serde::Serialize;
 
 use crate::explorer::store::{ExplorerStore, SCHEMA_HEAD};
+use crate::explorer::types::MevKind;
 
 use caps::StoreCaps;
 pub use evidence::OperationEconomics;
@@ -696,6 +698,10 @@ fn load_ops_window(
     for row in rows {
         out.push(row?);
     }
+    // LP add/remove and reward claims are forensic actions, not opportunities.
+    // They stay in the store for explanation; every dashboard panel reports
+    // extracted MEV only.
+    out.retain(|o| !MevKind::parse(&o.kind).is_some_and(MevKind::is_forensic_action));
     Ok(out)
 }
 
@@ -1291,6 +1297,64 @@ mod tests {
         ));
         assert!(csv.contains(",by_kind,arb_atomic,"));
         assert!(csv.contains(",by_kind,jit,"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LP actions (deposits, withdrawals, reward claims) are not opportunities:
+    /// they must not reach KPI totals or the kind matrix even though the store
+    /// keeps the rows for forensic explanation.
+    #[test]
+    fn forensic_action_rows_are_not_counted_as_opportunities() {
+        let dir = std::env::temp_dir().join(format!(
+            "mev_dash_liqadd_{}_{}",
+            std::process::id(),
+            now_secs()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("explorer-avalanche.sqlite");
+        let since = 1_700_000_000i64;
+        {
+            let store = ExplorerStore::open(&path).expect("create");
+            for (i, kind) in [
+                "arb_atomic",
+                "liquidity_add",
+                "liquidity_remove",
+                "reward_claim",
+            ]
+            .iter()
+            .enumerate()
+            {
+                store
+                    .connection()
+                    .execute(
+                        "INSERT INTO mev_ops(
+                           block_number, tx_index, tx_hash, ts, kind, eoa, confidence,
+                           profit_usd, gas_cost_usd, net_profit_usd, detector, created_at
+                         ) VALUES(1, ?1, ?2, ?3, ?4, '0xee', 'exact', 1.0, 0.1, 0.9, 't', ?3)",
+                        rusqlite::params![i as i64, format!("0xliq{i}"), since, kind],
+                    )
+                    .expect("op");
+            }
+        }
+        let snap = build(&BuildOptions {
+            db_path: path,
+            window: WindowSpec {
+                label: "liqadd".into(),
+                since_ts: since - 10,
+                until_ts: since + 10,
+            },
+            ..BuildOptions::default()
+        })
+        .expect("build");
+        assert_eq!(snap.panels.kpi.ops, 1, "forensic actions must be excluded");
+        assert!(
+            snap.panels.kind_matrix.iter().all(|c| c.ops == 0
+                || !matches!(
+                    c.kind.as_str(),
+                    "liquidity_add" | "liquidity_remove" | "reward_claim"
+                )),
+            "forensic action leaked into the kind matrix"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

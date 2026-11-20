@@ -121,6 +121,10 @@ a:hover { text-decoration: underline; }
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 th { color: var(--muted); font: 10px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; position: sticky; top: 0; background: var(--panel); }
+th .sort-btn { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+th .sort-btn:hover, th .sort-btn:focus-visible { color: var(--ink); }
+th .sort-btn:focus-visible { outline: 1px solid var(--teal); outline-offset: 2px; }
+.sort-ind { min-width: 1ch; text-align: center; }
 td { font: 12px/1.35 var(--mono); font-variant-numeric: tabular-nums; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td, tr.active td { background: rgba(79,209,197,.08); }
@@ -203,6 +207,7 @@ tr.clickable:hover td, tr.active td { background: rgba(79,209,197,.08); }
   display: flex; flex-wrap: nowrap; gap: 10px; align-items: stretch; justify-content: flex-start;
   min-height: 120px; padding: 12px 0; overflow-x: auto;
 }
+.route.flow-mode { display: block; min-height: 0; overflow: visible; }
 .route-node {
   min-width: 128px; max-width: 180px; padding: 10px 12px; border-radius: 14px; text-align: center;
   background: var(--panel2); border: 1px solid var(--line); font: 11px/1.35 var(--mono);
@@ -218,8 +223,29 @@ tr.clickable:hover td, tr.active td { background: rgba(79,209,197,.08); }
   text-align: center; flex: 0 0 auto; align-self: center;
 }
 .route-edge .amt { display: block; color: var(--ink); margin-top: 2px; }
+.flow-tokens { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 6px 0 16px; }
+.flow-token { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 92px; }
+.flow-ico { width: 44px; height: 44px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #1b2738; border: 1px solid #243044; }
+.flow-ico img { width: 100%; height: 100%; object-fit: cover; }
+.flow-ico.mono { font: 700 14px/1 var(--mono); color: #fff; }
+.flow-token b { font: 13px var(--mono); }
+.flow-name { color: var(--muted); font-size: 10px; max-width: 130px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-arrow { color: var(--muted); font-size: 20px; padding: 0 2px; }
+.flow-legs { display: flex; flex-direction: column; gap: 6px; }
+.flow-leg { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); }
+.leg-pair { font: 11px var(--mono); color: var(--muted); min-width: 130px; }
+.leg-dex { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; color: var(--ink); font: 12px var(--mono); }
+.leg-dex:hover { color: var(--teal); }
+.leg-dex b { font-weight: 650; }
+.leg-pool { color: var(--muted); font-size: 10px; }
+.leg-dex .ext { color: var(--muted); font-size: 11px; }
+.leg-amt { margin-left: auto; color: var(--teal); font: 10px var(--mono); overflow-wrap: anywhere; text-align: right; }
 .token-line { display: block; font-size: 10px; color: var(--muted); word-break: break-all; }
 .token-sym { color: var(--ink); font-weight: 650; }
+.token-label { display: inline-flex; align-items: center; gap: 6px; vertical-align: middle; }
+.token-ico { width: 16px; height: 16px; border-radius: 50%; object-fit: cover; flex: 0 0 auto; background: #1b2738; }
+.dex-ico { display: inline-flex; width: 15px; height: 15px; border-radius: 4px; align-items: center; justify-content: center; font: 700 9px/1 var(--mono); color: #fff; flex: 0 0 auto; }
+.dex-chip { color: var(--muted); font: 10px var(--mono); margin-left: 4px; }
 .health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .cap-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
@@ -365,7 +391,7 @@ pre.raw {
         <div class="card ops-list">
           <h2>Operations</h2>
           <div class="caption" id="ops-selection-note" role="status"></div>
-          <div class="table-wrap" style="max-height:none"><table><thead><tr><th>Time</th><th>Strategy</th><th>Net</th></tr></thead><tbody id="ops-tbody"></tbody></table></div>
+          <div class="table-wrap" style="max-height:none"><table><thead id="ops-sort"><tr><th><button type="button" class="sort-btn" data-sort="time">Time<span class="sort-ind">↓</span></button></th><th><button type="button" class="sort-btn" data-sort="kind">Strategy<span class="sort-ind"></span></button></th><th><button type="button" class="sort-btn" data-sort="net">Net<span class="sort-ind"></span></button></th></tr></thead><tbody id="ops-tbody"></tbody></table></div>
         </div>
         <div class="card" id="op-detail">
           <div class="empty" id="op-empty">Select an operation</div>
@@ -391,13 +417,10 @@ pre.raw {
               <div class="card"><h3>Profit waterfall</h3><div class="chart" id="chart-op-waterfall"></div><div class="caption" id="op-waterfall-note"></div></div>
               <div class="card"><h3>Operation facts</h3><table class="facts" id="op-facts"></table></div>
             </div>
-            <div class="grid op-columns" style="margin-top:14px">
-              <div class="card">
-                <h3>Route &amp; token flow</h3>
-                <div class="route" id="op-route"></div>
-                <div class="caption" id="op-route-cap"></div>
-              </div>
-              <div class="card"><h3>Observed execution timeline</h3><ol class="timeline" id="op-timeline"></ol></div>
+            <div class="card" style="margin-top:14px">
+              <h3>Route &amp; token flow</h3>
+              <div class="route" id="op-route"></div>
+              <div class="caption" id="op-route-cap"></div>
             </div>
             <div class="card" style="margin-top:14px">
               <h3>Evidence</h3>
@@ -442,7 +465,9 @@ pre.raw {
     opId: null,
     opHash: null,
     legacyHash: null,
-    q: ""
+    q: "",
+    sortKey: "time",
+    sortDir: "desc"
   };
 
   /* op_index row: [ts, slice_id, conf, flags, actor_id, eoa_id, contract_id|null, block, tx_id,
@@ -657,6 +682,29 @@ pre.raw {
       return '<svg class="amm-ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 11 L8 3 L13 11 Z" fill="none" stroke="' + c + '" stroke-width="1.6"/></svg>';
     }
     return '<svg class="amm-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="none" stroke="' + c + '" stroke-width="1.5"/></svg>';
+  }
+  function dexColor(id) {
+    var palette = {
+      traderjoe: "#e5484d", pharaoh: "#8b5cf6", blackhole: "#0ea5e9",
+      pangolin: "#f97316", uniswap: "#ff007a", curve: "#a259ff",
+      balancer: "#64748b", sushiswap: "#ec4899", camelot: "#f59e0b",
+      solidly: "#7c8798", velodrome: "#3b82f6", aerodrome: "#2563eb",
+      pancakeswap: "#f59e0b", woofi: "#12b8a6", glowswap: "#22c55e"
+    };
+    return palette[String(id || "").toLowerCase()] || "#64748b";
+  }
+  function dexIcon(id) {
+    var k = String(id || "").toLowerCase();
+    var letter = k ? k.slice(0, 1).toUpperCase() : "◇";
+    return '<span class="dex-ico" style="background:' + dexColor(k) + '">' + esc(letter) + "</span>";
+  }
+  function dexName(leg) {
+    return leg.dex_name || leg.amm || "observed AMM";
+  }
+  function dexChip(leg) {
+    var amm = leg.dex_name ? (leg.amm || "") : "";
+    if (leg.pool_label) amm = amm ? amm + " · " + leg.pool_label : leg.pool_label;
+    return amm ? '<span class="dex-chip">' + esc(amm) + "</span>" : "";
   }
   function chainIcon(chainId) {
     if (chainId === 43114) {
@@ -1412,8 +1460,41 @@ pre.raw {
       + " unpriced operations excluded from USD axes · volume outliers keep raw magnitude (log scale)";
   }
 
+  function updateOpsSortIndicators() {
+    var btns = document.querySelectorAll("#ops-sort .sort-btn");
+    for (var i = 0; i < btns.length; i++) {
+      var btn = btns[i];
+      var on = btn.getAttribute("data-sort") === state.sortKey;
+      var ind = btn.querySelector(".sort-ind");
+      if (ind) ind.textContent = on ? (state.sortDir === "asc" ? "↑" : "↓") : "";
+      var th = btn.closest("th");
+      if (th) th.setAttribute("aria-sort", on ? (state.sortDir === "asc" ? "ascending" : "descending") : "none");
+    }
+  }
+
+  function sortOps(rows) {
+    var dir = state.sortDir === "asc" ? 1 : -1;
+    rows.sort(function (a, b) {
+      var tie = (b.ts - a.ts) || (Number(b.id) - Number(a.id));
+      if (state.sortKey === "net") {
+        var an = a.net_profit_usd == null;
+        var bn = b.net_profit_usd == null;
+        if (an !== bn) return an ? 1 : -1; // unpriced rows always last
+        return (a.net_profit_usd - b.net_profit_usd) * dir || tie;
+      }
+      if (state.sortKey === "kind") {
+        var al = sliceLabel(sliceKey(a.kind, a.subkind));
+        var bl = sliceLabel(sliceKey(b.kind, b.subkind));
+        return String(al).localeCompare(String(bl)) * dir || tie;
+      }
+      return (a.ts - b.ts) * dir || tie;
+    });
+    return rows;
+  }
+
   function renderOperationsList() {
-    var rows = searchEvents().slice().reverse();
+    updateOpsSortIndicators();
+    var rows = sortOps(searchEvents().slice());
     $("ops-tbody").innerHTML = rows.map(function (e) {
       var key = sliceKey(e.kind, e.subkind);
       var active = String(state.opId) === String(e.id) ? " active" : "";
@@ -1474,16 +1555,36 @@ pre.raw {
       + "</div>";
   }
 
-  function tokenLabel(addr, symbol, name) {
+  function compactAmt(v) {
+    if (v == null || v === "") return "";
+    var s = String(v);
+    if (!/^[0-9]+$/.test(s) || s.length <= 6) return s;
+    var n = Number(s);
+    if (!Number.isFinite(n)) return s;
+    return Math.abs(n) >= 1e9 ? "~" + n.toExponential(2) : s;
+  }
+
+  function tokenAvatar(icon, symbol, addr, cls) {
+    var s = String(symbol || addr || "?").replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "?";
+    if (icon) {
+      return '<span class="' + cls + '"><img src="' + esc(icon) + '" alt=""></span>';
+    }
+    return '<span class="' + cls + ' mono" style="background:' + colorFor(String(addr || symbol || "?")) + '">' + esc(s) + "</span>";
+  }
+
+  function tokenLabel(addr, symbol, name, icon) {
     var a = addr || "";
     var sym = symbol || "";
     var nm = name || "";
     var top = sym
       ? ('<span class="token-sym">' + esc(sym) + "</span>" + (nm ? " · " + esc(nm) : ""))
       : (nm ? esc(nm) : esc(short(a) || "token"));
-    return top + (a
+    var ico = icon
+      ? '<img class="token-ico" src="' + esc(icon) + '" alt="">'
+      : "";
+    return '<span class="token-label">' + ico + "<span>" + top + (a
       ? '<span class="token-line" title="' + esc(a) + '">' + esc(short(a)) + "</span>"
-      : "");
+      : "") + "</span></span>";
   }
 
   function renderOpDetail() {
@@ -1668,10 +1769,16 @@ pre.raw {
     }
 
     var route = (ev && ev.route) || [];
+    $("op-route").classList.remove("flow-mode");
     var amms = {};
     route.forEach(function (leg) { if (leg.amm) amms[leg.amm] = 1; });
     var pools = {};
     route.forEach(function (leg) { if (leg.pool) pools[leg.pool] = 1; });
+    var venues = {};
+    route.forEach(function (leg) {
+      var k = leg.dex_name || leg.dex_id || leg.amm;
+      if (k) venues[k] = 1;
+    });
     var factRows = [
       ["Block", (ev && ev.block_number) || (row && row.block_number) || "—"],
       ["Detector", (ev && ev.detector) || (row && row.detector) || "—"],
@@ -1680,13 +1787,26 @@ pre.raw {
       ["Contract", (ev && ev.contract) || "—"],
       ["PnL basis", (ev && ev.pnl_basis) || (row && row.pnl_basis) || "—"],
       ["Pricing", (ev && ev.usd_approximate) ? "Approximate USD" : (priced ? "Priced" : "Unpriced")],
-      ["Route", route.length + " hops · " + Object.keys(pools).length + " pools · " + Object.keys(amms).length + " AMM"]
+      ["Route", route.length + " hops · " + Object.keys(pools).length + " pools · "
+        + Object.keys(venues).length + " DEX · " + Object.keys(amms).length + " AMM"]
     ];
     if (ev && ev.flash_fee_unpriced) {
       factRows.push(["Flash fee", "unpriced — omitted from USD waterfall"]);
     }
     if (ev && ev.economics && ev.economics.roi_pct != null) {
       factRows.push(["Return on recorded cost", percent(ev.economics.roi_pct) + " (historical, not a forecast)"]);
+    }
+    if (ev && ev.details && ev.details.funding_mechanism) {
+      factRows.push(["Funding", ev.details.funding_mechanism]);
+    }
+    if (ev && ev.details && ev.details.transfer_tax) {
+      var tt = ev.details.transfer_tax;
+      var ttLeg = route[tt.leg_index] || {};
+      factRows.push([
+        "Transfer tax",
+        (Number(tt.bps) / 100).toFixed(2) + "% "
+          + (ttLeg.token_out_symbol || ttLeg.token_in_symbol || "")
+      ]);
     }
     if (!ev && row) {
       factRows.push(["Evidence", "not emitted (budget/cap)"]);
@@ -1716,91 +1836,69 @@ pre.raw {
     } else {
       var html = "";
       var nonReg = false;
-      var firstLeg = route[0];
-      var lastLeg = route[route.length - 1];
-      var firstIn = firstLeg.amount_in_human || firstLeg.amount_in;
-      var lastOut = lastLeg.amount_out_human || lastLeg.amount_out;
-      html += '<div class="route-edge"><span class="caption">Input</span> '
-        + tokenLabel(firstLeg.token_in, firstLeg.token_in_symbol, firstLeg.token_in_name)
-        + (firstIn ? '<span class="amt">' + esc(firstIn) + "</span>" : "")
-        + "</div>";
+      var disconnected = false;
+      var seq = [];
+      var pushTok = function (addr, sym, name, icon) {
+        var key = String(addr || "").toLowerCase();
+        if (seq.length && String(seq[seq.length - 1].addr || "").toLowerCase() === key) return;
+        seq.push({
+          addr: addr,
+          sym: sym || short(addr || "") || "token",
+          name: name || "",
+          icon: icon || ""
+        });
+      };
       route.forEach(function (leg, i) {
-        if (i) {
-          var prev = route[i - 1];
-          var connected = prev.token_out && leg.token_in
-            && String(prev.token_out).toLowerCase() === String(leg.token_in).toLowerCase();
-          if (!connected) {
-            html += '<div class="route-edge"><span class="caption">Disconnected observed legs</span> '
-              + tokenLabel(prev.token_out, prev.token_out_symbol, prev.token_out_name)
-              + " → "
-              + tokenLabel(leg.token_in, leg.token_in_symbol, leg.token_in_name)
-              + "</div>";
-          }
+        if (i && leg.token_in && route[i - 1].token_out
+          && String(leg.token_in).toLowerCase() !== String(route[i - 1].token_out).toLowerCase()) {
+          disconnected = true;
         }
-        var amm = leg.amm || "observed AMM";
-        var aout = leg.amount_out_human || leg.amount_out;
         if (leg.token_source && leg.token_source !== "registry") nonReg = true;
-        html += '<div class="route-node ' + esc(String(amm).toLowerCase()) + '"><div>'
-          + ammIcon(amm) + "<b>" + esc(amm) + "</b></div><div title=\"" + esc(leg.pool || "") + "\">"
-          + esc(short(leg.pool || "")) + "</div></div>";
-        html += '<div class="route-edge">'
-          + tokenLabel(leg.token_out, leg.token_out_symbol, leg.token_out_name)
-          + (aout ? '<span class="amt">' + esc(aout) + "</span>" : "")
+        if (!i) pushTok(leg.token_in, leg.token_in_symbol, leg.token_in_name, leg.token_in_icon);
+        pushTok(leg.token_out, leg.token_out_symbol, leg.token_out_name, leg.token_out_icon);
+      });
+
+      html += '<div class="flow-tokens">';
+      seq.forEach(function (t, i) {
+        if (i) html += '<span class="flow-arrow">→</span>';
+        html += '<div class="flow-token" title="' + esc(t.addr || "") + '">'
+          + tokenAvatar(t.icon, t.sym, t.addr, "flow-ico")
+          + "<b>" + esc(t.sym) + "</b>"
+          + (t.name ? '<span class="flow-name">' + esc(t.name) + "</span>" : "")
           + "</div>";
       });
-      html += '<div class="route-edge"><span class="caption">Output</span> '
-        + tokenLabel(lastLeg.token_out, lastLeg.token_out_symbol, lastLeg.token_out_name)
-        + (lastOut ? '<span class="amt">' + esc(lastOut) + "</span>" : "")
-        + "</div>";
+      html += '</div><div class="flow-legs">';
+      route.forEach(function (leg) {
+        var amm = leg.amm || "observed AMM";
+        var symIn = leg.token_in_symbol || short(leg.token_in || "");
+        var symOut = leg.token_out_symbol || short(leg.token_out || "");
+        var amtIn = leg.amount_in_human || compactAmt(leg.amount_in);
+        var amtOut = leg.amount_out_human || compactAmt(leg.amount_out);
+        var link = leg.dex_url
+          ? ' href="' + esc(leg.dex_url) + '" target="_blank" rel="noopener"'
+          : "";
+        html += '<div class="flow-leg">'
+          + '<span class="leg-pair">' + esc(symIn) + " → " + esc(symOut) + "</span>"
+          + '<a class="leg-dex"' + link + ">"
+          + dexIcon(leg.dex_id || amm) + "<b>" + esc(dexName(leg)) + "</b>"
+          + '<span class="leg-pool">' + esc(leg.pool_label || "") + "</span>"
+          + (leg.dex_url ? '<span class="ext">↗</span>' : "")
+          + "</a>"
+          + '<span class="leg-amt" title="' + esc(leg.pool || "") + '">'
+          + esc(amtIn) + " → " + esc(amtOut) + "</span>"
+          + "</div>";
+      });
+      html += "</div>";
+      if (disconnected) {
+        html += '<div class="caption" style="margin-top:8px;color:var(--amber)">'
+          + "Disconnected observed legs are shown in sequence, never bridged.</div>";
+      }
+      $("op-route").classList.add("flow-mode");
       $("op-route").innerHTML = html;
       $("op-route-cap").textContent = nonReg
-        ? "Observed AMM labels · proximity/non-registry token source on at least one leg · disconnected legs are shown, never bridged"
-        : "Observed AMM · symbol/name/address + humanized amounts when decimals known";
+        ? "DEX/token labels cached from DexScreener + GeckoTerminal/CoinGecko · proximity/non-registry token source on at least one leg"
+        : "DEX/token names and icons cached on first render · amounts humanized when decimals are known";
     }
-
-    // Timeline uses only recorded LP events or observed route legs. Internal
-    // steps and implied intra-tx timings are never invented.
-    var tl = [];
-    if (acc && acc.version && Array.isArray(acc.timeline)) {
-      acc.timeline.forEach(function (t) {
-        tl.push("<li><strong>" + esc(t.kind) + "</strong>"
-          + '<span class="caption">Block ' + esc(String(t.block_number)) + " · "
-          + esc(dateTime(t.ts)) + " · tx " + esc(short(t.tx_hash || "")) + "</span>"
-          + "<div>amount0 " + esc(t.amount0 || "—") + " · amount1 " + esc(t.amount1 || "—") + "</div></li>");
-      });
-    }
-    if (!tl.length && ev && ev.details && ev.details.front_run && ev.details.back_run) {
-      var fr = ev.details.front_run;
-      var br = ev.details.back_run;
-      var victimHashes = ev.victim_hashes || [];
-      tl.push("<li><strong>Front-run</strong>"
-        + '<span class="caption">Block ' + esc(String(ev.block_number)) + " · " + esc(dateTime(ev.ts))
-        + " · tx " + esc(short(fr.tx_hash || "")) + "</span>"
-        + "<div>" + esc(fr.amount_in || "?") + " → " + esc(fr.amount_out || "?") + "</div></li>");
-      victimHashes.forEach(function (h) {
-        tl.push("<li><strong>Victim</strong>"
-          + '<span class="caption">Block ' + esc(String(ev.block_number)) + " · " + esc(dateTime(ev.ts))
-          + " · tx " + esc(short(h)) + "</span></li>");
-      });
-      tl.push("<li><strong>Back-run</strong>"
-        + '<span class="caption">Block ' + esc(String(ev.block_number)) + " · " + esc(dateTime(ev.ts))
-        + " · tx " + esc(short(br.tx_hash || "")) + "</span>"
-        + "<div>" + esc(br.amount_in || "?") + " → " + esc(br.amount_out || "?") + "</div></li>");
-    }
-    if (!tl.length && route.length) {
-      var tlBlock = (ev && ev.block_number) || (row && row.block_number) || "—";
-      var tlTs = (ev && ev.ts) || (row && row.ts);
-      route.forEach(function (leg, i) {
-        tl.push("<li><strong>Leg " + (i + 1) + ": " + esc(leg.amm || "observed AMM") + "</strong>"
-          + '<span class="caption">Block ' + esc(String(tlBlock)) + " · " + esc(dateTime(tlTs)) + "</span>"
-          + '<div title="' + esc(leg.pool || "") + '">' + esc(short(leg.pool || "")) + " · "
-          + tokenLabel(leg.token_in, leg.token_in_symbol, leg.token_in_name) + " → "
-          + tokenLabel(leg.token_out, leg.token_out_symbol, leg.token_out_name) + "</div></li>");
-      });
-    }
-    $("op-timeline").innerHTML = tl.length ? tl.join("")
-      : '<li><strong>No observed event order</strong><span class="caption">'
-        + "Only recorded mint/burn/collect events or route legs are shown; internal steps and inferred timings are not invented.</span></li>";
 
     var tags = (ev && ev.tags) || [];
     $("op-tags").innerHTML = tags.length ? tags.map(function (t) {
@@ -2098,6 +2196,18 @@ pre.raw {
   $("global-search").addEventListener("input", function (e) {
     state.q = e.target.value || "";
     renderView();
+  });
+  document.querySelectorAll("#ops-sort .sort-btn").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var key = b.getAttribute("data-sort");
+      if (state.sortKey === key) {
+        state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+      } else {
+        state.sortKey = key;
+        state.sortDir = key === "kind" ? "asc" : "desc";
+      }
+      renderOperationsList();
+    });
   });
   document.body.addEventListener("click", function (e) {
     var pick = e.target.closest("[data-op-id]");

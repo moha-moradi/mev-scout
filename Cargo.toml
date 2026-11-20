@@ -25,6 +25,7 @@ expect_used = "deny"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
 tracing = "0.1"
 tokio = { version = "1", features = [
     "rt-multi-thread",
