@@ -171,6 +171,18 @@ fn collect_targets(snapshot: &DashboardSnapshot) -> (HashSet<Address>, HashSet<A
             }
         }
     }
+    // Aggregated panels cover every op (including rows beyond the evidence
+    // cap), so their labels must resolve too.
+    for p in &snapshot.panels.pools {
+        if let Some(a) = parse_addr(&p.pool) {
+            pools.insert(a);
+        }
+    }
+    for t in &snapshot.panels.tokens {
+        if let Some(a) = parse_addr(&t.token) {
+            tokens.insert(a);
+        }
+    }
     (tokens, pools)
 }
 
@@ -880,6 +892,33 @@ fn apply(
     for ev in &mut snapshot.panels.evidence {
         for leg in &mut ev.route {
             apply_leg(leg, tokens, pools, icons);
+        }
+    }
+    for p in &mut snapshot.panels.pools {
+        if let Some(addr) = parse_addr(&p.pool) {
+            if let Some(meta) = pools.get(&addr) {
+                p.dex_id = Some(meta.dex_id.clone());
+                p.dex_name = Some(meta.dex_name.clone());
+                p.label = meta.label.clone();
+            }
+        }
+    }
+    for t in &mut snapshot.panels.tokens {
+        if let Some(addr) = parse_addr(&t.token) {
+            if let Some(meta) = tokens.get(&addr) {
+                if !meta.symbol.is_empty() {
+                    t.symbol = Some(meta.symbol.clone());
+                }
+                if meta.name.is_some() {
+                    t.name = meta.name.clone();
+                }
+                if t.icon.is_none() {
+                    t.icon = meta.icon_url.clone();
+                }
+            }
+            if let Some(icon) = icons.get(&addr) {
+                t.icon = Some(icon.clone());
+            }
         }
     }
 }

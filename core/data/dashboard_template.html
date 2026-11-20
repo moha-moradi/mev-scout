@@ -1117,7 +1117,12 @@ pre.raw {
   function renderPools() {
     $("pools-tbody").innerHTML = (P.pools || []).slice(0, 40).map(function (p) {
       var mix = Object.keys(p.amm_mix || {}).map(function (k) { return k + ":" + p.amm_mix[k]; }).join(" ");
-      return "<tr><td>" + esc(short(p.pool)) + "</td><td>" + (p.ops || 0) + "</td><td>"
+      var head = p.dex_name
+        ? dexIcon(p.dex_id) + " <b>" + esc(p.dex_name) + "</b>"
+          + (p.label ? ' <span class="dex-chip">' + esc(p.label) + "</span>" : "")
+        : "";
+      var addr = '<span class="token-line" title="' + esc(p.pool) + '">' + esc(short(p.pool)) + "</span>";
+      return "<tr><td>" + head + addr + "</td><td>" + (p.ops || 0) + "</td><td>"
         + usd(p.net_usd, true) + "</td><td>" + esc(mix || "—") + "</td></tr>";
     }).join("") || '<tr><td colspan="4" class="empty">No pools</td></tr>';
     var ammMap = {};

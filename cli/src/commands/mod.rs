@@ -56,6 +56,9 @@ impl CliCommand for ExplorerArgs {
             None => {
                 explorer::emit_dashboard(config, self.out.clone(), "all", WindowSpec::all()).await
             }
+            Some(ExplorerCommand::Audit(a)) => {
+                explorer::cmd_audit(config, a, self.out.clone()).await
+            }
             Some(ExplorerCommand::Index(a)) => {
                 let outcome = cmd_backfill(
                     config,

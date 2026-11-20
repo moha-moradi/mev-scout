@@ -6,9 +6,11 @@ use mev_scout_core::explorer::dashboard::WindowSpec;
 use mev_scout_core::explorer::store::ExplorerStore;
 use mev_scout_core::types::ChainName;
 
+mod audit;
 mod backfill;
 mod dashboard;
 
+pub use audit::cmd_audit;
 pub use backfill::cmd_backfill;
 use dashboard::{cmd_dashboard, DashboardEmitArgs};
 

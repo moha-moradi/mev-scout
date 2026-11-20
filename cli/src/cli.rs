@@ -82,6 +82,17 @@ pub enum ExplorerCommand {
     /// Backfills a trailing `--window` (default 7d) or an exact
     /// `--from-block`/`--to-block` range. Idempotent, resumable.
     Index(IndexArgs),
+
+    /// Audit one transaction: stored ops/evidence plus a call trace when a
+    /// configured RPC serves `debug_traceTransaction`/`trace_transaction`.
+    Audit(AuditArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AuditArgs {
+    /// Transaction hash to audit (0x + 64 hex).
+    #[arg(long, value_name = "HASH")]
+    pub tx: String,
 }
 
 #[derive(Args, Debug, Clone)]

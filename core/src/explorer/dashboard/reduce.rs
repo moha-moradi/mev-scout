@@ -95,6 +95,13 @@ pub struct PoolRow {
     pub amm_mix: BTreeMap<String, i64>,
     pub unique_competitors: i64,
     pub top_kind: Option<String>,
+    /// DEX labels resolved at dashboard build (not part of the reduction).
+    #[serde(default)]
+    pub dex_id: Option<String>,
+    #[serde(default)]
+    pub dex_name: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,6 +111,13 @@ pub struct TokenRow {
     pub gross_usd: f64,
     pub net_usd: f64,
     pub priced_ops: i64,
+    /// Token labels resolved at dashboard build (not part of the reduction).
+    #[serde(default)]
+    pub symbol: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -1068,6 +1082,9 @@ fn reduce_pools(ops: &[OpRecord]) -> Vec<PoolRow> {
                 amm_mix: a.amm_mix,
                 unique_competitors: a.comps.len() as i64,
                 top_kind,
+                dex_id: None,
+                dex_name: None,
+                label: None,
             }
         })
         .collect();
@@ -1124,6 +1141,9 @@ fn reduce_tokens(ops: &[OpRecord]) -> Vec<TokenRow> {
             gross_usd: a.gross,
             net_usd: a.net,
             priced_ops: a.priced,
+            symbol: None,
+            name: None,
+            icon: None,
         })
         .collect();
     rows.sort_by(|a, b| {

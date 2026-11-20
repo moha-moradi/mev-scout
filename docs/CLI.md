@@ -464,7 +464,24 @@ Default output names: `results/explorer-<chain>-7d.html` (no range flag),
 Ingest tuning lives in TOML `[explorer]`: `confirmations` (plus classification
 knobs).
 
-#### 3.6.3 Dashboard output
+#### 3.6.3 `explorer audit`
+
+Opt-in audit of one transaction: dumps the stored ops + tx evidence and,
+when a configured RPC serves it, a call trace. Tries
+`debug_traceTransaction` (callTracer, with logs) first, then
+`trace_transaction`; every attempt is recorded with the provider host
+redacted so API keys never reach the output file. Public endpoints commonly
+reject both methods, in which case the report still contains the stored
+evidence and a hint to configure a trace-capable archive RPC.
+
+```powershell
+mev-scout explorer audit --tx 0x5e81…f212
+mev-scout explorer audit --tx 0x5e81…f212 --out results/audit.json
+```
+
+Default output: `results/trace-<hash>.json`.
+
+#### 3.6.4 Dashboard output
 
 | Flag | Effect |
 |---|---|
