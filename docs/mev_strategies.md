@@ -2946,7 +2946,7 @@ Remaining strategies: chain-specific extensions, high-competition, niche protoco
 
 | Capability | Status | Details |
 |-----------|--------|---------|
-| **Detection** | 4 strategies coded | TwoHopArb, MultiHopArb, JIT, Backrun |
+| **Detection** | 4 live detectors coded; explorer adds 8 realized kinds | Live: TwoHopArb, MultiHopArb, JIT, Backrun. Explorer: see §16.9 |
 | **Simulation (revm)** | Built | `replay/` module with full revm block replay |
 | **Backtesting** | Active | `scripts/test_backtest.ps1` runs Dune-guided backtests across historical blocks |
 | **Live mode** | Active | `LiveRunner` in `execution/live.rs` processes real blocks + mempool |
@@ -2957,6 +2957,47 @@ Remaining strategies: chain-specific extensions, high-competition, niche protoco
 | **46 strategies** | Planned (Phases 0–5) | All mapped to specific files in `plans/implementation_plan.md` (~8K–10K Rust planned) |
 | **7 expansion surfaces (Part IV)** | Not mapped | §20–§26 (Instadapp / DeFi Saver / Silo / LLAMMA / Compound V3); no files assigned yet — see Part IV + `docs/implementation_plan_capital_free.md` |
 | **3 strategies** | Excluded permanently | TWAP manipulation, NFT floor arb, governance MEV |
+
+### 16.9 Explorer realized-MEV status
+
+`explorer` reconstructs what *was* extracted from block receipts and ERC-20
+transfers. It never executes or simulates a trade and does not call a trace
+RPC. The classifier emits eight kinds:
+
+| Kind | Detection basis | PnL basis | Counted as MEV opportunity? |
+|---|---|---|---|
+| `arb_atomic` | ledger residual + closed swap cycle (≥2 edges, ≥2 pools, max 8 hops) | `R` | yes |
+| `jit` | Mint→Burn pairing on the same pool/owner/range + in-range swap; cross-block up to 1000 blocks | `F` (fee estimate; USD only for verified EOA cashflows) | yes |
+| `liquidation` | raw events for Aave V3/V2/Spark, Compound V3/V2 (Benqi/Venus aliases), Morpho, Silo, Euler + Compound `BuyCollateral` | `O` (`collateral_usd − debt_usd`) | yes |
+| `skim` | registry V2-like one-way outflow + positive-evidence gate, then block−1 balance/reserve verification (`verified`/`candidate`/`rejected`) | `R` quantity; **USD always NULL** (`candidate_value_usd` only) | only `verified`, and not in USD totals |
+| `liquidity_add` | legacy rows only (no longer emitted) | — | no |
+| `liquidity_remove` | LB `WithdrawnFromBins` (skim counter-evidence) | `F`, no P&L | no (stored, dashboard-filtered) |
+| `reward_claim` | LB `ClaimRewards` | `F` | no (stored, dashboard-filtered) |
+| `utility` | keeper (Gelato/Chainlink) or airdrop claim-and-sell | `F` / `R` | no (operational) |
+
+Atomic-arb tags (`details.tags`): `flash_arb`, `long_tail`, `forwarded_profit`,
+`backrun`, `claim_and_sell` + `airdrop`, `curve_imbalance`,
+`rate_provider_staleness`, `fot_arb`, `rebase_arb`, `savax_rate_arb`,
+`epoch_transition`, `gmx_adl_arb`. JIT tags: `lb_bin_jit` (LB only).
+Liquidation tags: `flash_loan_liq`, `buycollateral`. Utility families map to
+the stored `subkind` (`keeper` / `claim_and_sell`).
+
+The dashboard additionally infers two receipt-only tags from `tx_bundle`:
+`amm_flash_swap_inferred` (a V3-style pool pays before its input arrives) and
+`transfer_tax` (pool→pool delivery minus a third-party cut). Route legs carry
+both the nominal swap amounts and `amount_in_net`/`amount_out_net` from
+transfers; volume prices the received input when it is unambiguous.
+
+`details.arb_meta` shape fields: `arb_shape` (`two_pool`/`triangular`/
+`multi_hop`), `is_cross_dex`, `hop_count`, `pool_count`, `unique_tokens`,
+`amm_family_count` (formerly `dex_count`, which always counted AMM families
+such as v2/v3, not DEX protocols), and `flashloan_funded` (explicit flash
+loans only).
+
+Operational accuracy knobs: `explorer index --reclassify` rebuilds a range
+after detector changes; `--discover-pools` (or `mev-scout discover`) fills the
+scanner registry, which skim eligibility and venue tags depend on. An empty
+registry prints a warning and disables skim detection.
 
 ---
 

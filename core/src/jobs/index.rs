@@ -39,8 +39,26 @@ pub struct PoolRegistry {
     pub v2_like: HashSet<Address>,
     /// Pharaoh / Blackhole pools for plan P3.15 epoch tagging.
     pub epoch_venue: HashSet<Address>,
+    /// V3-style pool → fee in bps (JIT fee capture). Pools whose stored fee is
+    /// absent or implausible are simply omitted.
+    pub fee_bps: HashMap<Address, u32>,
     /// Metadata consistency counters; never consulted by classification.
     pub health: RegistryHealth,
+}
+
+/// Normalize a discovery fee to bps for V3-style pools. Discovery stores the
+/// on-chain tier (500/3000/10000 = hundredths of a bip) for CL pools, but some
+/// remote rows already carry bps; anything below 100 is treated as bps.
+fn jit_fee_bps(dex: DexType, fee: u32) -> Option<u32> {
+    if fee == 0 {
+        return None;
+    }
+    match dex {
+        DexType::UniswapV3 | DexType::UniswapV4 | DexType::PancakeInfinity => {
+            Some(if fee >= 100 { fee / 100 } else { fee })
+        }
+        _ => None,
+    }
 }
 
 fn is_v2_like(dex: DexType) -> bool {
@@ -79,6 +97,7 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
     let mut tokens = HashMap::new();
     let mut v2_like = HashSet::new();
     let mut epoch_venue = HashSet::new();
+    let mut fee_bps = HashMap::new();
     let mut health = RegistryHealth::default();
     // Bounded sample of rows whose skim-eligibility class would change.
     let mut stale: Vec<(Address, DexType, DexType)> = Vec::new();
@@ -123,6 +142,9 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
                     tokens.insert(p.address, (p.token0, p.token1));
                     if is_skim_eligible(&p) {
                         v2_like.insert(p.address);
+                    }
+                    if let Some(bps) = jit_fee_bps(p.dex_type, p.fee) {
+                        fee_bps.insert(p.address, bps);
                     }
                     if p.factory.is_some_and(is_epoch_venue_factory) {
                         epoch_venue.insert(p.address);
@@ -176,6 +198,7 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
         tokens,
         v2_like,
         epoch_venue,
+        fee_bps,
         health,
     }
 }

@@ -413,6 +413,18 @@ pub(super) fn liquidation_pnl(
         "profit_usd_method".into(),
         serde_json::json!("collateral_usd_minus_debt_usd"),
     );
+    // Auditable inputs for the O-basis estimate. Bonus, slippage and protocol
+    // fees are not observable in receipts, so the model names them as excluded
+    // instead of silently folding them into the number.
+    details.insert(
+        "pnl_components".into(),
+        serde_json::json!({
+            "model": "collateral_usd_minus_debt_usd",
+            "collateral_usd": collateral_usd,
+            "debt_usd": debt_usd,
+            "excludes": ["liquidation_bonus", "slippage", "protocol_fees"],
+        }),
+    );
     match (collateral_usd, debt_usd) {
         (Some(c), Some(d)) => {
             reasons.push(
@@ -1092,6 +1104,11 @@ mod tests {
         let details = op.details_json.as_deref().unwrap_or("");
         assert!(details.contains("LIQ_SAME_ASSET"), "got {details}");
         assert!(details.contains("\"pnl_basis\":\"O\""), "got {details}");
+        assert!(
+            details.contains("\"pnl_components\"")
+                && details.contains("collateral_usd_minus_debt_usd"),
+            "O-basis inputs must be auditable: {details}"
+        );
     }
 
     /// BuyCollateral is valued as collateral_usd − base_paid_usd once the

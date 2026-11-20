@@ -217,6 +217,8 @@ pub struct PoolViews<'a> {
     pub v2_like: &'a HashSet<Address>,
     /// Pharaoh / Blackhole pools for plan P3.15.
     pub epoch_venue: &'a HashSet<Address>,
+    /// Known V3-style pool fee tiers in bps (JIT fee capture).
+    pub fee_bps: &'a HashMap<Address, u32>,
 }
 
 /// Result of indexing one block.
@@ -265,6 +267,7 @@ fn run_block_context(cfg: &IngestConfig, pools: PoolViews<'_>) -> BlockContext {
         causal_window_txs: cfg.causal_window_txs,
         causal_price_min_pct: cfg.causal_price_min_pct,
         jit_pool_fee_bps: cfg.jit_pool_fee_bps,
+        pool_fee_bps: std::sync::Arc::new(pools.fee_bps.clone()),
     }
 }
 
@@ -1284,7 +1287,21 @@ pub async fn warm_quotes_for_tokens(
         let chain = cfg.chain;
         let mut collected = HashMap::new();
         let mut stream = futures::stream::iter(llama_token_chunks(&missing))
-            .map(|chunk| async move { pricing::fetch_prices_llama(chain, ts, &chunk).await })
+            .map(|chunk| async move {
+                match pricing::fetch_prices_llama(chain, ts, &chunk).await {
+                    Ok(prices) => Ok(prices),
+                    Err(first) => {
+                        // One retry absorbs transient resolver/proxy failures
+                        // without turning an entire block's USD into NULL.
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                        pricing::fetch_prices_llama(chain, ts, &chunk)
+                            .await
+                            .map_err(|second| {
+                                anyhow::anyhow!("{first}; retry failed: {second}")
+                            })
+                    }
+                }
+            })
             .buffer_unordered(LLAMA_CONCURRENCY);
         while let Some(result) = stream.next().await {
             match result {

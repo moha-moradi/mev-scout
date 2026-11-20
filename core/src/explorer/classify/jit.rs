@@ -200,7 +200,14 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
     // Documented estimate: in-range swap volume × pool fee (30 bps default).
     // V3 fees are not in logs and principal amounts are not fees, so this is
     // explicitly inferred (`Confidence::Exact` remains on the detection).
-    let pool_fee_bps = input.ctx.jit_pool_fee_bps;
+    // Prefer the registry's real tier for this pool; fall back to the
+    // configured estimate when the pool is unknown (e.g. no discovery cache).
+    let pool_fee_bps = input
+        .ctx
+        .pool_fee_bps
+        .get(&pool)
+        .copied()
+        .unwrap_or(input.ctx.jit_pool_fee_bps);
     let mut by_token: std::collections::BTreeMap<String, U256> = std::collections::BTreeMap::new();
     for t in &input.txs {
         for s in &t.swaps {
@@ -482,5 +489,40 @@ mod pairing_tests {
 
         let mut drops = super::super::drops::DropSink::new(input.block);
         assert!(classify_jit(&input, &mut drops).is_empty());
+    }
+
+    #[test]
+    fn registry_fee_tier_overrides_the_configured_estimate() {
+        use std::sync::Arc;
+        let mut input = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![swap_at_tick(POOL_A, USDC, TOKA, 100_000, 110_000, 0)],
+            vec![],
+        )]);
+        input.ctx.pool_fee_bps = Arc::new([(POOL_A, 5u32)].into_iter().collect());
+        let ev = build_jit_event(
+            &input,
+            JitEventPosition {
+                pool: POOL_A,
+                owner: ATK,
+                tick_lower: -100,
+                tick_upper: 100,
+                mint_tx: 0,
+                mint_log: Some(0),
+                liquidity: 1_000,
+                amount0: U256::ZERO,
+                amount1: U256::ZERO,
+                burn_tx: 0,
+                burn_log: 1,
+                opened_block: input.block,
+                bin_amm: false,
+            },
+        )
+        .expect("fee tier should still validate against the in-range swap");
+        assert_eq!(ev.details["fees_estimated"]["pool_fee_bps"], 5);
+        let by_token = &ev.details["fees_estimated"]["by_token"];
+        assert_eq!(by_token[format!("{USDC:#x}")], "50");
     }
 }

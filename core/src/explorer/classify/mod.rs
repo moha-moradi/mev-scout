@@ -132,6 +132,8 @@ pub struct BlockContext {
     pub causal_price_min_pct: f64,
     /// Pool-fee-tier estimate used for JIT fee capture (D12/D11).
     pub jit_pool_fee_bps: u32,
+    /// Registry pool → fee bps for V3-style pools (overrides the estimate).
+    pub pool_fee_bps: Arc<HashMap<Address, u32>>,
 }
 
 impl Default for BlockContext {
@@ -149,6 +151,7 @@ impl Default for BlockContext {
             causal_window_txs: legs::CAUSAL_WINDOW_TXS,
             causal_price_min_pct: legs::CAUSAL_PRICE_MIN_PCT,
             jit_pool_fee_bps: jit::POOL_FEE_BPS,
+            pool_fee_bps: Arc::new(HashMap::new()),
         }
     }
 }

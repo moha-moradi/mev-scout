@@ -654,6 +654,9 @@ fn arb_route_meta(swaps: &[SwapFact], flashloan_funded: bool) -> serde_json::Val
     serde_json::json!({
         "hop_count": hop_count,
         "pool_count": pools.len(),
+        // These count AMM families (v2/v3/v4/…), not DEX protocols.
+        // `dex_count` is kept as a legacy alias for stored/exported consumers.
+        "amm_family_count": amms.len(),
         "dex_count": amms.len(),
         "is_cross_dex": amms.len() > 1,
         "flashloan_funded": flashloan_funded,
