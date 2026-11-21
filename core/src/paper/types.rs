@@ -302,6 +302,24 @@ pub struct LedgerResult {
     pub recon_fail: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recon_unverifiable: Option<u64>,
+    /// Flash-loan fee already netted inside `sim_gross_wei`. Reporting only:
+    /// subtracting it again would double-count (WP1/C-05).
+    #[serde(default)]
+    pub funding_fee_wei: u128,
+    /// Explicit alias of `revert_gas_wei` for the net-profit formula.
+    #[serde(default)]
+    pub revert_gas_cost_wei: u128,
+    /// Gas inputs tied to `sim_block` (Avalanche: no PBS builder tip).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basefee_wei: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_fee_wei: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim_block: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_usd: Option<f64>,
+    #[serde(default)]
+    pub manipulation_risk: bool,
 }
 
 fn default_exec_mode_label() -> String {
@@ -344,4 +362,17 @@ pub struct PaperSession {
     pub revert_gas_wei: Option<String>,
     pub exec_loss_wei: Option<String>,
     pub setup_gas_wei: Option<String>,
+    /// Flash-loan fee already netted into simulated gross (reporting only).
+    #[serde(default)]
+    pub funding_fee_wei: Option<String>,
+    #[serde(default)]
+    pub basefee_wei: Option<String>,
+    #[serde(default)]
+    pub priority_fee_wei: Option<String>,
+    #[serde(default)]
+    pub sim_block: Option<u64>,
+    #[serde(default)]
+    pub native_usd: Option<f64>,
+    #[serde(default)]
+    pub manipulation_risk: bool,
 }

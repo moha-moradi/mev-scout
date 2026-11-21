@@ -203,6 +203,22 @@ pub struct OpportunityInput<'a> {
     pub details_json: Option<&'a str>,
     pub route_tokens_json: Option<&'a str>,
     pub savax_route_json: Option<&'a str>,
+    /// Capital-free contract (all optional; see `types::MevOpportunity`).
+    pub quote_expires_at: Option<u64>,
+    pub underlying_pools_hash: Option<&'a str>,
+    pub router_version: Option<&'a str>,
+    pub sim_block: Option<u64>,
+    pub basefee_wei: Option<u128>,
+    pub priority_fee_wei: Option<u128>,
+    pub nonce: Option<u64>,
+    pub balance_wei: Option<U256>,
+    pub allowance_wei: Option<U256>,
+    pub risk_flags_json: Option<&'a str>,
+    pub optimal_amount: Option<U256>,
+    pub revert_gas_cost_wei: Option<u128>,
+    pub funding_source: Option<&'a str>,
+    pub net_profit_wei: Option<U256>,
+    pub builder_bid_json: Option<&'a str>,
 }
 
 /// One cost · profit · volume row for the revenue report (per kind, per day,
@@ -1398,6 +1414,75 @@ mod tests {
             reject_reason: reason.into(),
             detail: None,
             created_at,
+            ..Default::default()
+        }
+    }
+
+    /// M-04: live-gate reasons and their quote/funding context survive the
+    /// `rejected_candidates` round trip (V18 columns), and each reason is
+    /// queryable by the dashboard reject ladder.
+    #[test]
+    fn rejected_candidates_persist_m04_context() {
+        use crate::explorer::RejectReason;
+
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let reasons = [
+            RejectReason::QuoteExpired,
+            RejectReason::QuoteDrift,
+            RejectReason::FundingUnavailable,
+            RejectReason::RepayFailed,
+            RejectReason::AllowanceMissing,
+            RejectReason::BalanceInsufficient,
+            RejectReason::NonceConflict,
+            RejectReason::SimFailed,
+            RejectReason::RiskFlagBlocked,
+        ];
+        for reason in reasons {
+            let mut r = sample_reject(700, reason.as_str(), 1_700_000_000);
+            r.quote_expires_at = Some(1_700_000_100);
+            r.funding_source = Some("balancer_v2_vault".into());
+            r.sim_block = Some(699);
+            r.risk_flags_json = Some(r#"["funding_reentrancy"]"#.into());
+            r.revert_gas_cost_wei = Some(3);
+            store
+                .insert_rejected_candidate("run", "avalanche", &r)
+                .unwrap();
+        }
+
+        let mut stmt = store
+            .conn
+            .prepare(
+                "SELECT reject_reason, quote_expires_at, funding_source, sim_block,
+                        risk_flags_json, revert_gas_cost_wei
+                   FROM rejected_candidates ORDER BY reject_reason",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<i64>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(rows.len(), reasons.len());
+        let mut persisted: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        let mut expected: Vec<&str> = reasons.iter().map(|r| r.as_str()).collect();
+        persisted.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(persisted, expected);
+        for row in &rows {
+            assert_eq!(row.1, Some(1_700_000_100));
+            assert_eq!(row.2.as_deref(), Some("balancer_v2_vault"));
+            assert_eq!(row.3, Some(699));
+            assert_eq!(row.4.as_deref(), Some(r#"["funding_reentrancy"]"#));
+            assert_eq!(row.5.as_deref(), Some("3"));
         }
     }
 
@@ -1553,6 +1638,21 @@ mod tests {
             details_json: None,
             route_tokens_json: None,
             savax_route_json: None,
+            quote_expires_at: None,
+            underlying_pools_hash: None,
+            router_version: None,
+            sim_block: None,
+            basefee_wei: None,
+            priority_fee_wei: None,
+            nonce: None,
+            balance_wei: None,
+            allowance_wei: None,
+            risk_flags_json: None,
+            optimal_amount: None,
+            revert_gas_cost_wei: None,
+            funding_source: None,
+            net_profit_wei: None,
+            builder_bid_json: None,
         };
         let err = store.insert_opportunities(&[row(1), row(2)]).unwrap_err();
         assert!(

@@ -22,6 +22,9 @@ struct PreparedOpportunity<'a> {
     details_json: Option<String>,
     route_tokens_json: Option<String>,
     savax_route_json: Option<String>,
+    underlying_pools_hash: Option<String>,
+    risk_flags_json: Option<String>,
+    builder_bid_json: Option<String>,
 }
 
 /// Persist run/live results into the explorer store's `opportunities` table.
@@ -73,6 +76,16 @@ pub fn persist_opportunities_to_explorer(
                 .savax_route
                 .as_ref()
                 .and_then(|r| serde_json::to_string(r).ok()),
+            underlying_pools_hash: opp.underlying_pools_hash.map(|h| format!("{h:#x}")),
+            risk_flags_json: if opp.risk_flags.is_empty() {
+                None
+            } else {
+                serde_json::to_string(&opp.risk_flags).ok()
+            },
+            builder_bid_json: opp
+                .builder_bid
+                .as_ref()
+                .and_then(|v| serde_json::to_string(v).ok()),
         })
         .collect();
     let rows: Vec<OpportunityInput<'_>> = prepared
@@ -102,6 +115,27 @@ pub fn persist_opportunities_to_explorer(
             details_json: p.details_json.as_deref(),
             route_tokens_json: p.route_tokens_json.as_deref(),
             savax_route_json: p.savax_route_json.as_deref(),
+            quote_expires_at: p.opp.quote_expires_at,
+            underlying_pools_hash: p.underlying_pools_hash.as_deref(),
+            router_version: p.opp.router_version.as_deref(),
+            sim_block: p.opp.sim_block,
+            basefee_wei: p.opp.basefee_wei,
+            priority_fee_wei: p.opp.priority_fee_wei,
+            nonce: p.opp.nonce,
+            balance_wei: p.opp.balance_wei,
+            allowance_wei: p.opp.allowance_wei,
+            risk_flags_json: p.risk_flags_json.as_deref(),
+            optimal_amount: p.opp.optimal_amount,
+            revert_gas_cost_wei: p.opp.revert_gas_cost_wei,
+            // Per-opportunity funding wins; the run-level flash-loan provider
+            // is the fallback so older results still carry a funding tag.
+            funding_source: p
+                .opp
+                .funding_source
+                .as_deref()
+                .or(Some(results_file.flash_loan_provider.as_str())),
+            net_profit_wei: Some(p.opp.resolved_net_profit_wei()),
+            builder_bid_json: p.builder_bid_json.as_deref(),
         })
         .collect();
     if let Err(e) = store.insert_opportunities(&rows) {

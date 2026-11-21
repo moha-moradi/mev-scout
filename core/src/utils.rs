@@ -11,6 +11,15 @@ pub fn epoch_secs() -> u64 {
         .as_secs()
 }
 
+/// Return the current Unix timestamp in whole milliseconds. Used by the live
+/// quote gate, whose deadlines are sub-second (`quote_expires_at`).
+pub fn epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 /// Decode a uint128 from the last 16 bytes of a byte slice.
 /// If the slice is shorter than 16 bytes, leading bytes are treated as zero.
 pub fn u128_from_be_bytes(bytes: &[u8]) -> u128 {

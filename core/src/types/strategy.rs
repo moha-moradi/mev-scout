@@ -22,6 +22,12 @@ pub enum FlashLoanProvider {
     Aave,
     #[strum(serialize = "uniswap")]
     Uniswap,
+    /// LFJ (Trader Joe) LB flash loan — in-kind fee, read from live state.
+    #[strum(serialize = "lfj")]
+    Lfj,
+    /// V2-compatible flash swap (Pangolin/Sushi/Blackhole earn-fee path).
+    #[strum(serialize = "v2_flash_swap")]
+    V2FlashSwap,
 }
 
 impl FlashLoanProvider {
@@ -29,15 +35,30 @@ impl FlashLoanProvider {
         self != FlashLoanProvider::Auto
     }
 
-    /// Fee rate in basis points (1/10000).
-    /// Aave: 0.09% = 9 bps; Balancer: 0% = 0 bps; Uniswap: ~0.10% = 10 bps.
-    /// For Auto, returns 0 (assumes we pick Balancer, which has no fee).
+    /// Fallback fee rate in basis points (1/10000) when no live fee is
+    /// available. Aave: 0.09% = 9 bps; Balancer: 0% = 0 bps; Uniswap/LFJ:
+    /// ~0.10% = 10 bps; V2 flash swap: ~0.30% = 30 bps. `Auto` assumes
+    /// Balancer. Runtime fee resolution overrides these fallbacks (WP2 A-03).
     pub fn fee_rate_bps(self) -> u128 {
         match self {
             FlashLoanProvider::Auto => 0,
             FlashLoanProvider::Balancer => 0,
-            FlashLoanProvider::Aave => 9,     // 0.09%
-            FlashLoanProvider::Uniswap => 10, // 0.10% (varies by pool)
+            FlashLoanProvider::Aave => 9,         // 0.09% premium
+            FlashLoanProvider::Uniswap => 10,     // 0.10% (varies by pool)
+            FlashLoanProvider::Lfj => 10,         // in-kind fee, live state wins
+            FlashLoanProvider::V2FlashSwap => 30, // pool swap fee, live state wins
+        }
+    }
+
+    /// Stable funding-layer tag value for per-opportunity provenance.
+    /// Flash loan is a funding layer, never a separate arbitrage family.
+    pub fn funding_source(self) -> &'static str {
+        match self {
+            FlashLoanProvider::Auto | FlashLoanProvider::Balancer => "balancer_v2_vault",
+            FlashLoanProvider::Aave => "aave_v3",
+            FlashLoanProvider::Uniswap => "univ3_flash",
+            FlashLoanProvider::Lfj => "lfj_lb_flash",
+            FlashLoanProvider::V2FlashSwap => "v2_flash_swap",
         }
     }
 
@@ -51,6 +72,8 @@ impl FlashLoanProvider {
             FlashLoanProvider::Balancer => 150_000, // V2 Vault flash loan
             FlashLoanProvider::Aave => 250_000, // V3 Pool has heavier accounting
             FlashLoanProvider::Uniswap => 200_000, // V3 flash swap
+            FlashLoanProvider::Lfj => 180_000,  // LB flash callback
+            FlashLoanProvider::V2FlashSwap => 140_000, // V2 earn-fee callback
         }
     }
 }

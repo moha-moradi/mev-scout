@@ -234,6 +234,7 @@ mod tests {
             reject_reason: "DUST".into(),
             detail: None,
             created_at: 0,
+            ..Default::default()
         }
     }
 

@@ -723,10 +723,7 @@ mod tests {
         opp.token_out = t1;
         opp.route_tokens = Some(vec![t0, t1]);
         opp.input_amount = U256::from(1_000u64);
-        assert_eq!(
-            plan(&opp, &pm).unwrap_err(),
-            PlanError::VenueUnsupported
-        );
+        assert_eq!(plan(&opp, &pm).unwrap_err(), PlanError::VenueUnsupported);
     }
 
     #[test]
@@ -788,10 +785,7 @@ mod tests {
         opp.route_tokens = Some(vec![pt, sy]);
         opp.input_amount = U256::from(1_000u64);
 
-        assert_eq!(
-            plan(&opp, &pm).unwrap_err(),
-            PlanError::VenueUnsupported
-        );
+        assert_eq!(plan(&opp, &pm).unwrap_err(), PlanError::VenueUnsupported);
         let routers = VenueRouters {
             pendle_router: Some(router),
             ..Default::default()

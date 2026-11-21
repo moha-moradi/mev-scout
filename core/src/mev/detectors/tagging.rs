@@ -31,6 +31,12 @@ pub struct ArbTagPolicy {
     pub gmx_event_emitters: Vec<Address>,
     /// Every current arb exec path borrows through a flash loan.
     pub flash_financed: bool,
+    /// Funding-layer provenance from the configured flash provider. Flash
+    /// loans are a funding axis, never a separate arbitrage family (A-01).
+    pub funding_source: Option<String>,
+    /// Flash-funding vault (Balancer). A route pool equal to this address is
+    /// reported as a reentrancy risk instead of being silently assumed safe.
+    pub funding_vault: Option<Address>,
     /// sAVAX exchange rate (`getPooledAvaxByShares(1e18)`), refreshed per pass.
     pub savax_rate_wad: Option<U256>,
 }
@@ -247,10 +253,32 @@ pub fn stamp_route_tags(
         opp.add_tag(tags::BACKRUN);
     }
     if policy.flash_financed {
+        // Keep the legacy alias for dashboards and add namespaced funding
+        // provenance without renaming any persisted tag value.
         opp.add_tag(tags::FLASH_ARB);
+        if let Some(source) = policy.funding_source.as_deref() {
+            opp.add_tag(tags::funding_tag_for_source(source));
+            if opp.funding_source.is_none() {
+                opp.funding_source = Some(source.to_string());
+            }
+        }
     }
 
     if let Some(swaps) = synth_route_swaps(opp, pm, policy) {
+        // A-02: the funding vault must not also be a route pool without an
+        // explicit risk signal — the callback re-enters the lending contract.
+        if let Some(vault) = policy.funding_vault {
+            if swaps.iter().any(|s| s.pool == vault)
+                && !opp
+                    .risk_flags
+                    .iter()
+                    .any(|f| f == tags::RISK_FUNDING_REENTRANCY)
+            {
+                opp.risk_flags
+                    .push(tags::RISK_FUNDING_REENTRANCY.to_string());
+            }
+        }
+
         // Dynamic FoT: measured bps are allowed through and tagged; static
         // registry tokens are still excluded by `excludes_taxed_route`.
         let fot_bps = swaps
@@ -457,6 +485,22 @@ mod tests {
     }
 
     #[test]
+    fn funding_source_tag_and_reentrancy_risk_are_stamped() {
+        let pm = manager();
+        let mut opp = route(&pm, vec![USDC, TOKA, WAVAX]);
+        let mut p = policy();
+        p.funding_source = Some("balancer_v2_vault".into());
+        p.funding_vault = Some(POOL_A);
+        stamp_route_tags(&mut opp, &p, &BlockTagFacts::default(), &pm);
+        assert!(opp.has_tag(tags::FUNDING_BALANCER_V2));
+        assert_eq!(opp.funding_source.as_deref(), Some("balancer_v2_vault"));
+        assert!(opp
+            .risk_flags
+            .iter()
+            .any(|f| f == tags::RISK_FUNDING_REENTRANCY));
+    }
+
+    #[test]
     fn measured_fot_is_tagged_not_excluded() {
         let pm = {
             let mut pm = manager();
@@ -494,7 +538,7 @@ mod tests {
     }
 
     /// Venue state used by the tags (Curve A/balances, Balancer rate cache) is
-/// persisted as evidence next to `details.tags`.
+    /// persisted as evidence next to `details.tags`.
     #[test]
     fn route_evidence_records_curve_and_balancer_state() {
         use crate::pool::state::{
@@ -621,6 +665,9 @@ mod tests {
                 opp.tags
             );
         }
-        assert!(opp.details.as_ref().is_some_and(|d| d.get("route_evidence").is_none()));
+        assert!(opp
+            .details
+            .as_ref()
+            .is_some_and(|d| d.get("route_evidence").is_none()));
     }
 }

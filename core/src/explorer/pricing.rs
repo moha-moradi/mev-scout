@@ -254,6 +254,53 @@ pub fn u256_to_f64(v: U256) -> f64 {
         + (limbs[3] as f64) * 2f64.powi(192)
 }
 
+/// Gas inputs for one simulated block.
+///
+/// Avalanche C-Chain has no MEV-Boost/PBS: the bid component is a real
+/// `priority_fee`, never a builder tip. `native_usd` MUST be the same AVAX
+/// quote used by the simulation at `sim_block`, not a USDC or spot-only feed;
+/// `manipulation_risk` marks a quote whose source was judged thin/stale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GasQuote {
+    pub basefee_wei: u128,
+    pub priority_fee_wei: u128,
+    pub native_usd: Option<f64>,
+    pub sim_block: Option<u64>,
+    pub manipulation_risk: bool,
+}
+
+impl Default for GasQuote {
+    fn default() -> Self {
+        Self {
+            basefee_wei: 0,
+            priority_fee_wei: 0,
+            native_usd: None,
+            sim_block: None,
+            manipulation_risk: false,
+        }
+    }
+}
+
+impl GasQuote {
+    /// Effective gas price in wei: basefee + priority fee.
+    pub fn gas_price_wei(&self) -> u128 {
+        self.basefee_wei.saturating_add(self.priority_fee_wei)
+    }
+
+    /// Native gas cost for `gas_used` units.
+    pub fn gas_cost_wei(&self, gas_used: u64) -> U256 {
+        U256::from(self.gas_price_wei().saturating_mul(gas_used as u128))
+    }
+
+    /// USD cost of that gas using the AVAX quote captured with the simulation.
+    /// `None` when no quote was available — never fall back to a different
+    /// asset's price to invent a figure.
+    pub fn gas_cost_usd(&self, gas_used: u64) -> Option<f64> {
+        self.native_usd
+            .map(|price| wei_to_usd(self.gas_cost_wei(gas_used), price))
+    }
+}
+
 /// Hour bucket for the price cache (UTC).
 pub fn hour_bucket(ts: u64) -> u64 {
     ts / 3600
@@ -353,6 +400,29 @@ pub async fn fetch_prices_llama(
 mod tests {
     use super::*;
     use alloy::primitives::address;
+
+    /// Gas is paid in AVAX: the USD figure must use the native quote captured
+    /// with the simulation, never a stablecoin price or a spot-only fallback.
+    #[test]
+    fn gas_quote_uses_native_price_and_combines_fee_components() {
+        let quote = GasQuote {
+            basefee_wei: 25_000_000_000,
+            priority_fee_wei: 5_000_000_000,
+            native_usd: Some(2.0),
+            sim_block: Some(42),
+            manipulation_risk: false,
+        };
+        assert_eq!(quote.gas_price_wei(), 30_000_000_000);
+        let gas = quote.gas_cost_wei(100_000);
+        assert_eq!(gas, U256::from(3_000_000_000_000_000u128));
+        assert!((quote.gas_cost_usd(100_000).unwrap() - 0.006).abs() < 1e-12);
+        // A non-native quote must not leak into the conversion.
+        let no_quote = GasQuote {
+            native_usd: None,
+            ..quote
+        };
+        assert_eq!(no_quote.gas_cost_usd(100_000), None);
+    }
 
     #[test]
     fn conversion_decimals_aware() {

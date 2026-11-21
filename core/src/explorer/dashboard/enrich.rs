@@ -90,7 +90,17 @@ pub async fn enrich(
     let mut pool_meta = load_pools(&conn);
     let mut icons = load_icons(&conn);
 
-    if let Err(e) = fetch_missing(&conn, chain, &tokens, &pools, &mut token_meta, &mut pool_meta, &mut report).await {
+    if let Err(e) = fetch_missing(
+        &conn,
+        chain,
+        &tokens,
+        &pools,
+        &mut token_meta,
+        &mut pool_meta,
+        &mut report,
+    )
+    .await
+    {
         tracing::warn!(error = %e, "metadata fetch aborted");
     }
     fetch_icons(&conn, &tokens, &token_meta, &mut icons, &mut report).await;
@@ -188,7 +198,8 @@ fn collect_targets(snapshot: &DashboardSnapshot) -> (HashSet<Address>, HashSet<A
 
 fn load_tokens(conn: &Connection) -> HashMap<Address, TokenMeta> {
     let mut out = HashMap::new();
-    let Ok(mut stmt) = conn.prepare("SELECT address, symbol, decimals, name, icon_url FROM token_symbols")
+    let Ok(mut stmt) =
+        conn.prepare("SELECT address, symbol, decimals, name, icon_url FROM token_symbols")
     else {
         return out;
     };
@@ -305,9 +316,7 @@ async fn fetch_missing(
         .collect();
     missing_pools.sort_unstable_by_key(|a| format!("{a:#x}"));
     for pool in missing_pools.into_iter().take(MAX_NETWORK_POOLS) {
-        let url = format!(
-            "https://api.dexscreener.com/latest/dex/pairs/{ds_chain}/{pool:#x}"
-        );
+        let url = format!("https://api.dexscreener.com/latest/dex/pairs/{ds_chain}/{pool:#x}");
         report.network_calls += 1;
         match client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
@@ -344,16 +353,13 @@ async fn fetch_missing(
         .filter(|a| {
             token_meta
                 .get(a)
-                .is_none_or(|m| {
-                    m.symbol.is_empty() || m.name.is_none() || m.icon_url.is_none()
-                })
+                .is_none_or(|m| m.symbol.is_empty() || m.name.is_none() || m.icon_url.is_none())
         })
         .collect();
     missing_tokens.sort_unstable_by_key(|a| format!("{a:#x}"));
     for addr in missing_tokens.into_iter().take(MAX_NETWORK_TOKENS) {
-        let url = format!(
-            "https://api.geckoterminal.com/api/v2/networks/{gt_net}/tokens/{addr:#x}"
-        );
+        let url =
+            format!("https://api.geckoterminal.com/api/v2/networks/{gt_net}/tokens/{addr:#x}");
         report.network_calls += 1;
         match client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
@@ -427,8 +433,7 @@ async fn fetch_missing(
         .collect();
     still.sort_unstable_by_key(|a| format!("{a:#x}"));
     for addr in still.into_iter().take(MAX_COINGECKO_TOKENS) {
-        let url =
-            format!("https://api.coingecko.com/api/v3/coins/{platform}/contract/{addr:#x}");
+        let url = format!("https://api.coingecko.com/api/v3/coins/{platform}/contract/{addr:#x}");
         report.network_calls += 1;
         match client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => {
@@ -607,7 +612,11 @@ fn parse_ds_pool(json: &Value) -> Option<PoolMeta> {
     let mut tokens = Vec::new();
     for side in ["baseToken", "quoteToken"] {
         let Some(t) = pair.get(side) else { continue };
-        let Some(addr) = t.get("address").and_then(|v| v.as_str()).and_then(parse_addr) else {
+        let Some(addr) = t
+            .get("address")
+            .and_then(|v| v.as_str())
+            .and_then(parse_addr)
+        else {
             continue;
         };
         let symbol = t
@@ -639,10 +648,7 @@ fn parse_ds_pool(json: &Value) -> Option<PoolMeta> {
         dex_id: dex_id.to_ascii_lowercase(),
         dex_name: dex_display_name(dex_id),
         label,
-        url: pair
-            .get("url")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
+        url: pair.get("url").and_then(|v| v.as_str()).map(str::to_string),
         tokens,
     })
 }
@@ -964,13 +970,19 @@ fn apply_leg(
     if leg.amount_in_human.is_none() {
         leg.amount_in_human = humanize(
             leg.amount_in_net.as_deref().or(leg.amount_in.as_deref()),
-            tin.as_deref().and_then(parse_addr).and_then(|a| tokens.get(&a)).and_then(|m| m.decimals),
+            tin.as_deref()
+                .and_then(parse_addr)
+                .and_then(|a| tokens.get(&a))
+                .and_then(|m| m.decimals),
         );
     }
     if leg.amount_out_human.is_none() {
         leg.amount_out_human = humanize(
             leg.amount_out_net.as_deref().or(leg.amount_out.as_deref()),
-            tout.as_deref().and_then(parse_addr).and_then(|a| tokens.get(&a)).and_then(|m| m.decimals),
+            tout.as_deref()
+                .and_then(parse_addr)
+                .and_then(|a| tokens.get(&a))
+                .and_then(|m| m.decimals),
         );
     }
 }
@@ -1084,10 +1096,7 @@ mod tests {
         let tax = infer_transfer_tax(&bundle).expect("tax");
         assert_eq!(tax["bps"], 100);
         assert_eq!(tax["leg_index"], 0);
-        assert_eq!(
-            tax["token"],
-            "0x18e3605b13f10016901eac609b9e188cf7c18973"
-        );
+        assert_eq!(tax["token"], "0x18e3605b13f10016901eac609b9e188cf7c18973");
     }
 
     #[test]
@@ -1123,12 +1132,18 @@ mod tests {
             },
         );
         let mut icons = HashMap::new();
-        icons.insert(parse_addr(tok).expect("addr"), "data:image/png;base64,AA==".into());
+        icons.insert(
+            parse_addr(tok).expect("addr"),
+            "data:image/png;base64,AA==".into(),
+        );
         apply_leg(&mut leg, &tokens, &pools, &icons);
         assert_eq!(leg.dex_name.as_deref(), Some("Pharaoh"));
         assert_eq!(leg.pool_label.as_deref(), Some("v2"));
         assert_eq!(leg.token_in_symbol.as_deref(), Some("BTC.b"));
         assert_eq!(leg.token_in_name.as_deref(), Some("Bitcoin"));
-        assert_eq!(leg.token_in_icon.as_deref(), Some("data:image/png;base64,AA=="));
+        assert_eq!(
+            leg.token_in_icon.as_deref(),
+            Some("data:image/png;base64,AA==")
+        );
     }
 }

@@ -1,7 +1,7 @@
 //! Remote pool sourcing — free market-data clients (no API key required).
 //!
 //! "Aggregator" here means GeckoTerminal / DexScreener TVL listing APIs — **not**
-//! on-chain DEX routers (1inch / Odos / 0x). Router events live in explorer
+//! on-chain DEX routers (1inch / 0x / ParaSwap/Velora). Router events live in explorer
 //! decode as swap edges, never as a `DiscoveredPool` / `DexType`.
 //!
 //! GeckoTerminal provides chain-wide top-pool listings with TVL and volume

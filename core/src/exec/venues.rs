@@ -293,8 +293,7 @@ mod tests {
             12,
             lb::Version::V2_1,
         );
-        let decoded =
-            lb::swapExactTokensForTokensCall::abi_decode(&data).expect("decode lb call");
+        let decoded = lb::swapExactTokensForTokensCall::abi_decode(&data).expect("decode lb call");
         assert_eq!(decoded.path.pairBinSteps, vec![U256::from(20u64)]);
         assert_eq!(decoded.path.tokenPath, vec![t0, t1]);
         assert_eq!(decoded.path.versions.len(), 1);

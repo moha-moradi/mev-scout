@@ -1296,9 +1296,7 @@ pub async fn warm_quotes_for_tokens(
                         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                         pricing::fetch_prices_llama(chain, ts, &chunk)
                             .await
-                            .map_err(|second| {
-                                anyhow::anyhow!("{first}; retry failed: {second}")
-                            })
+                            .map_err(|second| anyhow::anyhow!("{first}; retry failed: {second}"))
                     }
                 }
             })

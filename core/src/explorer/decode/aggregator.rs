@@ -8,10 +8,10 @@ use crate::explorer::types::{Amm, LegSource, SwapFact};
 use super::sentinels::is_unresolved_token;
 
 /// Decode an aggregator/DEX-router edge. Returns fully-directional
-/// facts for 1inch `Swapped`, Paraswap `Swapped`/`SwappedV3`, 0x `Fill`,
-/// and Odos Router V2 `Swap`. 0x tokens are not in the event payload (asset
-/// encodings live in dynamic data), so token slots stay unresolved for the
-/// transfer-pairing fallback.
+/// facts for 1inch `Swapped`, ParaSwap/Velora `Swapped`/`SwappedV3`, 0x `Fill`,
+/// and the retired legacy router `Swap` event kept for historical blocks.
+/// 0x tokens are not in the event payload (asset encodings live in dynamic
+/// data), so token slots stay unresolved for the transfer-pairing fallback.
 pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
     decode_aggregator_inner(log).map(|fact| (Amm::Aggregator, fact))
 }
@@ -92,9 +92,10 @@ fn decode_aggregator_inner(log: &LogData) -> Option<SwapFact> {
         return Some(fact);
     }
 
-    // Odos Router V2: Swap(sender, inputAmount, inputToken, amountOut,
-    // outputToken, slippage, referralCode) — all non-indexed.
-    if topic0 == ODOS_SWAP_TOPIC {
+    // Retired legacy router: Swap(sender, inputAmount, inputToken, amountOut,
+    // outputToken, slippage, referralCode) — all non-indexed. Kept so old
+    // blocks remain attributable; it is no longer a supported routing venue.
+    if topic0 == LEGACY_ROUTER_SWAP_TOPIC {
         if log.data.len() < 224 {
             return None;
         }
@@ -242,7 +243,8 @@ pub const PARASWAP_SWAPPED_V3_TOPIC: B256 =
 pub const ZRX_FILL_TOPIC: B256 =
     alloy::primitives::b256!("6869791f0a34781b29882982cc39e882768cf2c96995c2a110c577c53bc932d5");
 
-// Odos Router V2 `Swap(address sender, uint256 inputAmount, address inputToken,
-// uint256 amountOut, address outputToken, int256 slippage, uint32 referralCode)`.
-pub const ODOS_SWAP_TOPIC: B256 =
+// Legacy router `Swap(address sender, uint256 inputAmount, address inputToken,
+// uint256 amountOut, address outputToken, int256 slippage, uint32 referralCode)`
+// (retired 2026-07-30; retained only for historical decode).
+pub const LEGACY_ROUTER_SWAP_TOPIC: B256 =
     alloy::primitives::b256!("823eaf01002d7353fbcadb2ea3305cc46fa35d799cb0914846d185ac06f8ad05");

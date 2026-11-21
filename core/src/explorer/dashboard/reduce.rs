@@ -1245,6 +1245,17 @@ pub fn reject_ladder(counts: &HashMap<String, i64>) -> Vec<RejectRow> {
         RejectReason::GasDominates,
         RejectReason::MaxCandidates,
         RejectReason::StateStale,
+        // M-04: capital-free atomic live gates (explicit zeros keep the ladder
+        // stable when a gate has never fired in the reporting window).
+        RejectReason::QuoteExpired,
+        RejectReason::QuoteDrift,
+        RejectReason::FundingUnavailable,
+        RejectReason::RepayFailed,
+        RejectReason::AllowanceMissing,
+        RejectReason::BalanceInsufficient,
+        RejectReason::NonceConflict,
+        RejectReason::SimFailed,
+        RejectReason::RiskFlagBlocked,
         RejectReason::UnresolvedCycle,
         RejectReason::MixedFlowOwner,
         RejectReason::NetZeroSearcher,
@@ -1875,5 +1886,37 @@ mod tests {
         assert!((row.cost_usd.unwrap() - 2.0).abs() < 1e-9);
         assert!((row.net_usd.unwrap() - 8.0).abs() < 1e-9);
         assert!((row.roi_pct.unwrap() - 400.0).abs() < 1e-9);
+    }
+
+    /// M-04: every new live-gate reason is a first-class ladder row, even
+    /// when it never fired (explicit zero) — no silent omission in the HTML.
+    #[test]
+    fn reject_ladder_includes_m04_gates_with_explicit_zeros() {
+        let mut counts = HashMap::new();
+        counts.insert(RejectReason::QuoteExpired.as_str().to_string(), 3);
+        let ladder = reject_ladder(&counts);
+        for reason in [
+            RejectReason::QuoteExpired,
+            RejectReason::QuoteDrift,
+            RejectReason::FundingUnavailable,
+            RejectReason::RepayFailed,
+            RejectReason::AllowanceMissing,
+            RejectReason::BalanceInsufficient,
+            RejectReason::NonceConflict,
+            RejectReason::SimFailed,
+            RejectReason::RiskFlagBlocked,
+        ] {
+            let row = ladder
+                .iter()
+                .find(|r| r.reason == reason.as_str())
+                .unwrap_or_else(|| panic!("missing ladder row for {}", reason.as_str()));
+            let expected = if reason == RejectReason::QuoteExpired {
+                3
+            } else {
+                0
+            };
+            assert_eq!(row.count, expected);
+        }
+        assert!(ladder.iter().any(|r| r.reason == "state_stale"));
     }
 }

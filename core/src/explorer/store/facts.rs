@@ -188,24 +188,26 @@ impl ExplorerStore {
         // Only a unique (pool, token_in) can bind a transfer unambiguously.
         let mut unique_keys: HashMap<(u64, Address, Address), usize> = HashMap::new();
         for s in swaps {
-            *unique_keys.entry((s.tx_index, s.pool, s.token_in)).or_default() += 1;
+            *unique_keys
+                .entry((s.tx_index, s.pool, s.token_in))
+                .or_default() += 1;
         }
         let mut volume_by_tx: HashMap<u64, (f64, bool)> = HashMap::new();
         for s in swaps {
             // Received amount beats the nominal swap amount: transfer taxes and
             // V3 overpayments make the two differ.
-            let amount_in = if unique_keys
-                .get(&(s.tx_index, s.pool, s.token_in))
-                .copied()
+            let amount_in = if unique_keys.get(&(s.tx_index, s.pool, s.token_in)).copied()
                 == Some(1)
             {
                 let net = transfers
                     .iter()
-                    .filter(|t| {
-                        t.tx_index == s.tx_index && t.to == s.pool && t.token == s.token_in
-                    })
+                    .filter(|t| t.tx_index == s.tx_index && t.to == s.pool && t.token == s.token_in)
                     .fold(U256::ZERO, |acc, t| acc.saturating_add(t.amount));
-                if net.is_zero() { s.amount_in } else { net }
+                if net.is_zero() {
+                    s.amount_in
+                } else {
+                    net
+                }
             } else {
                 s.amount_in
             };

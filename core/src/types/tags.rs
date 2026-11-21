@@ -21,6 +21,109 @@ pub const SAVAX_RATE_ARB: &str = "savax_rate_arb";
 pub const EPOCH_TRANSITION: &str = "epoch_transition";
 pub const GMX_ADL_ARB: &str = "gmx_adl_arb";
 
+/// Risk flag (not an attribution tag): the flash-funding vault is also a pool
+/// in the arbitrage route, so the callback re-enters the funding contract.
+pub const RISK_FUNDING_REENTRANCY: &str = "funding_reentrancy";
+
+// --- Multi-axis taxonomy (WP2 / M-05) ------------------------------------
+// Legacy values above are a persisted/dashboard contract and are never
+// renamed. New tags are namespaced by axis so a funding source, router and
+// optimizer mode can be reported independently without inventing MevKinds.
+
+/// Taxonomy axes. Every emitted tag belongs to exactly one axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagAxis {
+    Family,
+    Mechanism,
+    Venue,
+    Funding,
+    Execution,
+    Optimizer,
+    Routing,
+}
+
+impl TagAxis {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Family => "family",
+            Self::Mechanism => "mechanism",
+            Self::Venue => "venue",
+            Self::Funding => "funding",
+            Self::Execution => "execution",
+            Self::Optimizer => "optimizer",
+            Self::Routing => "routing",
+        }
+    }
+}
+
+pub const FUNDING_BALANCER_V2: &str = "funding:balancer_v2_vault";
+pub const FUNDING_AAVE_V3: &str = "funding:aave_v3";
+pub const FUNDING_AAVE_V2: &str = "funding:aave_v2";
+pub const FUNDING_UNIV3_FLASH: &str = "funding:univ3_flash";
+pub const FUNDING_LFJ_LB_FLASH: &str = "funding:lfj_lb_flash";
+pub const FUNDING_V2_FLASH_SWAP: &str = "funding:v2_flash_swap";
+pub const FUNDING_MORPHO_BLUE: &str = "funding:morpho_blue";
+/// Fallback for a flash provider with no dedicated tag yet.
+pub const FUNDING_FLASH_LOAN: &str = "funding:flash_loan";
+
+/// Map a config provider or decoded event protocol to its funding-axis tag.
+/// Accepts both config spellings (`aave`, `balancer`, `lfj`) and event
+/// protocols (`aave_v3`, `balancer_v2`, `lfj_lb_flash`) so the decoder, the
+/// live detector and the explorer share one vocabulary. Flash loans are a
+/// funding layer, never an arbitrage family (A-01).
+pub fn funding_tag_for_source(source: &str) -> &'static str {
+    match source {
+        "auto" | "balancer" | "balancer_v2" | "balancer_v2_vault" => FUNDING_BALANCER_V2,
+        "aave" | "aave_v3" => FUNDING_AAVE_V3,
+        "aave_v2" => FUNDING_AAVE_V2,
+        "uniswap" | "uniswap_v3" | "univ3_flash" => FUNDING_UNIV3_FLASH,
+        "lfj" | "lfj_lb_flash" => FUNDING_LFJ_LB_FLASH,
+        "v2_flash_swap" => FUNDING_V2_FLASH_SWAP,
+        "morpho_blue" => FUNDING_MORPHO_BLUE,
+        _ => FUNDING_FLASH_LOAN,
+    }
+}
+
+/// Split-route is an optimizer/execution mode, never a venue or route shape.
+pub const OPTIMIZER_SPLIT_ROUTE: &str = "optimizer:split_route";
+pub const ROUTING_PARASWAP_VELORA: &str = "routing:paraswap_velora";
+pub const EXECUTION_SINGLE_TX: &str = "execution:single_tx";
+
+/// Axis registry: legacy literals keep their values, new namespaced tags are
+/// added additively. `axis_of_tag` is the single source of truth for dashboards
+/// and the live/explorer parity test.
+pub const TAG_AXIS_REGISTRY: &[(&str, TagAxis)] = &[
+    (BACKRUN, TagAxis::Family),
+    (FLASH_ARB, TagAxis::Funding),
+    (LONG_TAIL, TagAxis::Mechanism),
+    (CURVE_IMBALANCE, TagAxis::Mechanism),
+    (RATE_PROVIDER_STALENESS, TagAxis::Mechanism),
+    (FOT_ARB, TagAxis::Mechanism),
+    (REBASE_ARB, TagAxis::Mechanism),
+    (SAVAX_RATE_ARB, TagAxis::Mechanism),
+    (EPOCH_TRANSITION, TagAxis::Mechanism),
+    (GMX_ADL_ARB, TagAxis::Mechanism),
+    (FUNDING_BALANCER_V2, TagAxis::Funding),
+    (FUNDING_AAVE_V3, TagAxis::Funding),
+    (FUNDING_AAVE_V2, TagAxis::Funding),
+    (FUNDING_UNIV3_FLASH, TagAxis::Funding),
+    (FUNDING_LFJ_LB_FLASH, TagAxis::Funding),
+    (FUNDING_V2_FLASH_SWAP, TagAxis::Funding),
+    (FUNDING_MORPHO_BLUE, TagAxis::Funding),
+    (FUNDING_FLASH_LOAN, TagAxis::Funding),
+    (OPTIMIZER_SPLIT_ROUTE, TagAxis::Optimizer),
+    (ROUTING_PARASWAP_VELORA, TagAxis::Routing),
+    (EXECUTION_SINGLE_TX, TagAxis::Execution),
+];
+
+/// Axis of a tag, or `None` for an unregistered/foreign tag.
+pub fn axis_of_tag(tag: &str) -> Option<TagAxis> {
+    TAG_AXIS_REGISTRY
+        .iter()
+        .find(|(name, _)| *name == tag)
+        .map(|(_, axis)| *axis)
+}
+
 /// Every tag live can attach to an arb opportunity.
 pub const LIVE_ARB_TAGS: &[&str] = &[
     BACKRUN,
@@ -33,4 +136,37 @@ pub const LIVE_ARB_TAGS: &[&str] = &[
     SAVAX_RATE_ARB,
     EPOCH_TRANSITION,
     GMX_ADL_ARB,
+    FUNDING_BALANCER_V2,
+    FUNDING_AAVE_V3,
+    FUNDING_AAVE_V2,
+    FUNDING_UNIV3_FLASH,
+    FUNDING_LFJ_LB_FLASH,
+    FUNDING_V2_FLASH_SWAP,
+    FUNDING_MORPHO_BLUE,
+    FUNDING_FLASH_LOAN,
+    OPTIMIZER_SPLIT_ROUTE,
+    ROUTING_PARASWAP_VELORA,
+    EXECUTION_SINGLE_TX,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_registered_tag_has_exactly_one_axis() {
+        let mut seen = std::collections::HashSet::new();
+        for (tag, axis) in TAG_AXIS_REGISTRY {
+            assert!(seen.insert(*tag), "duplicate tag in axis registry: {tag}");
+            assert_eq!(axis_of_tag(tag), Some(*axis));
+        }
+        for tag in LIVE_ARB_TAGS {
+            assert!(
+                axis_of_tag(tag).is_some(),
+                "live tag missing from axis registry: {tag}"
+            );
+        }
+        assert_eq!(axis_of_tag(OPTIMIZER_SPLIT_ROUTE), Some(TagAxis::Optimizer));
+        assert_eq!(axis_of_tag(FUNDING_AAVE_V3), Some(TagAxis::Funding));
+    }
+}

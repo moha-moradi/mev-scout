@@ -12,9 +12,10 @@
 //! Note: exact canonical-id matching via these strings is *aspirational* —
 //! opportunity canonical IDs come from simulation, realized IDs from flows,
 //! and they rarely coincide.
-use alloy::primitives::Address;
+use alloy::primitives::{Address, B256};
 
 use crate::explorer::types::{MevEvent, MevKind};
+use crate::types::canonical_route_suffix;
 
 /// Compute the explorer-side canonical ID for a classified realized op.
 pub fn explorer_canonical_id(ev: &MevEvent) -> String {
@@ -118,7 +119,21 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
             pools.sort();
             pools.dedup();
             let pool_strs: Vec<String> = pools.iter().map(|p| format!("{:#x}", p)).collect();
-            format!("{:?}|{}", ev.kind, pool_strs.join("|"))
+            // M-06: keep two router/pool-set/provenance variants of the same
+            // pool set distinct. The suffix format mirrors the simulated side
+            // (`compute_canonical_id`) and is omitted for legacy rows.
+            let hash = ev
+                .details
+                .get("underlying_pools_hash")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<B256>().ok());
+            let router_version = ev.details.get("router_version").and_then(|v| v.as_str());
+            let funding_source = ev.details.get("funding_source").and_then(|v| v.as_str());
+            let base = format!("{:?}|{}", ev.kind, pool_strs.join("|"));
+            format!(
+                "{base}{}",
+                canonical_route_suffix(hash, router_version, funding_source)
+            )
         }
     }
 }
@@ -165,6 +180,35 @@ mod tests {
         let e2 = ev(MevKind::ArbAtomic, vec![b, a]);
         assert_eq!(explorer_canonical_id(&e1), explorer_canonical_id(&e2));
         assert!(explorer_canonical_id(&e1).starts_with("ArbAtomic|"));
+    }
+
+    #[test]
+    fn arb_canonical_separates_router_pool_hash_and_funding() {
+        let pool = address!("1000000000000000000000000000000000000000");
+        let hash = "0x1111111111111111111111111111111111111111111111111111111111111111";
+        let make = |router: Option<&str>, h: Option<&str>, funding: Option<&str>| {
+            let mut e = ev(MevKind::ArbAtomic, vec![pool]);
+            let mut details = serde_json::Map::new();
+            if let Some(v) = router {
+                details.insert("router_version".into(), serde_json::json!(v));
+            }
+            if let Some(v) = h {
+                details.insert("underlying_pools_hash".into(), serde_json::json!(v));
+            }
+            if let Some(v) = funding {
+                details.insert("funding_source".into(), serde_json::json!(v));
+            }
+            e.details = serde_json::Value::Object(details);
+            explorer_canonical_id(&e)
+        };
+        assert_eq!(make(None, None, None), make(None, None, None));
+        assert_ne!(make(Some("v1"), None, None), make(Some("v2"), None, None));
+        assert_ne!(make(None, Some(hash), None), make(None, None, None));
+        assert_ne!(
+            make(None, None, Some("balancer_v2_vault")),
+            make(None, None, Some("aave_v3"))
+        );
+        assert!(make(Some("v1"), Some(hash), Some("aave_v3")).ends_with("|r:v1|f:aave_v3"));
     }
 
     #[test]

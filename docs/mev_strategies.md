@@ -171,6 +171,8 @@
 
 Uniswap V2's design stores accounting state (`reserve0`, `reserve1`) separately from actual token balances. This gap between stored reserves and real balances is the source of an entire class of low-competition, latency-gated MEV opportunities.
 
+> **Avalanche note (C-04):** there is no canonical Uniswap V2 deployment on Avalanche C-Chain. Every V2 mechanic below applies to **V2-compatible forks** — Pangolin V2, SushiSwap V2 and Blackhole — which share the same reserve/callback ABI. "Uniswap V2" in this document means the *mechanic*, not a deployed venue. Uniswap V3/V4 are present on Avalanche; Pharaoh has both CL and DLMM pools.
+
 ---
 
 ### 1.1 skim() capture
@@ -4294,8 +4296,9 @@ Examples:
 - Compound
 - 0x
 - 1inch
-- ParaSwap
-- Odos
+- ParaSwap / Velora (v3/v4 `Swapped`, v5/v6 `SwappedV3`)
+- Kyber (routing only)
+- OpenOcean (routing only)
 
 The initial implementation should not attempt every protocol simultaneously.
 
@@ -4394,7 +4397,7 @@ Route comparison must support:
 - 2-hop arbitrage
 - 3-hop arbitrage
 - N-hop cycles
-- split routes
+- split routes — an **optimizer / execution mode** (`optimizer:split_route`), not a venue or a route-shape family; it only changes how liquidity is allocated across the same legs
 - multiple pools for the same pair
 
 ---
@@ -4490,7 +4493,7 @@ For each token:
     discover 3-hop cycles
 ```
 
-Then extend to N-hop cycles, split routes, and multi-path optimization.
+Then extend to N-hop cycles, split routes (optimizer mode `optimizer:split_route`), and multi-path optimization.
 
 Support:
 
@@ -5263,10 +5266,13 @@ Initial backtest should support:
 - Balancer flash loans
 - Aave flash loans
 
-Optional future support:
+Also supported as funding paths / expansion targets:
 
-- Uniswap V2 flash swaps
+- Uniswap V3 `Flash` and V2-compatible flash swaps (Pangolin / SushiSwap V2 / Blackhole)
+- LFJ (Trader Joe) Liquidity Book flash loans — in-kind fee
 - other chain-native lending/flash mechanisms
+
+**Fee rates are runtime state, not constants.** Balancer Vault, Aave premium, Uni V3 `paid0/paid1`, LFJ in-kind fee and the V2 pool swap fee must be read from live state; hard-coded rates are only fallbacks when state is unavailable. If the funding vault is also a pool in the route, raise a reentrancy risk flag instead of assuming the loan is free. On Avalanche C-Chain there is no PBS: bid via `priority_fee_wei` and leave `builder_bid` as JSON `null`.
 
 Generic model:
 
@@ -7024,9 +7030,15 @@ That separation is the foundation for a reliable MEV research/backtesting system
 The live detectors stamp the same `ArbAtomic` sub-tags the explorer classifier
 emits (`core/src/types/tags.rs`): `backrun`, `flash_arb`, `long_tail`,
 `curve_imbalance`, `rate_provider_staleness`, `fot_arb`, `rebase_arb`,
-`savax_rate_arb`, `epoch_transition`, `gmx_adl_arb`. Tag conditions are not
+`savax_rate_arb`, `epoch_transition`, `gmx_adl_arb`, plus the namespaced funding
+tag (`funding:balancer_v2_vault` / `funding:aave_v3` / `funding:univ3_flash` /
+`funding:lfj_lb_flash` / `funding:v2_flash_swap`) emitted by both the decoder
+(`flash_loan_funding_tag`) and live tagging. Tag conditions are not
 re-implemented: live synthesizes the candidate route as `SwapFact`s and calls
 `explorer::strategy_tags::arb_strategy_tags`, so the two halves cannot drift.
+The full axis registry (`types/tags.rs::TAG_AXIS_REGISTRY`) also defines
+`optimizer:split_route`, `routing:paraswap_velora` and `execution:single_tx`;
+these are additive attribution, never new `MevKind`s.
 
 Documented N/A (explicit, never a silent drop):
 
@@ -7040,3 +7052,19 @@ Documented N/A (explicit, never a silent drop):
 - `Uniswap V4 / Pancake Infinity` state-sim uses the V3 family; exec has no leg
   for them. `Metric / Fluid` have neither sim nor exec. Both are counted skips
   (`SimPathUnavailable`, `ExecVenueUnsupported`), never fills.
+
+---
+
+## 79. Atomic capital-free arb: taxonomy, funding and canonical identity (2026-11-21)
+
+**Scope.** DeFi-only on Avalanche C-Chain (`chain_id=43114`). CEX–DEX, cross-chain, perps and PBS/BuilderTip are out of scope. One transaction must execute Borrow → Callback → all swaps → Repay(capital + fee) → net-profit validation; any failure reverts atomically.
+
+**Funding is a layer, not a family.** A flash loan funds an arb route; it never creates a new `MevKind`. `FlashLoanProvider` (`auto`, `balancer`, `aave`, `uniswap`, `lfj`, `v2_flash_swap`) normalizes to a per-opportunity `funding_source` (`balancer_v2_vault`, `aave_v3`, `univ3_flash`, `lfj_lb_flash`, `v2_flash_swap`). The legacy `flash_arb` tag remains for dashboards; the namespaced `funding:*` tag is additive. Runtime fees replace hard-coded ones, and the Balancer-vault-as-route-pool case is flagged for reentrancy.
+
+**Multi-axis tags.** Seven axes — `family`, `mechanism`, `venue`, `funding`, `execution`, `optimizer`, `routing` — share one registry. Existing tag literals are never renamed because they are stored in `details.tags` and used by dashboard filters. `split_route` belongs to `optimizer`; router provenance belongs to `routing`; no new `MevKind` is introduced (backrun stays `ArbAtomic` + `backrun`).
+
+**Canonical identity.** `compute_canonical_id` (simulated) and `explorer_canonical_id` (realized) append an optional fixed-order suffix `|h:<underlying_pools_hash>|r:<router_version>|f:<funding_source>` only when present. The legacy prefix is byte-identical, so old IDs remain valid, while two routers / underlying pool sets / funding paths over the same endpoint pools no longer collapse into one row.
+
+**Out-of-core disposition.** GMX is a two-transaction strategy (forensic tag only, not atomic core); Pendle PT/YT and sAVAX rate arb are yield/rate strategies kept as evidence/tags; liquidation stays a separate strategy. A retired legacy router event is still decoded for historical blocks under `LEGACY_ROUTER_SWAP_TOPIC`; supported routing targets are 1inch, 0x, Kyber, OpenOcean and ParaSwap/Velora.
+
+**Net profit.** `net = gross − (basefee + priority_fee) × gas − flashloan_fee − revert_gas`. Gas is AVAX-denominated at the simulation block's rate. Swap fees and slippage are already inside the simulated flow residual and must not be subtracted again.

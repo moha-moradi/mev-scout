@@ -190,12 +190,8 @@ pub fn quote_path(
         .any(|t| pm.tax_bps(t).is_some());
     if taxed && pm.tax_quoting() {
         let max_input = pool_a.max_input(token_in)?;
-        let quote_a = |x: u128| {
-            arb_common::quote_leg_taxed(pm, pool_a, token_in, shared_token, x)
-        };
-        let quote_b = |x: u128| {
-            arb_common::quote_leg_taxed(pm, pool_b, shared_token, token_out, x)
-        };
+        let quote_a = |x: u128| arb_common::quote_leg_taxed(pm, pool_a, token_in, shared_token, x);
+        let quote_b = |x: u128| arb_common::quote_leg_taxed(pm, pool_b, shared_token, token_out, x);
         return optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b);
     }
 
@@ -282,7 +278,8 @@ pub(crate) fn two_hop_profit_at(
 ) -> Option<u128> {
     let (token_in, token_out) = arb_tokens(pool_a, pool_b, shared_token)?;
 
-    let intermediate = arb_common::quote_leg_taxed(pm, pool_a, token_in, shared_token, input_amount)?;
+    let intermediate =
+        arb_common::quote_leg_taxed(pm, pool_a, token_in, shared_token, input_amount)?;
     let output = arb_common::quote_leg_taxed(pm, pool_b, shared_token, token_out, intermediate)?;
 
     (output > input_amount).then(|| output - input_amount)

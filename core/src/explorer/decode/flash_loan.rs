@@ -8,6 +8,7 @@ use crate::chain::events::{
 };
 use crate::data::LogData;
 use crate::explorer::types::FlashLoanFact;
+use crate::types::tags::funding_tag_for_source;
 
 /// Decode a flash-loan fact from a receipt log.
 ///
@@ -125,6 +126,12 @@ pub fn decode_flash_loan(log: &LogData) -> Option<FlashLoanFact> {
     }
 
     None
+}
+
+/// Funding-axis tag for a decoded flash loan (WP2 / A-01). The flash loan
+/// funds an arbitrage route; it does not make the loan itself an arb family.
+pub fn flash_loan_funding_tag(fact: &FlashLoanFact) -> &'static str {
+    funding_tag_for_source(fact.protocol)
 }
 
 /// Minimal `LogData` → alloy `Log` bridge with placeholder block/tx metadata

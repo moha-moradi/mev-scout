@@ -14,7 +14,9 @@ use crate::mev::detectors::DetectCtx;
 use crate::mev::detectors::JitDetector;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
-use crate::mev::detectors::{detect_pending_opportunities, mempool, DetectionPath};
+use crate::mev::detectors::{
+    detect_pending_opportunities, mempool, mempool::find_large_pending_swap, DetectionPath,
+};
 use crate::paper::sim::{
     promote_pending_seeds, push_pending_seeds, record_seeds_for_block, PendingSeed, SimSeeds,
 };
@@ -402,6 +404,11 @@ pub struct BacktestRunner {
     seeds_capped: RefCell<usize>,
     /// Chain registries and route attributes used to stamp explorer tags.
     tag_policy: ArbTagPolicy,
+    /// Pending-swap re-quote path (C-07): when enabled, a large pending tx
+    /// stamps fresh backrun opportunities with a victim index and deadline.
+    pending_backrun: bool,
+    pending_quote_ttl_ms: u64,
+    pending_swap_min_wei: U256,
 }
 
 impl BacktestRunner {
@@ -437,6 +444,9 @@ impl BacktestRunner {
             pending_seeds: RefCell::new(Vec::new()),
             seeds_capped: RefCell::new(0),
             tag_policy: ArbTagPolicy::default(),
+            pending_backrun: false,
+            pending_quote_ttl_ms: 4_000,
+            pending_swap_min_wei: U256::ZERO,
         }
     }
 
@@ -479,6 +489,32 @@ impl BacktestRunner {
     pub fn with_capture_pending(mut self, enabled: bool) -> Self {
         self.capture_pending = enabled;
         self
+    }
+
+    /// Enable pending-swap re-quote stamping. TTL is in wall-clock ms and the
+    /// value floor selects which pending tx counts as a "large swap".
+    pub fn with_pending_backrun(
+        mut self,
+        enabled: bool,
+        quote_ttl_ms: u64,
+        min_value_wei: u128,
+    ) -> Self {
+        self.pending_backrun = enabled;
+        self.pending_quote_ttl_ms = quote_ttl_ms;
+        self.pending_swap_min_wei = U256::from(min_value_wei);
+        self
+    }
+
+    /// Record a rejection decided outside the standard filters (e.g. the live
+    /// quote gate). Uses the same buffer and opt-in flag as runner rejects.
+    pub fn note_rejection(
+        &mut self,
+        opp: &MevOpportunity,
+        block_number: u64,
+        reason: crate::explorer::RejectReason,
+        detail: Option<String>,
+    ) {
+        self.record_rejection(opp, block_number, reason, detail);
     }
 
     /// Set minimum profit threshold (in wei) below which opportunities are filtered.
@@ -608,30 +644,14 @@ impl BacktestRunner {
         if !self.record_rejections {
             return;
         }
-        let path = opp.path.as_ref().map(|p| {
-            p.iter()
-                .map(|a| format!("{a:#x}"))
-                .collect::<Vec<_>>()
-                .join(",")
-        });
         self.pending_rejections
-            .push(crate::explorer::RejectedCandidate {
-                block_number: block_num,
-                tx_index: Some(opp.tx_index as u64),
-                strategy: opp.strategy.to_string(),
-                pool_a: Some(format!("{:#x}", opp.pool_a)),
-                pool_b: (opp.pool_b != Address::ZERO).then(|| format!("{:#x}", opp.pool_b)),
-                path,
-                token_in: (!opp.token_in.is_zero()).then(|| format!("{:#x}", opp.token_in)),
-                token_out: (!opp.token_out.is_zero()).then(|| format!("{:#x}", opp.token_out)),
-                input_amount: Some(opp.input_amount.to_string()),
-                expected_profit: Some(opp.expected_profit.to_string()),
-                expected_profit_usd: None,
-                gas_cost_wei: Some(opp.gas_cost_wei.to_string()),
-                reject_reason: reason.as_str().to_string(),
+            .push(crate::explorer::RejectedCandidate::from_opportunity(
+                opp,
+                block_num,
+                reason,
                 detail,
-                created_at: crate::utils::epoch_secs(),
-            });
+                crate::utils::epoch_secs(),
+            ));
     }
 
     fn finalize_block_opportunities(
@@ -671,6 +691,9 @@ impl BacktestRunner {
                             pool_b: opp.pool_b,
                             token_in: opp.token_in,
                             token_out: opp.token_out,
+                            underlying_pools_hash: opp.underlying_pools_hash,
+                            router_version: opp.router_version.clone(),
+                            funding_source: opp.funding_source.clone(),
                         },
                     ))
                 };
@@ -704,6 +727,32 @@ impl BacktestRunner {
         }
     }
 
+    /// C-07: a materially large pending swap re-quotes the backrun with an
+    /// explicit victim anchor and wall-clock deadline, so the live freshness
+    /// gate can reject it if inclusion slips past the quote.
+    fn stamp_pending_requote(
+        &self,
+        opps: &mut [MevOpportunity],
+        capture: &mempool::PendingBlockCapture,
+    ) {
+        if !self.pending_backrun || opps.is_empty() {
+            return;
+        }
+        let Some(victim) = find_large_pending_swap(&capture.txs, self.pending_swap_min_wei) else {
+            return;
+        };
+        let now_ms = crate::utils::epoch_millis();
+        let deadline = now_ms.saturating_add(self.pending_quote_ttl_ms);
+        for opp in opps.iter_mut() {
+            opp.detection_path = Some(DetectionPath::Pending);
+            opp.victim_tx_index = Some(victim);
+            opp.quote_expires_at = Some(deadline);
+            // Pending state has no mined block timestamp: use wall-clock time
+            // so the age-based freshness gate measures real quote age.
+            opp.timestamp = now_ms / 1000;
+        }
+    }
+
     fn stamp_and_record_pending_seeds(&self, opps: &mut [MevOpportunity]) {
         let facts = BlockTagFacts::default();
         for opp in opps.iter_mut() {
@@ -716,6 +765,9 @@ impl BacktestRunner {
                         pool_b: opp.pool_b,
                         token_in: opp.token_in,
                         token_out: opp.token_out,
+                        underlying_pools_hash: opp.underlying_pools_hash,
+                        router_version: opp.router_version.clone(),
+                        funding_source: opp.funding_source.clone(),
                     },
                 ));
             }
@@ -1545,6 +1597,7 @@ impl BacktestRunner {
                         last.mempool_opp_count = pending_opps.len();
                     }
                     self.stamp_and_record_pending_seeds(&mut pending_opps);
+                    self.stamp_pending_requote(&mut pending_opps, &capture);
                     all.extend(pending_opps);
                 }
             } else {
@@ -1689,6 +1742,7 @@ impl BacktestRunner {
                         last.mempool_opp_count = pending_opps.len();
                     }
                     self.stamp_and_record_pending_seeds(&mut pending_opps);
+                    self.stamp_pending_requote(&mut pending_opps, &capture);
                     all.extend(pending_opps);
                 }
             } else {

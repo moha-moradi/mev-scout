@@ -85,6 +85,7 @@ async fn historical_tag_coverage() -> anyhow::Result<()> {
             tokens: &registry.tokens,
             v2_like: &registry.v2_like,
             epoch_venue: &registry.epoch_venue,
+            fee_bps: &registry.fee_bps,
         },
         RangeRequest {
             from_block: from,

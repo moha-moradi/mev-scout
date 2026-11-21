@@ -6,8 +6,8 @@
 //! PoolAdded) for pools created in the range. This ensures comprehensive
 //! coverage for backtesting recent periods.
 //!
-//! **Boundary:** DEX *router* aggregators (1inch, Odos, 0x, Paraswap, Kyber,
-//! …) are **not** discovery venues — they have no pool state. Their events are
+//! **Boundary:** DEX *router* aggregators (1inch, 0x, ParaSwap/Velora, Kyber,
+//! OpenOcean, …) are **not** discovery venues — they have no pool state. Their events are
 //! decoded only as explorer swap edges. Do not add them as
 //! `DexType` / factory scanners. Remote "aggregators" in `remote/` means
 //! GeckoTerminal / DexScreener pool lists (TVL sources), not those routers.

@@ -107,6 +107,9 @@ flowchart TB
 - `explorer` answers "what was made" (realized MEV forensics) vs the detectors' "what could be made" — it ingests via RPC into its own SQLite store (`./cache/explorer-{chain}.sqlite`) so live index writes never contend with replay-path cache reads. Scanner `live` always persists detected opportunities there (via in-memory `ResultsFile` DTO); `record_rejections = true` also stores rejected candidates for miss attribution. The explorer dashboards open the store read-only (`ExplorerStore::open_read_only`).
 - `exec` is opt-in from `live --exec revm|anvil`: builds Balancer flash-arb calldata (ABI v2) from `MevOpportunity`, deploys the executor from `creation.hex` + constructor args, runs it on revm / a local Anvil fork with signed EIP-1559 txs, and books P&L via `LedgerPolicy::apply_executed` (including revert-gas debit). Default remains paper/`--sim` only (no mainnet submit). Foundry sources live in `contracts/`; regenerate hex with:
   `node -e "const j=require('./contracts/out/FlashArbExecutor.sol/FlashArbExecutor.json'),f=require('fs');f.writeFileSync('core/src/exec/artifacts/FlashArbExecutor.creation.hex',j.bytecode.object.replace(/^0x/,'')+'\n');f.writeFileSync('core/src/exec/artifacts/FlashArbExecutor.deployed.hex',j.deployedBytecode.object.replace(/^0x/,'')+'\n')"`.
+- **Atomic capital-free flow (Avalanche C-Chain, `chain_id=43114`)**: one EVM transaction performs Borrow → Callback → all swaps → Repay(capital + fee) → net-profit validation; any failure is a full `REVERT`. The flash loan is a **funding layer**, not an arbitrage family — it never adds a `MevKind`. Gas/priority fee remains payable in AVAX; C-Chain has **no PBS / BuilderTip**, so the auction bid is `priority_fee_wei` and `builder_bid` stays JSON `null` (an extension point only).
+- **Layers vs families**: aggregator/router events (1inch, 0x, ParaSwap/Velora, Kyber, OpenOcean) are a **routing** layer decoded as `Amm::Aggregator` swap edges; they are not pool-discovery venues. V2-compatible forks on Avalanche (Pangolin V2, SushiSwap V2, Blackhole) share the V2 mechanics. GMX (two-transaction), Pendle PT/YT (yield/rate) and sAVAX rate arb are explicitly **out of core atomic arb** — retained only as forensic tags/evidence.
+- **Funding cost is runtime state**: Balancer Vault fee, Aave premium, Uni V3 paid amount, LFJ in-kind fee and V2 flash-swap fee are read from live state (with contract defaults as fallback), never treated as an unconditional 0%. When the funding vault is also a route pool, a reentrancy risk flag is raised. DEX swap fees/slippage stay inside the simulated flow residual and must not be subtracted again from net profit.
 
 ---
 
@@ -157,4 +160,25 @@ The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogO
 | Static dashboard `results/explorer-<chain>-*.html` (gitignored) | `explorer` and `explorer index` (read-only; never migrates) | browser |
 | Signature DB (4byte directory snapshot) | resolver only (`core::sigs::SignatureResolver`); `Fetcher::with_sig_resolver` exists but has **no callers** from jobs. Still **not wired** into `run`/`live` ingest | tx decoding (future) |
 
-`ResultsFile` is an in-memory / presentation DTO (CLI tables) — not a durable on-disk JSON artifact.
+`ResultsFile` is an in-memory / presentation DTO (CLI tables) — not a durable on-disk JSON artifact. The V18 schema migration added the atomic-arb columns (`quote_expires_at`, `underlying_pools_hash`, `router_version`, `sim_block`, `basefee_wei`, `nonce`, `balance_wei`, `allowance_wei`, `risk_flags`, `optimal_amount`, `revert_gas_cost_wei`, `funding_source`, `net_profit_wei`, `priority_fee_wei`, `builder_bid`) to `opportunities`, `rejected_candidates`, `paper_sessions` and `paper_fills`; all are additive so pre-V18 rows deserialize unchanged.
+
+---
+
+## 5. Taxonomy axes and canonical identity
+
+Tags are a persisted dashboard contract: **legacy string values are never renamed or deleted**. New attribution is added as namespaced tags over seven axes, and `types/tags.rs::TAG_AXIS_REGISTRY` / `axis_of_tag` are the single source of truth (unit-tested for uniqueness):
+
+| Axis | Examples |
+|---|---|
+| `family` | `backrun` (an `ArbAtomic` + tag, not a new `MevKind`) |
+| `mechanism` | `curve_imbalance`, `rate_provider_staleness`, `fot_arb`, `savax_rate_arb` |
+| `venue` | `pharaoh_dlmm`, `lfj_v2`, `pangolin_v2`, `sushiv2` |
+| `funding` | `flash_arb` (legacy alias) + `funding:balancer_v2_vault`, `funding:aave_v3`, `funding:univ3_flash`, `funding:lfj_lb_flash`, `funding:v2_flash_swap` |
+| `execution` | `execution:single_tx` |
+| `optimizer` | `optimizer:split_route` — an amount/route **optimization mode**, never a venue or a route-shape family |
+| `routing` | `routing:paraswap_velora` — router provenance, not a pool |
+
+The decoder (`explorer/decode/flash_loan.rs::flash_loan_funding_tag`) stamps the funding axis from the observed loan protocol; live detection stamps the same axis from `ArbTagPolicy.funding_source` (derived from `FlashLoanProvider::funding_source()`). `per-opportunity funding_source` and the realized `MevEvent.details.funding_source` carry the same canonical value (`balancer_v2_vault`, `aave_v3`, …).
+
+Canonical IDs stay stable: `compute_canonical_id` (simulated) and `explorer_canonical_id` (realized) both append an optional, fixed-order suffix only when the extra provenance is present — `|h:<underlying_pools_hash>|r:<router_version>|f:<funding_source>`. The prefix is unchanged, so legacy IDs and stored rows keep their exact form. Two routers (or two underlying pool sets, or two funding paths) over the same endpoint pools therefore remain distinct rows. The retired legacy router event is still decoded for historical blocks under `LEGACY_ROUTER_SWAP_TOPIC`; live routing targets ParaSwap/Velora.
+

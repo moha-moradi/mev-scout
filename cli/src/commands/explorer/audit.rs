@@ -77,9 +77,8 @@ pub async fn cmd_audit(
         "evidence": evidence,
     });
 
-    let out = out.unwrap_or_else(|| {
-        PathBuf::from("results").join(format!("trace-{}.json", &tx_hash[2..]))
-    });
+    let out = out
+        .unwrap_or_else(|| PathBuf::from("results").join(format!("trace-{}.json", &tx_hash[2..])));
     if let Some(parent) = out.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
@@ -159,8 +158,12 @@ async fn rpc_call(
         .await
         .map_err(|e| e.to_string())?;
     let text = resp.text().await.map_err(|e| e.to_string())?;
-    let value: Value = serde_json::from_str(&text)
-        .map_err(|_| format!("non-JSON response: {}", text.chars().take(160).collect::<String>()))?;
+    let value: Value = serde_json::from_str(&text).map_err(|_| {
+        format!(
+            "non-JSON response: {}",
+            text.chars().take(160).collect::<String>()
+        )
+    })?;
     if let Some(err) = value.get("error") {
         let message = err
             .get("message")
@@ -211,7 +214,13 @@ fn summarize_trace(trace: &Value) -> Value {
                 calls += 1;
             }
         } else {
-            walk_call(result, &mut calls, &mut targets, &mut selectors, &mut v3_callback);
+            walk_call(
+                result,
+                &mut calls,
+                &mut targets,
+                &mut selectors,
+                &mut v3_callback,
+            );
         }
     }
     json!({

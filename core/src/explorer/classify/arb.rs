@@ -349,6 +349,11 @@ pub(super) fn classify_atomic_arbs(
         let mut tags: Vec<&str> = Vec::new();
         if flash_arb {
             tags.push("flash_arb");
+            // WP2: the decoder identifies the funding layer. Keep the legacy
+            // alias above and add a namespaced axis tag for the same fact.
+            if let Some(fl) = tx.flashloans.first() {
+                tags.push(decode::flash_loan_funding_tag(fl));
+            }
         }
         if long_tail {
             tags.push("long_tail");
@@ -578,6 +583,7 @@ fn classify_reject(
         reject_reason: reason.as_str().to_string(),
         detail,
         created_at: crate::utils::epoch_secs(),
+        ..Default::default()
     }
 }
 

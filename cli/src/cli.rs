@@ -256,6 +256,30 @@ pub struct LiveArgs {
     /// Overrides [paper].exec. Never broadcasts to mainnet.
     #[arg(long = "exec", value_name = "MODE", help_heading = "Ledger")]
     pub exec: Option<String>,
+
+    /// Flash-loan funding layer for this session: auto, balancer, aave,
+    /// uniswap, lfj, v2_flash_swap. Overrides [backtest].flash_loan_provider.
+    #[arg(
+        long = "funding-provider",
+        value_name = "PROVIDER",
+        help_heading = "Live"
+    )]
+    pub funding_provider: Option<String>,
+
+    /// Reject quotes older than this many milliseconds before ledger admission.
+    /// Overrides [live].max_quote_age_ms.
+    #[arg(long = "max-quote-age-ms", value_name = "MS", help_heading = "Live")]
+    pub max_quote_age_ms: Option<u64>,
+
+    /// Reject any opportunity carrying a risk flag (funding reentrancy, drift, …).
+    /// Overrides [live].require_risk_clear.
+    #[arg(long = "require-risk-clear", help_heading = "Live")]
+    pub require_risk_clear: bool,
+
+    /// Re-quote backruns around large pending swaps with an explicit quote
+    /// deadline and victim tx index. Overrides [live].pending_backrun.
+    #[arg(long = "pending-backrun", help_heading = "Live")]
+    pub pending_backrun: bool,
 }
 
 impl Default for LiveArgs {
@@ -271,6 +295,10 @@ impl Default for LiveArgs {
             reserve: None,
             sim: None,
             exec: None,
+            funding_provider: None,
+            max_quote_age_ms: None,
+            require_risk_clear: false,
+            pending_backrun: false,
         }
     }
 }

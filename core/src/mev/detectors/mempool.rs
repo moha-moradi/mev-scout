@@ -1,3 +1,5 @@
+use alloy::primitives::U256;
+
 use crate::data::TxData;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
@@ -47,6 +49,27 @@ pub async fn capture_pending_block(rpc: &RpcClient) -> Option<PendingBlockCaptur
     })
 }
 
+/// Find the pending tx that should trigger a backrun re-quote (C-07).
+///
+/// Pending blocks have no logs, so the cheapest robust proxy for a "large
+/// swap" is a native-value transfer into a contract (non-empty calldata) at or
+/// above `min_value_wei`. Token-only swaps with zero native value are already
+/// covered by the ordinary pending-state arb detector; this trigger exists to
+/// re-quote the backrun around a materially large pending move. Returns the
+/// transaction index and the tx itself, or `None` when no tx clears the floor.
+pub fn find_large_pending_swap(txs: &[TxData], min_value_wei: U256) -> Option<usize> {
+    let mut best: Option<(usize, U256)> = None;
+    for (i, tx) in txs.iter().enumerate() {
+        if tx.input.is_empty() || tx.value < min_value_wei {
+            continue;
+        }
+        if best.map_or(true, |(_, best_value)| tx.value > best_value) {
+            best = Some((i, tx.value));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
 /// Run two-hop and multi-hop arbitrage detection against the current `PoolManager`
 /// state to find opportunities visible in the mempool (pending/unconfirmed txs).
 ///
@@ -87,4 +110,50 @@ pub fn detect_pending_opportunities(
     }
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{address, b256, Bytes};
+
+    fn pending_tx(index: u64, value: u128, calldata: bool) -> TxData {
+        TxData {
+            hash: b256!("0x0000000000000000000000000000000000000000000000000000000000000001"),
+            index,
+            tx_type: 2,
+            from: address!("0x0000000000000000000000000000000000000001"),
+            to: Some(address!("0x0000000000000000000000000000000000000002")),
+            input: if calldata {
+                Bytes::from(vec![0x38, 0xed, 0x17, 0x39])
+            } else {
+                Bytes::new()
+            },
+            value: U256::from(value),
+            gas_limit: 100_000,
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: Some(1),
+            gas_price: None,
+            nonce: 0,
+            access_list: vec![],
+            authorization_list: vec![],
+        }
+    }
+
+    /// C-07 acceptance: a large pending swap selects the victim tx for the
+    /// backrun re-quote; dust and plain value transfers are not triggers.
+    #[test]
+    fn large_pending_swap_triggers_requote() {
+        let txs = vec![
+            pending_tx(0, 10, true),
+            pending_tx(1, 5 * 10u128.pow(18), true),
+            pending_tx(2, 9 * 10u128.pow(18), false), // no calldata → not a swap
+        ];
+        let min = U256::from(10u128.pow(18));
+        assert_eq!(find_large_pending_swap(&txs, min), Some(1));
+        assert_eq!(
+            find_large_pending_swap(&txs, U256::from(100u128.pow(18))),
+            None
+        );
+    }
 }

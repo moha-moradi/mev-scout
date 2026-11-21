@@ -427,8 +427,8 @@ pub(super) fn liquidation_pnl(
             Some(d) => (d.collateral_asset, d.debt_asset),
             None => (Address::ZERO, Address::ZERO),
         };
-        let collateral = raw("realized_collateral_net")
-            .and_then(|a| price_usd(collateral_asset, a));
+        let collateral =
+            raw("realized_collateral_net").and_then(|a| price_usd(collateral_asset, a));
         let debt = raw("realized_debt_paid").and_then(|a| price_usd(debt_asset, a));
         if collateral.is_none() && debt.is_none() {
             serde_json::Value::Null

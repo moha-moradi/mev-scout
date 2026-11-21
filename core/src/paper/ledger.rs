@@ -62,6 +62,17 @@ fn net_wei(opp: &MevOpportunity) -> i128 {
     gross - gas
 }
 
+/// Flash fee already netted into each simulated fill's `sim_gross_wei`.
+/// Exposed for reporting/attribution only — subtracting it from the ledger
+/// again would double-count (C-05).
+fn funding_fee_of(fills: &[PaperFill], sim: &SimPolicy) -> u128 {
+    fills
+        .iter()
+        .filter(|f| f.repay_ok && f.borrowed_wei > 0)
+        .map(|f| sim.flash_loan_fee(f.borrowed_wei))
+        .fold(0u128, |acc, fee| acc.saturating_add(fee))
+}
+
 fn exec_skip(
     block: u64,
     tx_index: Option<usize>,
@@ -309,6 +320,13 @@ impl LedgerPolicy {
             recon_pass: None,
             recon_fail: None,
             recon_unverifiable: None,
+            funding_fee_wei: 0,
+            revert_gas_cost_wei: 0,
+            basefee_wei: None,
+            priority_fee_wei: None,
+            sim_block: None,
+            native_usd: None,
+            manipulation_risk: false,
         }
     }
 
@@ -412,19 +430,20 @@ impl LedgerPolicy {
                     continue;
                 }
 
-                let outcome = match simulate_candidate(opp, seeds, &mut overlay, &overlay_tx, sim, pm) {
-                    Ok(o) => o,
-                    Err(fail) => {
-                        skips.push(PaperSkip {
-                            block_number: block,
-                            tx_index,
-                            canonical_id: cid,
-                            strategy,
-                            reason: fail.to_skip(),
-                        });
-                        continue;
-                    }
-                };
+                let outcome =
+                    match simulate_candidate(opp, seeds, &mut overlay, &overlay_tx, sim, pm) {
+                        Ok(o) => o,
+                        Err(fail) => {
+                            skips.push(PaperSkip {
+                                block_number: block,
+                                tx_index,
+                                canonical_id: cid,
+                                strategy,
+                                reason: fail.to_skip(),
+                            });
+                            continue;
+                        }
+                    };
 
                 let net = outcome.sim_net_wei;
                 let gross = outcome.sim_gross_wei;
@@ -479,11 +498,14 @@ impl LedgerPolicy {
             }
         }
 
+        // Flash fee is already inside each `sim_gross_wei`; report it only.
+        let funding_fee_wei = funding_fee_of(&fills, sim);
         LedgerResult {
             starting_gas_wei: self.starting_gas_wei,
             ending_gas_wei: wallet,
             reserve_wei: self.reserve_wei,
             max_drawdown_wei: max_drawdown,
+            funding_fee_wei,
             fills,
             skips,
             gross_wei: gross_total,
@@ -507,6 +529,12 @@ impl LedgerPolicy {
             recon_pass: None,
             recon_fail: None,
             recon_unverifiable: None,
+            revert_gas_cost_wei: 0,
+            basefee_wei: None,
+            priority_fee_wei: None,
+            sim_block: None,
+            native_usd: None,
+            manipulation_risk: false,
         }
     }
 
@@ -760,6 +788,13 @@ impl LedgerPolicy {
             recon_pass: None,
             recon_fail: None,
             recon_unverifiable: None,
+            funding_fee_wei: 0,
+            revert_gas_cost_wei: revert_gas_wei,
+            basefee_wei: None,
+            priority_fee_wei: None,
+            sim_block: None,
+            native_usd: None,
+            manipulation_risk: false,
         }
     }
 }

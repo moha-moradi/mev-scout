@@ -323,6 +323,39 @@ pub fn net_flash_loan(
     *e = e.saturating_add(borrowed.saturating_add(fee));
 }
 
+// --- Capital-free atomic-arb net-profit accounting ------------------------
+//
+// `gross_profit_wei` is the native-denominated residual of the FULL simulated
+// route (Borrow → Callback → all swaps → Repay). Swap fees and realized
+// slippage are already inside that residual, so subtracting them here would be
+// a double count. The flash-loan premium is a separate external cost in the
+// plan's accounting: callers whose `gross` already has it netted
+// (`paper::sim::SimPolicy::flash_loan_fee`) must pass
+// `ProfitCosts::flashloan_fee_wei = 0` so it is never subtracted twice.
+
+/// Cost breakdown used by [`compute_net_profit`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProfitCosts {
+    /// Total gas cost in wei (`(basefee + priority_fee) * gas_used`).
+    pub gas_wei: U256,
+    /// Flash-loan premium in wei; set to zero when `gross` already netted it.
+    pub flashloan_fee_wei: U256,
+    /// Native wei burned on reverted attempts (external cost, subtract once).
+    pub revert_gas_wei: U256,
+}
+
+/// Net native profit after external costs. All arithmetic saturates at zero:
+/// a losing atomic attempt can at worst burn its gas, it cannot create debt.
+///
+/// Acceptance example from the plan:
+/// `gross=100, gas=10, flash=2, revert=3 → net=85`.
+pub fn compute_net_profit(gross_profit_wei: U256, costs: ProfitCosts) -> U256 {
+    gross_profit_wei
+        .saturating_sub(costs.gas_wei)
+        .saturating_sub(costs.flashloan_fee_wei)
+        .saturating_sub(costs.revert_gas_wei)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,5 +631,49 @@ mod tests {
         );
         assert!(ledger.net_signed(me, wrapped_native_marker()).is_negative());
         assert_eq!(ledger.net(me, usdc), U256::from(300));
+    }
+
+    /// WP1 acceptance: gas, flash premium and revert gas are external costs,
+    /// each subtracted exactly once (no swap-fee/slippage double count).
+    #[test]
+    fn compute_net_profit_subtracts_each_external_cost_once() {
+        let costs = ProfitCosts {
+            gas_wei: U256::from(10),
+            flashloan_fee_wei: U256::from(2),
+            revert_gas_wei: U256::from(3),
+        };
+        assert_eq!(
+            compute_net_profit(U256::from(100), costs),
+            U256::from(85),
+            "100 - 10 gas - 2 flash - 3 revert"
+        );
+        // A zero-cost op is the identity, and losses saturate at zero.
+        assert_eq!(
+            compute_net_profit(U256::from(100), ProfitCosts::default()),
+            U256::from(100)
+        );
+        // When the simulation already netted the premium into gross, callers
+        // pass fee = 0 so it is not charged twice.
+        assert_eq!(
+            compute_net_profit(
+                U256::from(100),
+                ProfitCosts {
+                    gas_wei: U256::from(10),
+                    flashloan_fee_wei: U256::ZERO,
+                    revert_gas_wei: U256::from(3),
+                }
+            ),
+            U256::from(87)
+        );
+        assert_eq!(
+            compute_net_profit(
+                U256::from(5),
+                ProfitCosts {
+                    gas_wei: U256::from(10),
+                    ..Default::default()
+                }
+            ),
+            U256::ZERO
+        );
     }
 }

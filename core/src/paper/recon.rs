@@ -379,6 +379,13 @@ mod tests {
             recon_pass: None,
             recon_fail: None,
             recon_unverifiable: None,
+            funding_fee_wei: 0,
+            revert_gas_cost_wei: 0,
+            basefee_wei: None,
+            priority_fee_wei: None,
+            sim_block: None,
+            native_usd: None,
+            manipulation_risk: false,
         }
     }
 

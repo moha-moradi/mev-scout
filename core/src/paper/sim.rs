@@ -690,7 +690,13 @@ mod tests {
         assert_eq!(plain, untaxed);
     }
 
-    fn savax_pool(addr: Address, wrapped: Address, savax: Address, rw: u128, rs: u128) -> PoolState {
+    fn savax_pool(
+        addr: Address,
+        wrapped: Address,
+        savax: Address,
+        rw: u128,
+        rs: u128,
+    ) -> PoolState {
         v2(addr, wrapped, savax, rw, rs)
     }
 

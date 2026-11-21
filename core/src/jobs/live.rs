@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -9,7 +10,8 @@ use crate::cache::{RunManifest, SqliteStore};
 use crate::config::validation::{self, ValidationResult};
 use crate::config::{Config, ProviderConfig};
 use crate::exec::{execute_ledger, searcher_address, AnvilNode, ExecContext, ExecMode};
-use crate::explorer::pricing;
+use crate::explorer::pricing::{self, GasQuote};
+use crate::explorer::reject::RejectReason;
 use crate::explorer::results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};
 use crate::explorer::store::ExplorerStore;
 use crate::fetch::Fetcher;
@@ -25,8 +27,8 @@ use crate::progress::{JobProgress, ProgressEvent};
 use crate::replay::BlockReplayer;
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
-use crate::types::{GasConfig, MevOpportunity, RangeMode, ResultsFile};
-use crate::utils::epoch_secs;
+use crate::types::{FlashLoanProvider, GasConfig, MevOpportunity, RangeMode, ResultsFile};
+use crate::utils::{epoch_millis, epoch_secs};
 
 use super::rpc::init_rpc;
 
@@ -55,6 +57,102 @@ pub struct LiveOpts {
     pub sim_max_candidates_per_block: Option<usize>,
     /// Override `[paper].exec` (`none` | `revm` | `anvil`).
     pub exec: Option<String>,
+    /// Override `[backtest].flash_loan_provider` for this live session.
+    pub funding_provider: Option<String>,
+    /// Override `[live].max_quote_age_ms`.
+    pub max_quote_age_ms: Option<u64>,
+    /// Override `[live].require_risk_clear`.
+    pub require_risk_clear: bool,
+    /// Override `[live].pending_backrun`.
+    pub pending_backrun: bool,
+}
+
+/// Resolved capital-free live gate policy (CLI overrides applied).
+#[derive(Debug, Clone, Default)]
+pub struct LiveGateConfig {
+    pub max_quote_age_ms: Option<u64>,
+    pub require_risk_clear: bool,
+    pub pending_backrun: bool,
+    pub pending_swap_min_wei: u128,
+    /// TTL stamped onto re-quoted pending opportunities.
+    pub pending_quote_ttl_ms: u64,
+}
+
+/// Per-session counters for the gate, used only by the ledger summary.
+#[derive(Debug, Clone, Default)]
+pub struct LiveGateStats {
+    pub expired: u64,
+    pub drift: u64,
+    pub risk_blocked: u64,
+    /// Estimated same-block bid premium: `gas * winning_bid_premium`.
+    pub competition_loss_wei: u128,
+    pub funding_source: Option<String>,
+}
+
+/// Default re-quote TTL when pending-backrun is enabled (2 Avalanche blocks).
+pub const DEFAULT_PENDING_QUOTE_TTL_MS: u64 = 4_000;
+
+/// Default native-value floor for a pending swap re-quote trigger (1 AVAX).
+pub const DEFAULT_PENDING_SWAP_MIN_WEI: u128 = 1_000_000_000_000_000_000;
+
+/// Resolve the live gate policy from `[live]` plus CLI overrides.
+fn resolve_gate_config(config: &Config, opts: &LiveOpts) -> anyhow::Result<LiveGateConfig> {
+    let live = &config.live;
+    let min_wei = match live.pending_backrun_min_wei.as_deref() {
+        Some(raw) => raw.parse::<u128>().with_context(|| {
+            format!("invalid [live].pending_backrun_min_wei '{raw}': expected wei integer")
+        })?,
+        None => DEFAULT_PENDING_SWAP_MIN_WEI,
+    };
+    Ok(LiveGateConfig {
+        max_quote_age_ms: opts.max_quote_age_ms.or(live.max_quote_age_ms),
+        require_risk_clear: opts.require_risk_clear || live.require_risk_clear,
+        pending_backrun: opts.pending_backrun || live.pending_backrun,
+        pending_swap_min_wei: min_wei,
+        pending_quote_ttl_ms: DEFAULT_PENDING_QUOTE_TTL_MS,
+    })
+}
+
+/// Split one pass's opportunities at the quote-freshness gate.
+///
+/// Only the `fresh` slice may reach `persist_results` / `update_ledger`; every
+/// gated candidate comes back with the exact reject reason to record (M-07).
+/// Deadline expiry takes precedence over age/drift, and risk gating is last so
+/// a stale quote is not mislabelled as a generic risk block.
+pub fn split_by_quote_freshness(
+    opps: Vec<MevOpportunity>,
+    now_ms: u64,
+    gate: &LiveGateConfig,
+) -> (Vec<MevOpportunity>, Vec<(MevOpportunity, RejectReason)>) {
+    let mut fresh = Vec::with_capacity(opps.len());
+    let mut gated = Vec::new();
+    for opp in opps {
+        let reason = if opp
+            .quote_expires_at
+            .is_some_and(|deadline| now_ms >= deadline)
+        {
+            Some(RejectReason::QuoteExpired)
+        } else if opp.risk_flags.iter().any(|f| f == "quote_drift") {
+            Some(RejectReason::QuoteDrift)
+        } else if let Some(max_age) = gate.max_quote_age_ms {
+            // `timestamp` is the block/pending state time in seconds. Pending
+            // re-quotes stamp it from wall-clock time, so the same rule covers
+            // both replayed and mempool-sourced candidates.
+            let created_ms = opp.timestamp.saturating_mul(1000);
+            (now_ms.saturating_sub(created_ms) > max_age).then_some(RejectReason::QuoteDrift)
+        } else {
+            None
+        };
+        let reason = reason.or_else(|| {
+            (gate.require_risk_clear && !opp.risk_flags.is_empty())
+                .then_some(RejectReason::RiskFlagBlocked)
+        });
+        match reason {
+            Some(reason) => gated.push((opp, reason)),
+            None => fresh.push(opp),
+        }
+    }
+    (fresh, gated)
 }
 
 pub struct LiveOneShotOutcome {
@@ -129,7 +227,11 @@ fn resolve_ledger_policy(
 }
 
 /// Resolve sim policy from `[paper]` plus CLI `--sim` override.
-fn resolve_sim_policy(config: &Config, opts: &LiveOpts) -> anyhow::Result<SimPolicy> {
+fn resolve_sim_policy(
+    config: &Config,
+    opts: &LiveOpts,
+    provider: FlashLoanProvider,
+) -> anyhow::Result<SimPolicy> {
     let mut policy = config.paper.sim_policy()?;
     if let Some(raw) = opts.sim.as_deref() {
         policy.mode = SimMode::parse(raw).ok_or_else(|| {
@@ -139,9 +241,23 @@ fn resolve_sim_policy(config: &Config, opts: &LiveOpts) -> anyhow::Result<SimPol
     if let Some(n) = opts.sim_max_candidates_per_block {
         policy.max_candidates_per_block = n.max(1);
     }
-    // Fee bps from the configured flash-loan provider (Auto → 0).
-    policy.fee_bps = config.backtest.flash_loan_provider.fee_rate_bps();
+    // Fee bps from the effective provider: config or `--funding-provider`.
+    policy.fee_bps = provider.fee_rate_bps();
     Ok(policy)
+}
+
+/// Configured priority fee in wei, saturating instead of wrapping on absurd input.
+fn priority_fee_wei(config: &Config) -> u128 {
+    let gwei = config.gas.priority_fee_gwei;
+    if !gwei.is_finite() || gwei <= 0.0 {
+        return 0;
+    }
+    let wei = gwei * 1_000_000_000.0;
+    if !wei.is_finite() || wei >= u128::MAX as f64 {
+        u128::MAX
+    } else {
+        wei.round() as u128
+    }
 }
 
 fn resolve_exec_context(
@@ -270,6 +386,10 @@ struct ResolvedLedger {
     policy: LedgerPolicy,
     sim: SimPolicy,
     native_usd: Option<f64>,
+    /// Gas inputs captured once per session. Basefee/block are filled from the
+    /// first scanned block in `LiveContext::new`; the native price is the same
+    /// AVAX quote used for the ledger's USD display.
+    gas_quote: GasQuote,
 }
 
 pub enum LiveOutcome {
@@ -307,6 +427,8 @@ struct LiveContext<'a> {
     /// Native price resolved once at startup; `None` when unavailable and the
     /// session does not need it (P&L stays in wei).
     native_usd: Option<f64>,
+    /// Basefee/priority/native price tied to the session's simulation block.
+    gas_quote: GasQuote,
     /// Persisted once at session end — `paper_sessions` keys on a plain
     /// `session_id`, so re-inserting the same id would violate the constraint.
     session_id: String,
@@ -319,6 +441,10 @@ struct LiveContext<'a> {
     exec: ExecContext,
     /// Hourly Benqi sAVAX exchange-rate cache (shared with the explorer).
     savax_cache: crate::chain::savax::SavaxRateCache,
+    /// Resolved quote/risk/pending gate policy for this session.
+    gate: LiveGateConfig,
+    /// Gate counters accumulated across passes for the ledger summary.
+    gate_stats: LiveGateStats,
 }
 
 impl<'a> LiveContext<'a> {
@@ -334,6 +460,7 @@ impl<'a> LiveContext<'a> {
         progress: &'a dyn JobProgress,
         ledger: ResolvedLedger,
         exec: ExecContext,
+        gate: LiveGateConfig,
     ) -> anyhow::Result<LiveContext<'a>> {
         let chain_name = validation.chain_name;
         let cache = SqliteStore::open(config.effective_db_path(&chain_name))?;
@@ -341,6 +468,28 @@ impl<'a> LiveContext<'a> {
             .get_block_number()
             .await
             .context("failed to get chain tip")?;
+
+        // Gas quote is tied to the block the simulators actually read. Pool
+        // initialization uses tip-1, so use the same block here; falling back
+        // to zero basefee is explicit and never silently swaps in a stablecoin
+        // price. Price lookup failure is non-fatal (P&L stays in wei).
+        let mut gas_quote = ledger.gas_quote;
+        let quote_block = tip.saturating_sub(1);
+        let basefee = cache
+            .get_block(quote_block)
+            .ok()
+            .flatten()
+            .and_then(|b| b.base_fee_per_gas);
+        let basefee = match basefee {
+            Some(v) => Some(v),
+            None => rpc
+                .get_block(quote_block)
+                .await
+                .ok()
+                .and_then(|(b, _)| b.base_fee_per_gas),
+        };
+        gas_quote.basefee_wei = basefee.unwrap_or(0);
+        gas_quote.sim_block = Some(quote_block);
 
         let pool_addresses: Vec<Address> = cache
             .list_discovered_pools()
@@ -389,6 +538,8 @@ impl<'a> LiveContext<'a> {
                 .clone()
                 .unwrap_or_default(),
             flash_financed: ledger.sim.flash_loan,
+            funding_source: Some(validation.flash_loan_provider.funding_source().to_string()),
+            funding_vault: validation.chain_config.balancer_vault,
             savax_rate_wad: None,
         };
 
@@ -421,7 +572,12 @@ impl<'a> LiveContext<'a> {
             validation.chain_config.chain_id,
         );
         let runner = BacktestRunner::new(replayer, pool_manager, gas_config)
-            .with_capture_pending(config.backtest.capture_pending)
+            .with_capture_pending(config.backtest.capture_pending || gate.pending_backrun)
+            .with_pending_backrun(
+                gate.pending_backrun,
+                gate.pending_quote_ttl_ms,
+                gate.pending_swap_min_wei,
+            )
             .with_min_profit_wei(config.backtest.min_profit_wei)
             .with_max_candidates_per_tx(config.backtest.max_candidates_per_tx)
             .with_record_rejections(record_rejections)
@@ -431,6 +587,7 @@ impl<'a> LiveContext<'a> {
             )
             .with_tag_policy(tag_policy);
 
+        let funding_source = validation.flash_loan_provider.funding_source().to_string();
         Ok(LiveContext {
             config,
             validation,
@@ -448,12 +605,18 @@ impl<'a> LiveContext<'a> {
             session_opps: Vec::new(),
             session_seeds: SimSeeds::new(),
             native_usd: ledger.native_usd,
+            gas_quote,
             session_id: format!("paper_live_{}", epoch_secs()),
             replay_blocks: 0,
             log_only_blocks: 0,
             seeds_capped: 0,
             exec,
             savax_cache: Default::default(),
+            gate,
+            gate_stats: LiveGateStats {
+                funding_source: Some(funding_source),
+                ..Default::default()
+            },
         })
     }
 
@@ -535,6 +698,41 @@ impl<'a> LiveContext<'a> {
         Ok((opps, stats))
     }
 
+    /// Apply the capital-free live gate before anything is persisted or
+    /// booked. Gated candidates are recorded as rejects with the full quote
+    /// context; only fresh ones are allowed to reach the ledger (M-07).
+    fn apply_gate(&mut self, opps: Vec<MevOpportunity>, block_number: u64) -> Vec<MevOpportunity> {
+        let gate = self.gate.clone();
+        let (fresh, gated) = split_by_quote_freshness(opps, epoch_millis(), &gate);
+        for (opp, reason) in gated {
+            match reason {
+                RejectReason::QuoteExpired => self.gate_stats.expired += 1,
+                RejectReason::QuoteDrift => self.gate_stats.drift += 1,
+                RejectReason::RiskFlagBlocked => self.gate_stats.risk_blocked += 1,
+                _ => {}
+            }
+            self.runner.note_rejection(
+                &opp,
+                block_number,
+                reason,
+                Some("live quote gate: not admitted to ledger".into()),
+            );
+        }
+        // Estimated same-block competition cost: the configured PGA premium
+        // paid on top of each admitted candidate's simulated gas. This is an
+        // estimate, never a realized fill P&L adjustment.
+        let premium = self.config.gas.winning_bid_premium;
+        if premium.is_finite() && premium > 0.0 {
+            let extra: u128 = fresh
+                .iter()
+                .map(|o| (o.gas_cost_wei as f64 * premium) as u128)
+                .sum();
+            self.gate_stats.competition_loss_wei =
+                self.gate_stats.competition_loss_wei.saturating_add(extra);
+        }
+        fresh
+    }
+
     /// Widen the scanned span to cover `resolved`. The first call sets the
     /// span; later calls only grow it. Callers must pass blocks that were
     /// actually fetched — a tip observed but not scanned must not be included.
@@ -573,6 +771,34 @@ impl<'a> LiveContext<'a> {
             .map(|s| s.to_string())
             .collect();
         let flash_loan_provider = self.validation.flash_loan_provider.to_string();
+        // Canonical funding-layer value (config spellings like `auto`/`lfj`
+        // are normalized); `ResultsFile` keeps the original config string.
+        let funding_source = self
+            .validation
+            .flash_loan_provider
+            .funding_source()
+            .to_string();
+
+        // Stamp the session gas/funding context onto each opportunity before
+        // persistence. Detectors leave these fields unset; the quote is the
+        // same one the simulator used, so explorer rows can reconstruct the
+        // AVAX-denominated cost later without a different price feed.
+        let quote = self.gas_quote;
+        let mut stamped: Vec<MevOpportunity> = opps.to_vec();
+        for opp in &mut stamped {
+            if opp.sim_block.is_none() {
+                opp.sim_block = quote.sim_block;
+            }
+            if opp.basefee_wei.is_none() {
+                opp.basefee_wei = Some(quote.basefee_wei);
+            }
+            if opp.priority_fee_wei.is_none() {
+                opp.priority_fee_wei = Some(quote.priority_fee_wei);
+            }
+            if opp.funding_source.is_none() {
+                opp.funding_source = Some(funding_source.clone());
+            }
+        }
 
         let (start_block, end_block) = self.scanned_bounds();
         let results_file = ResultsFile {
@@ -585,7 +811,7 @@ impl<'a> LiveContext<'a> {
             flash_loan_provider: flash_loan_provider.clone(),
             resolved_at: epoch_secs(),
             created_at: epoch_secs(),
-            opportunities: opps.to_vec(),
+            opportunities: stamped,
         };
         let manifest = RunManifest {
             run_id: run_id.clone(),
@@ -651,6 +877,25 @@ impl<'a> LiveContext<'a> {
         ledger.seed_budget = self.sim.max_candidates_per_block;
         ledger.seeds_recorded = self.session_seeds.len();
         ledger.seeds_capped = self.seeds_capped;
+
+        // Same quote that priced the simulation: no spot/stablecoin substitution.
+        let quote = self.gas_quote;
+        ledger.basefee_wei = Some(quote.basefee_wei);
+        ledger.priority_fee_wei = Some(quote.priority_fee_wei);
+        ledger.sim_block = quote.sim_block;
+        ledger.native_usd = quote.native_usd;
+        ledger.manipulation_risk = quote.manipulation_risk;
+        tracing::debug!(
+            "gas quote: block={:?} basefee={} priority={} effective={} one_gas_wei={} one_gas_usd={:?} native_usd={:?} risk={}",
+            quote.sim_block,
+            quote.basefee_wei,
+            quote.priority_fee_wei,
+            quote.gas_price_wei(),
+            quote.gas_cost_wei(1),
+            quote.gas_cost_usd(1),
+            quote.native_usd,
+            quote.manipulation_risk,
+        );
         Ok(ledger)
     }
 
@@ -718,6 +963,16 @@ impl<'a> LiveContext<'a> {
 /// row in another profit unit must still read as a labeled skip, not as a
 /// silent failure.
 pub fn render_ledger_summary(ledger: &LedgerResult, native_usd: Option<f64>) -> String {
+    render_ledger_summary_with_gate(ledger, native_usd, None)
+}
+
+/// Same summary plus the three capital-free live lines (M-09). Existing
+/// `exec:`/`recon:`/`caps:`/`blocks:` lines are deliberately not duplicated.
+pub fn render_ledger_summary_with_gate(
+    ledger: &LedgerResult,
+    native_usd: Option<f64>,
+    gate: Option<&LiveGateStats>,
+) -> String {
     let mut out = String::new();
     // Net P&L is signed (a losing session must read as negative), so it cannot
     // go through `wei_to_usd`, which only accepts `U256`.
@@ -813,6 +1068,23 @@ pub fn render_ledger_summary(ledger: &LedgerResult, native_usd: Option<f64>) -> 
         usd_start = usd_of(ledger.starting_gas_wei),
         usd_end = usd_of(ledger.ending_gas_wei),
     ));
+    if let Some(gate) = gate {
+        let source = gate.funding_source.as_deref().unwrap_or("unspecified");
+        out.push_str(&format!(
+            "\n  funding: {source} | fee {} wei{}\n",
+            ledger.funding_fee_wei,
+            usd_of(ledger.funding_fee_wei),
+        ));
+        out.push_str(&format!(
+            "  quotes: {} expired / {} drift | {} risk-blocked (not in ledger)\n",
+            gate.expired, gate.drift, gate.risk_blocked,
+        ));
+        out.push_str(&format!(
+            "  competition: est. {} wei{} same-block bid premium\n",
+            gate.competition_loss_wei,
+            usd_of(gate.competition_loss_wei),
+        ));
+    }
     out.push_str(&render_by_strategy(&ledger.fills, native_usd));
     out.push_str(&render_by_tag(&ledger.fills, native_usd));
     let not_native = ledger
@@ -949,7 +1221,17 @@ pub async fn job_live(
         None => None,
     };
 
-    let validation = validation::validate_live(config).context("invalid configuration")?;
+    let mut validation = validation::validate_live(config).context("invalid configuration")?;
+    // A CLI funding override must be parsed before any RPC work so a typo fails
+    // locally. `Auto` keeps the resolver's cheapest-provider behaviour.
+    if let Some(raw) = opts.funding_provider.as_deref() {
+        validation.flash_loan_provider = FlashLoanProvider::from_str(raw).map_err(|_| {
+            anyhow::anyhow!(
+                "invalid --funding-provider '{raw}': expected auto, balancer, aave, uniswap, lfj, or v2_flash_swap"
+            )
+        })?;
+    }
+    let gate = resolve_gate_config(config, opts)?;
     progress.log(&format!(
         "Live mode ({}) — polling every {}ms",
         if opts.loop_enabled {
@@ -964,11 +1246,18 @@ pub async fn job_live(
     // every pass would both cost RPC calls and make the wallet drift mid-session.
     let native_usd = resolve_native_price(config, &validation, opts.native_usd).await?;
     let policy = resolve_ledger_policy(config, opts, native_usd)?;
-    let sim = resolve_sim_policy(config, opts)?;
+    let sim = resolve_sim_policy(config, opts, validation.flash_loan_provider)?;
     let ledger = ResolvedLedger {
         policy,
         sim,
         native_usd,
+        gas_quote: GasQuote {
+            basefee_wei: 0,
+            priority_fee_wei: priority_fee_wei(config),
+            native_usd,
+            sim_block: None,
+            manipulation_risk: false,
+        },
     };
     let exec = resolve_exec_context(config, opts, &validation)?;
     if !exec.mode.is_off() {
@@ -985,6 +1274,7 @@ pub async fn job_live(
         progress,
         ledger,
         exec,
+        gate,
     )
     .await?;
 
@@ -1076,7 +1366,8 @@ async fn run_once(
         });
         true
     };
-    let (opps, block_stats) = ctx.run_blocks(&resolved, Some(&detect)).await?;
+    let (raw_opps, block_stats) = ctx.run_blocks(&resolved, Some(&detect)).await?;
+    let opps = ctx.apply_gate(raw_opps, tip);
     let elapsed = start.elapsed();
     ctx.extend_session(&resolved);
     ctx.persist_results(&opps);
@@ -1087,7 +1378,11 @@ async fn run_once(
         // should not discard a completed scan.
         tracing::warn!("paper-session persist failed: {e}");
     }
-    progress.log(&render_ledger_summary(&ledger, ctx.native_usd));
+    progress.log(&render_ledger_summary_with_gate(
+        &ledger,
+        ctx.native_usd,
+        Some(&ctx.gate_stats),
+    ));
 
     progress.emit(ProgressEvent {
         stage: "complete".to_string(),
@@ -1238,7 +1533,7 @@ async fn process_pass(
         });
         true
     };
-    let (opps, pass_stats) = match ctx.run_blocks(&resolved, Some(&detect_progress)).await {
+    let (raw_opps, pass_stats) = match ctx.run_blocks(&resolved, Some(&detect_progress)).await {
         Ok(o) => o,
         Err(e) => {
             stats.consecutive_failures += 1;
@@ -1259,6 +1554,7 @@ async fn process_pass(
         }
     };
     let pass_elapsed = pass_start.elapsed();
+    let opps = ctx.apply_gate(raw_opps, current_tip);
 
     for s in &pass_stats {
         stats.block_stats.push(s.clone());
@@ -1284,7 +1580,11 @@ async fn process_pass(
     ctx.extend_session(&resolved);
     ctx.persist_results(&opps);
     let ledger = ctx.update_ledger(&opps).await?;
-    progress.log(&render_ledger_summary(&ledger, ctx.native_usd));
+    progress.log(&render_ledger_summary_with_gate(
+        &ledger,
+        ctx.native_usd,
+        Some(&ctx.gate_stats),
+    ));
     progress.emit(ProgressEvent {
         stage: "complete".to_string(),
         done: None,
@@ -1375,6 +1675,11 @@ async fn run_loop(
     // after every pass, including passes that found nothing; this last apply
     // is the row written at session end.
     let ledger = ctx.update_ledger(&[]).await?;
+    progress.log(&render_ledger_summary_with_gate(
+        &ledger,
+        ctx.native_usd,
+        Some(&ctx.gate_stats),
+    ));
     let session_id = match ctx.persist_ledger_session(&ledger) {
         Ok(id) => id,
         Err(e) => {
@@ -1647,6 +1952,13 @@ mod tests {
             recon_pass: None,
             recon_fail: None,
             recon_unverifiable: None,
+            funding_fee_wei: 0,
+            revert_gas_cost_wei: 0,
+            basefee_wei: None,
+            priority_fee_wei: None,
+            sim_block: None,
+            native_usd: None,
+            manipulation_risk: false,
         };
         let text = render_ledger_summary(&ledger, None);
         assert!(
@@ -1830,5 +2142,117 @@ mod tests {
     #[test]
     fn by_strategy_is_empty_without_fills() {
         assert_eq!(render_by_strategy(&[], None), "");
+    }
+
+    // ── WP4 live gate ────────────────────────────────────────────────────────
+
+    fn gate_opp(tx: usize, timestamp: u64) -> MevOpportunity {
+        let mut o = MevOpportunity::new(
+            10,
+            tx,
+            crate::types::Strategy::TwoHopArb,
+            Address::repeat_byte((tx + 1) as u8),
+            timestamp,
+        );
+        o.expected_profit = U256::from(100u64);
+        o.gas_cost_wei = 10;
+        o
+    }
+
+    /// An expired quote must never reach `persist_results` / `update_ledger`:
+    /// only the fresh candidate survives, with an explicit reject reason.
+    #[test]
+    fn live_gate_rejects_expired_drift_and_risky_before_ledger() {
+        let gate = LiveGateConfig {
+            max_quote_age_ms: Some(1_000),
+            require_risk_clear: true,
+            ..Default::default()
+        };
+        let now_ms = 5_000;
+        let mut expired = gate_opp(0, 5);
+        expired.quote_expires_at = Some(now_ms - 1);
+        let mut drift = gate_opp(1, 5);
+        drift.risk_flags.push("quote_drift".into());
+        let mut risky = gate_opp(2, 5);
+        risky.risk_flags.push("funding_reentrancy".into());
+        let old = gate_opp(3, 1); // 4000 ms old
+        let mut fresh = gate_opp(4, 5);
+        fresh.quote_expires_at = Some(now_ms + 1_000);
+
+        let (kept, gated) =
+            split_by_quote_freshness(vec![expired, drift, risky, old, fresh], now_ms, &gate);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].tx_index, 4);
+        let reasons: Vec<_> = gated.iter().map(|(_, reason)| (*reason).as_str()).collect();
+        assert_eq!(
+            reasons,
+            vec![
+                "quote_expired",
+                "quote_drift",
+                "risk_flag_blocked",
+                "quote_drift"
+            ]
+        );
+        // The reject carries the same quote context for `rejected_candidates`.
+        let reject = crate::explorer::RejectedCandidate::from_opportunity(
+            &gated[0].0,
+            10,
+            gated[0].1,
+            None,
+            now_ms / 1000,
+        );
+        assert_eq!(reject.reject_reason, "quote_expired");
+        assert_eq!(reject.tx_index, Some(0));
+    }
+
+    #[test]
+    fn resolve_gate_config_applies_cli_overrides() {
+        let mut config = Config::default();
+        config.live.max_quote_age_ms = Some(100);
+        config.live.pending_backrun_min_wei = Some("500".into());
+        let o = LiveOpts {
+            max_quote_age_ms: Some(200),
+            require_risk_clear: true,
+            pending_backrun: true,
+            ..Default::default()
+        };
+        let gate = resolve_gate_config(&config, &o).unwrap();
+        assert_eq!(gate.max_quote_age_ms, Some(200));
+        assert!(gate.require_risk_clear);
+        assert!(gate.pending_backrun);
+        assert_eq!(gate.pending_swap_min_wei, 500);
+        assert!(gate.pending_quote_ttl_ms > 0);
+    }
+
+    /// M-09: exactly three new lines, without rebuilding the existing
+    /// `exec:` / `recon:` / `caps:` / `blocks:` lines.
+    #[test]
+    fn ledger_summary_has_three_new_live_lines() {
+        let policy = LedgerPolicy {
+            starting_gas_wei: 1_000_000,
+            reserve_wei: 0,
+            max_fills_per_block: HARD_MAX_FILLS_PER_BLOCK,
+        };
+        let ledger = policy.apply(&[]);
+        let gate = LiveGateStats {
+            expired: 2,
+            drift: 1,
+            risk_blocked: 3,
+            competition_loss_wei: 77,
+            funding_source: Some("aave_v3".into()),
+        };
+        let text = render_ledger_summary_with_gate(&ledger, Some(2.0), Some(&gate));
+        assert!(text.contains("  funding: aave_v3 | fee 0 wei"), "{text}");
+        assert!(
+            text.contains("  quotes: 2 expired / 1 drift | 3 risk-blocked (not in ledger)"),
+            "{text}"
+        );
+        assert!(text.contains("  competition: est. 77 wei"), "{text}");
+        assert_eq!(text.matches("  exec:").count(), 0);
+        assert_eq!(text.matches("  recon:").count(), 0);
+        assert_eq!(text.matches("  caps:").count(), 0);
+        assert_eq!(text.matches("  blocks:").count(), 0);
+        // The legacy public entry point must stay unchanged for existing callers.
+        assert!(!render_ledger_summary(&ledger, None).contains("  quotes:"));
     }
 }

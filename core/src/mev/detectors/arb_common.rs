@@ -233,6 +233,21 @@ pub(super) fn build_arb_opportunity(input: ArbOpportunityInput) -> MevOpportunit
         route_tokens: input.route_tokens,
         savax_route: None,
         details: None,
+        quote_expires_at: None,
+        underlying_pools_hash: None,
+        router_version: None,
+        sim_block: None,
+        basefee_wei: None,
+        priority_fee_wei: None,
+        nonce: None,
+        balance_wei: None,
+        allowance_wei: None,
+        risk_flags: Vec::new(),
+        optimal_amount: None,
+        revert_gas_cost_wei: None,
+        funding_source: None,
+        net_profit_wei: None,
+        builder_bid: None,
     }
 }
 

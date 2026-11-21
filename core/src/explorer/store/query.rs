@@ -99,6 +99,21 @@ fn insert_opportunity_row(conn: &Connection, row: &OpportunityInput<'_>) -> anyh
         details_json,
         route_tokens_json,
         savax_route_json,
+        quote_expires_at,
+        underlying_pools_hash,
+        router_version,
+        sim_block,
+        basefee_wei,
+        priority_fee_wei,
+        nonce,
+        balance_wei,
+        allowance_wei,
+        risk_flags_json,
+        optimal_amount,
+        revert_gas_cost_wei,
+        funding_source,
+        net_profit_wei,
+        builder_bid_json,
     } = *row;
     conn.execute(
         "INSERT INTO opportunities
@@ -106,8 +121,13 @@ fn insert_opportunity_row(conn: &Connection, row: &OpportunityInput<'_>) -> anyh
             token_in, token_out, input_amount, expected_profit, gas_cost_wei,
             path, timestamp, mempool_only, confidence, sender, tx_hash,
             detection_path, canonical_id, tags_json, details_json,
-            route_tokens_json, savax_route_json)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)",
+            route_tokens_json, savax_route_json, quote_expires_at,
+            underlying_pools_hash, router_version, sim_block, basefee_wei,
+            priority_fee_wei, nonce, balance_wei, allowance_wei,
+            risk_flags_json, optimal_amount, revert_gas_cost_wei,
+            funding_source, net_profit_wei, builder_bid_json)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,
+                ?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,?39)",
         rusqlite::params![
             run_id,
             chain,
@@ -133,6 +153,21 @@ fn insert_opportunity_row(conn: &Connection, row: &OpportunityInput<'_>) -> anyh
             details_json,
             route_tokens_json,
             savax_route_json,
+            quote_expires_at.map(|v| v as i64),
+            underlying_pools_hash,
+            router_version,
+            sim_block.map(|v| v as i64),
+            basefee_wei.map(|v| v.to_string()),
+            priority_fee_wei.map(|v| v.to_string()),
+            nonce.map(|v| v as i64),
+            balance_wei.map(|v| v.to_string()),
+            allowance_wei.map(|v| v.to_string()),
+            risk_flags_json,
+            optimal_amount.map(|v| v.to_string()),
+            revert_gas_cost_wei.map(|v| v.to_string()),
+            funding_source,
+            net_profit_wei.map(|v| v.to_string()),
+            builder_bid_json,
         ],
     )?;
     Ok(())
@@ -325,7 +360,11 @@ impl ExplorerStore {
                     token_in, token_out, input_amount, expected_profit, gas_cost_wei,
                     path, timestamp, mempool_only, confidence, sender, tx_hash,
                     detection_path, canonical_id, tags_json, details_json,
-                    route_tokens_json, savax_route_json
+                    route_tokens_json, savax_route_json, quote_expires_at,
+                    underlying_pools_hash, router_version, sim_block, basefee_wei,
+                    priority_fee_wei, nonce, balance_wei, allowance_wei,
+                    risk_flags_json, optimal_amount, revert_gas_cost_wei,
+                    funding_source, net_profit_wei, builder_bid_json
              FROM opportunities
              WHERE run_id = ?1
              ORDER BY block_number, tx_index, tx_hash, strategy",
@@ -354,6 +393,21 @@ impl ExplorerStore {
                 r.get::<_, Option<String>>(19)?,
                 r.get::<_, Option<String>>(20)?,
                 r.get::<_, Option<String>>(21)?,
+                r.get::<_, Option<i64>>(22)?.map(|v| v as u64),
+                r.get::<_, Option<String>>(23)?,
+                r.get::<_, Option<String>>(24)?,
+                r.get::<_, Option<i64>>(25)?.map(|v| v as u64),
+                r.get::<_, Option<String>>(26)?,
+                r.get::<_, Option<String>>(27)?,
+                r.get::<_, Option<i64>>(28)?.map(|v| v as u64),
+                r.get::<_, Option<String>>(29)?,
+                r.get::<_, Option<String>>(30)?,
+                r.get::<_, Option<String>>(31)?,
+                r.get::<_, Option<String>>(32)?,
+                r.get::<_, Option<String>>(33)?,
+                r.get::<_, Option<String>>(34)?,
+                r.get::<_, Option<String>>(35)?,
+                r.get::<_, Option<String>>(36)?,
             ))
         })?;
         let parse_addr = |s: &Option<String>| -> anyhow::Result<Address> {
@@ -387,6 +441,21 @@ impl ExplorerStore {
                 details_json,
                 route_tokens_json,
                 savax_route_json,
+                quote_expires_at,
+                underlying_pools_hash,
+                router_version,
+                sim_block,
+                basefee_wei,
+                priority_fee_wei,
+                nonce,
+                balance_wei,
+                allowance_wei,
+                risk_flags_json,
+                optimal_amount,
+                revert_gas_cost_wei,
+                funding_source,
+                net_profit_wei,
+                builder_bid_json,
             ) = row?;
             let strategy = match strategy_str.parse::<Strategy>() {
                 Ok(s) => s,
@@ -461,6 +530,31 @@ impl ExplorerStore {
                     .as_deref()
                     .and_then(|v| serde_json::from_str(v).ok()),
                 details: details_json
+                    .as_deref()
+                    .and_then(|v| serde_json::from_str(v).ok()),
+                quote_expires_at,
+                underlying_pools_hash: underlying_pools_hash
+                    .as_deref()
+                    .and_then(|v| v.parse().ok()),
+                router_version,
+                sim_block,
+                basefee_wei: parse_col("basefee_wei", basefee_wei.as_deref())?,
+                priority_fee_wei: parse_col("priority_fee_wei", priority_fee_wei.as_deref())?,
+                nonce,
+                balance_wei: parse_col("balance_wei", balance_wei.as_deref())?,
+                allowance_wei: parse_col("allowance_wei", allowance_wei.as_deref())?,
+                risk_flags: risk_flags_json
+                    .as_deref()
+                    .and_then(|v| serde_json::from_str(v).ok())
+                    .unwrap_or_default(),
+                optimal_amount: parse_col("optimal_amount", optimal_amount.as_deref())?,
+                revert_gas_cost_wei: parse_col(
+                    "revert_gas_cost_wei",
+                    revert_gas_cost_wei.as_deref(),
+                )?,
+                funding_source,
+                net_profit_wei: parse_col("net_profit_wei", net_profit_wei.as_deref())?,
+                builder_bid: builder_bid_json
                     .as_deref()
                     .and_then(|v| serde_json::from_str(v).ok()),
             });
@@ -713,6 +807,21 @@ mod filter_tests {
                     "[\"0x1111111111111111111111111111111111111111\",\"0x2222222222222222222222222222222222222222\"]",
                 ),
                 savax_route_json: None,
+                quote_expires_at: None,
+                underlying_pools_hash: None,
+                router_version: None,
+                sim_block: None,
+                basefee_wei: None,
+                priority_fee_wei: None,
+                nonce: None,
+                balance_wei: None,
+                allowance_wei: None,
+                risk_flags_json: None,
+                optimal_amount: None,
+                revert_gas_cost_wei: None,
+                funding_source: None,
+                net_profit_wei: None,
+                builder_bid_json: None,
             })
             .unwrap();
 

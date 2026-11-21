@@ -62,6 +62,7 @@ impl DropSink {
             reject_reason: reason.as_str().to_string(),
             detail: Some(detail.to_string()),
             created_at: crate::utils::epoch_secs(),
+            ..Default::default()
         });
     }
 

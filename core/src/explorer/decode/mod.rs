@@ -35,11 +35,11 @@ pub use aggregator::dedup_aggregator_facts;
 // Topic pins are consumed by `chain::events` tests and decode unit tests.
 #[allow(unused_imports)]
 pub use aggregator::{
-    ODOS_SWAP_TOPIC, ONEINCH_SWAPPED_TOPIC, PARASWAP_SWAPPED_TOPIC, PARASWAP_SWAPPED_V3_TOPIC,
-    ZRX_FILL_TOPIC,
+    LEGACY_ROUTER_SWAP_TOPIC, ONEINCH_SWAPPED_TOPIC, PARASWAP_SWAPPED_TOPIC,
+    PARASWAP_SWAPPED_V3_TOPIC, ZRX_FILL_TOPIC,
 };
 pub use attach::attach_swap_tokens;
-pub use flash_loan::decode_flash_loan;
+pub use flash_loan::{decode_flash_loan, flash_loan_funding_tag};
 pub use jit::{decode_lb_bins_liquidity, decode_v3_mint_burn};
 pub use liquidation::{decode_buy_collateral, decode_liquidation, remap_liquidation_protocol};
 pub use sentinels::{is_unresolved_token, TOKEN0_SENTINEL, TOKEN1_SENTINEL};
@@ -121,7 +121,7 @@ fn topic_families() -> &'static HashMap<B256, LogFamily> {
         table.insert(aggregator::PARASWAP_SWAPPED_TOPIC, LogFamily::Aggregator);
         table.insert(aggregator::PARASWAP_SWAPPED_V3_TOPIC, LogFamily::Aggregator);
         table.insert(aggregator::ZRX_FILL_TOPIC, LogFamily::Aggregator);
-        table.insert(aggregator::ODOS_SWAP_TOPIC, LogFamily::Aggregator);
+        table.insert(aggregator::LEGACY_ROUTER_SWAP_TOPIC, LogFamily::Aggregator);
         table.insert(V2_SWAP_TOPIC, LogFamily::Swap);
         table.insert(V3_SWAP_TOPIC, LogFamily::Swap);
         table.insert(*DONASWAP_V3_SWAP_TOPIC, LogFamily::Swap);

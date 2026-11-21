@@ -333,8 +333,8 @@ pub enum Amm {
     Solidly,
     Lb,
     Pendle,
-    /// Aggregator/DEX-router edge (0x, 1inch, Paraswap, Odos) with tokens
-    /// carried explicitly by the router event.
+    /// Aggregator/DEX-router edge (0x, 1inch, ParaSwap/Velora, Kyber,
+    /// OpenOcean) with tokens carried explicitly by the router event.
     Aggregator,
 }
 

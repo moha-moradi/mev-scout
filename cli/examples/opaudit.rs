@@ -10,7 +10,9 @@ use serde_json::{json, Value};
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let db = args.next().expect("usage: opaudit <db> <from> <to> [--full]");
+    let db = args
+        .next()
+        .expect("usage: opaudit <db> <from> <to> [--full]");
     let from: i64 = args.next().expect("from").parse()?;
     let to: i64 = args.next().expect("to").parse()?;
     let rest: Vec<String> = args.collect();

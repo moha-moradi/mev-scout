@@ -13,6 +13,7 @@ use crate::explorer::types::{Amm, LegSource, SwapFact, TransferFact};
 use crate::pool::decoders::{
     LB_DEPOSITED_TO_BINS_TOPIC, SOLIDLY_SWAP_TOPIC, V3_BURN_TOPIC, V3_MINT_TOPIC,
 };
+use crate::types::tags;
 
 fn log(address: Address, topics: Vec<B256>, data: Vec<u8>) -> LogData {
     LogData {
@@ -399,6 +400,11 @@ fn aave_flash_loans_decode() {
     assert_eq!(f.amount, U256::from(1_000));
     assert_eq!(f.fee, Some(U256::from(5)));
     assert_eq!(f.initiator, initiator);
+    assert_eq!(
+        flash_loan_funding_tag(&f),
+        tags::FUNDING_AAVE_V3,
+        "decoder must emit the funding-axis tag (WP2 acceptance)"
+    );
 
     let initiator_topic = b256!("0000000000000000000000003333333333333333333333333333333333333333");
     let asset = b256!("0000000000000000000000002222222222222222222222222222222222222222");
@@ -414,6 +420,11 @@ fn aave_flash_loans_decode() {
     assert_eq!(f.protocol, "aave_v2");
     assert_eq!(f.amount, U256::from(3_000));
     assert_eq!(f.fee, Some(U256::from(7)));
+    assert_eq!(flash_loan_funding_tag(&f), tags::FUNDING_AAVE_V2);
+    assert_eq!(
+        tags::axis_of_tag(flash_loan_funding_tag(&f)),
+        Some(tags::TagAxis::Funding)
+    );
 }
 
 #[test]
@@ -824,7 +835,7 @@ fn oneinch_swapped_decodes() {
 }
 
 #[test]
-fn odos_swap_decodes() {
+fn legacy_router_swap_decodes() {
     let router = address!("Cf5540fFFCdC3d510B18bFcA6d2b9987b0772559");
     let src = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     let dst = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
@@ -834,7 +845,7 @@ fn odos_swap_decodes() {
     data[64 + 12..96].copy_from_slice(src.as_slice()); // inputToken
     data[96 + 24..128].copy_from_slice(&990u64.to_be_bytes()); // amountOut
     data[128 + 12..160].copy_from_slice(dst.as_slice()); // outputToken
-    let l = log(router, vec![ODOS_SWAP_TOPIC], data);
+    let l = log(router, vec![LEGACY_ROUTER_SWAP_TOPIC], data);
     let (amm, s) = decode_swap(&l).unwrap();
     assert_eq!(amm, Amm::Aggregator);
     assert_eq!(s.token_in, src);
@@ -882,6 +893,37 @@ fn paraswap_swapped_variants_decode() {
         assert_eq!(s.amount_in, U256::from(amount_in));
         assert_eq!(s.amount_out, U256::from(amount_out));
     }
+}
+
+/// WP2: ParaSwap/Velora is the supported routing layer after the legacy router
+/// was retired. The decoder is topic-driven, so a Velora router emits the same
+/// `SwappedV3` ABI as ParaSwap v5/v6.
+#[test]
+fn paraswap_velora_swap_decodes() {
+    let velora_router = address!("8888888888888888888888888888888888888888");
+    let src = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let dst = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let beneficiary = address!("cccccccccccccccccccccccccccccccccccccccc");
+    let mut data = vec![0u8; 224];
+    data[128 + 24..160].copy_from_slice(&12_345u64.to_be_bytes());
+    data[160 + 24..192].copy_from_slice(&12_111u64.to_be_bytes());
+    let l = log(
+        velora_router,
+        vec![
+            PARASWAP_SWAPPED_V3_TOPIC,
+            topic_addr(beneficiary),
+            topic_addr(src),
+            topic_addr(dst),
+        ],
+        data,
+    );
+    let (amm, s) = decode_swap(&l).unwrap();
+    assert_eq!(amm, Amm::Aggregator);
+    assert_eq!(s.pool, velora_router);
+    assert_eq!(s.token_in, src);
+    assert_eq!(s.token_out, dst);
+    assert_eq!(s.amount_in, U256::from(12_345));
+    assert_eq!(s.amount_out, U256::from(12_111));
 }
 
 #[test]
@@ -1064,7 +1106,7 @@ fn dispatched_topics_are_unique_and_classified() {
         (PARASWAP_SWAPPED_TOPIC, LogFamily::Aggregator),
         (PARASWAP_SWAPPED_V3_TOPIC, LogFamily::Aggregator),
         (ZRX_FILL_TOPIC, LogFamily::Aggregator),
-        (ODOS_SWAP_TOPIC, LogFamily::Aggregator),
+        (LEGACY_ROUTER_SWAP_TOPIC, LogFamily::Aggregator),
         (V2_SWAP_TOPIC, LogFamily::Swap),
         (V3_SWAP_TOPIC, LogFamily::Swap),
         (*DONASWAP_V3_SWAP_TOPIC, LogFamily::Swap),

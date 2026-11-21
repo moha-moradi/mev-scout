@@ -147,6 +147,21 @@ pub struct LiveConfig {
     /// `false` falls back to excluding dynamically taxed tokens.
     #[serde(default = "default_true")]
     pub fot_quote: bool,
+    /// Reject live quotes older than this many ms before they reach the ledger.
+    /// `None` disables the age check (deadline expiry still applies).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_quote_age_ms: Option<u64>,
+    /// Reject any opportunity carrying a risk flag before ledger admission.
+    #[serde(default)]
+    pub require_risk_clear: bool,
+    /// Enable the pending-swap re-quote path: a large pending tx triggers a
+    /// fresh backrun quote with an explicit deadline and victim tx index.
+    #[serde(default)]
+    pub pending_backrun: bool,
+    /// Minimum native value (wei, as a string for TOML) for a pending tx to
+    /// count as a "large swap" re-quote trigger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_backrun_min_wei: Option<String>,
 }
 
 /// Ledger sub-config: `[paper]` TOML section (virtual-fund bot P&L). The
@@ -536,6 +551,10 @@ impl Default for LiveConfig {
         LiveConfig {
             poll_interval_ms: default_live_poll_ms(),
             fot_quote: true,
+            max_quote_age_ms: None,
+            require_risk_clear: false,
+            pending_backrun: false,
+            pending_backrun_min_wei: None,
         }
     }
 }

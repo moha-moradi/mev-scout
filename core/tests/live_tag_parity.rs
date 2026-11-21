@@ -447,6 +447,8 @@ async fn live_tag_parity_frozen_avax_window() -> anyhow::Result<()> {
         gmx_market_tokens: chain.gmx_market_tokens.clone().unwrap_or_default(),
         gmx_event_emitters: chain.gmx_event_emitters.clone().unwrap_or_default(),
         flash_financed: config.paper.sim_flash_loan,
+        funding_source: Some(validation.flash_loan_provider.funding_source().to_string()),
+        funding_vault: chain.balancer_vault,
         savax_rate_wad: None,
     };
     let gas = GasConfig {

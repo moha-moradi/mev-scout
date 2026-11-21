@@ -42,6 +42,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v15_tx_evidence,
     migrate_v16_action_kinds,
     migrate_v17_live_tags,
+    migrate_v18_opportunity_contract,
 ];
 
 /// Current schema head (`PRAGMA user_version` after a full migrate).
@@ -462,6 +463,62 @@ fn migrate_v17_live_tags(conn: &Connection) -> anyhow::Result<()> {
     ExplorerStore::ensure_column(conn, "opportunities", "route_tokens_json", "TEXT")?;
     ExplorerStore::ensure_column(conn, "opportunities", "savax_route_json", "TEXT")?;
     ExplorerStore::ensure_column(conn, "paper_fills", "tags_json", "TEXT")?;
+    Ok(())
+}
+
+/// V18: the capital-free atomic-arb opportunity contract (§3.2 of the plan)
+/// plus explicit cost attribution on the ledger tables.
+///
+/// Every column is additive and nullable (or defaults to 0), so a row written
+/// by an older pipeline still reads with "no quote context / no funding tag".
+/// `ensure_column` makes the migration idempotent; no table is rebuilt.
+fn migrate_v18_opportunity_contract(conn: &Connection) -> anyhow::Result<()> {
+    for (table, column, ty) in [
+        // Results-layer opportunity contract.
+        ("opportunities", "quote_expires_at", "INTEGER"),
+        ("opportunities", "underlying_pools_hash", "TEXT"),
+        ("opportunities", "router_version", "TEXT"),
+        ("opportunities", "sim_block", "INTEGER"),
+        ("opportunities", "basefee_wei", "TEXT"),
+        ("opportunities", "priority_fee_wei", "TEXT"),
+        ("opportunities", "nonce", "INTEGER"),
+        ("opportunities", "balance_wei", "TEXT"),
+        ("opportunities", "allowance_wei", "TEXT"),
+        ("opportunities", "risk_flags_json", "TEXT"),
+        ("opportunities", "optimal_amount", "TEXT"),
+        ("opportunities", "revert_gas_cost_wei", "TEXT"),
+        ("opportunities", "funding_source", "TEXT"),
+        ("opportunities", "net_profit_wei", "TEXT"),
+        ("opportunities", "builder_bid_json", "TEXT"),
+        // A rejection must be attributable to the same quote/funding context.
+        ("rejected_candidates", "quote_expires_at", "INTEGER"),
+        ("rejected_candidates", "funding_source", "TEXT"),
+        ("rejected_candidates", "sim_block", "INTEGER"),
+        ("rejected_candidates", "risk_flags_json", "TEXT"),
+        ("rejected_candidates", "revert_gas_cost_wei", "TEXT"),
+        // Ledger attribution: `funding_fee_wei` is informational because the
+        // state-sim path already nets the fee into `sim_gross_wei`.
+        ("paper_sessions", "funding_fee_wei", "TEXT"),
+        ("paper_sessions", "basefee_wei", "TEXT"),
+        ("paper_sessions", "priority_fee_wei", "TEXT"),
+        ("paper_sessions", "sim_block", "INTEGER"),
+        ("paper_sessions", "native_usd", "REAL"),
+        (
+            "paper_sessions",
+            "manipulation_risk",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("paper_fills", "funding_fee_wei", "TEXT"),
+        ("paper_fills", "funding_source", "TEXT"),
+        ("paper_fills", "sim_block", "INTEGER"),
+        ("paper_fills", "basefee_wei", "TEXT"),
+        ("paper_fills", "priority_fee_wei", "TEXT"),
+        ("paper_fills", "revert_gas_cost_wei", "TEXT"),
+        ("paper_fills", "net_profit_wei", "TEXT"),
+        ("paper_fills", "quote_expires_at", "INTEGER"),
+    ] {
+        ExplorerStore::ensure_column(conn, table, column, ty)?;
+    }
     Ok(())
 }
 
@@ -1062,6 +1119,21 @@ mod tests {
                     details_json: None,
                     route_tokens_json: None,
                     savax_route_json: None,
+                    quote_expires_at: None,
+                    underlying_pools_hash: None,
+                    router_version: None,
+                    sim_block: None,
+                    basefee_wei: None,
+                    priority_fee_wei: None,
+                    nonce: None,
+                    balance_wei: None,
+                    allowance_wei: None,
+                    risk_flags_json: None,
+                    optimal_amount: None,
+                    revert_gas_cost_wei: None,
+                    funding_source: None,
+                    net_profit_wei: None,
+                    builder_bid_json: None,
                 }])
                 .unwrap();
 
@@ -1080,7 +1152,7 @@ mod tests {
         }
 
         let store = ExplorerStore::open(&path).unwrap();
-        assert_eq!(store.user_version().unwrap(), 17);
+        assert_eq!(store.user_version().unwrap(), SCHEMA_HEAD);
         let legacy = store.opportunities_by_run("legacy").unwrap();
         assert_eq!(legacy.len(), 1);
         assert!(legacy[0].tags.is_empty(), "old rows read with empty tags");
@@ -1111,6 +1183,21 @@ mod tests {
                 details_json: Some(r#"{"fot_tax_bps":300}"#),
                 route_tokens_json: Some(r#"["0x0000000000000000000000000000000000000001","0x0000000000000000000000000000000000000002"]"#),
                 savax_route_json: None,
+                quote_expires_at: None,
+                underlying_pools_hash: None,
+                router_version: None,
+                sim_block: None,
+                basefee_wei: None,
+                priority_fee_wei: None,
+                nonce: None,
+                balance_wei: None,
+                allowance_wei: None,
+                risk_flags_json: None,
+                optimal_amount: None,
+                revert_gas_cost_wei: None,
+                funding_source: None,
+                net_profit_wei: None,
+                builder_bid_json: None,
             }])
             .unwrap();
         let tagged = store.opportunities_by_run("tagged").unwrap();
@@ -1126,6 +1213,87 @@ mod tests {
         );
         assert_eq!(tagged[0].route_tokens.as_ref().map(Vec::len), Some(2));
         drop(store);
+        remove_db(&path);
+    }
+
+    /// V18 adds the whole §3.2 contract, stays idempotent on reopen, and a
+    /// legacy row (columns dropped, version rewound) still reads afterwards.
+    #[test]
+    fn v18_adds_contract_columns_and_upgrades_a_v17_file() {
+        use crate::explorer::store::OpportunityInput;
+        use alloy::primitives::{address, Address, U256};
+
+        let path = legacy_db_path("v18-contract");
+        remove_db(&path);
+        let pool = address!("0x00000000000000000000000000000000000000aa");
+        {
+            let store = ExplorerStore::open(&path).unwrap();
+            store
+                .insert_opportunities(&[OpportunityInput {
+                    run_id: "legacy",
+                    chain: "avalanche",
+                    block_number: 1,
+                    tx_index: Some(0),
+                    strategy: "multi_hop_arb",
+                    pool_a: Some(pool),
+                    pool_b: None,
+                    token_in: Some(Address::ZERO),
+                    token_out: Some(Address::ZERO),
+                    input_amount: Some(U256::ZERO),
+                    expected_profit: Some(U256::ZERO),
+                    gas_cost_wei: Some(U256::ZERO),
+                    path: None,
+                    timestamp: Some(1),
+                    mempool_only: false,
+                    confidence: None,
+                    sender: None,
+                    tx_hash: None,
+                    detection_path: None,
+                    canonical_id: Some("legacy-row"),
+                    tags_json: None,
+                    details_json: None,
+                    route_tokens_json: None,
+                    savax_route_json: None,
+                    quote_expires_at: None,
+                    underlying_pools_hash: None,
+                    router_version: None,
+                    sim_block: None,
+                    basefee_wei: None,
+                    priority_fee_wei: None,
+                    nonce: None,
+                    balance_wei: None,
+                    allowance_wei: None,
+                    risk_flags_json: None,
+                    optimal_amount: None,
+                    revert_gas_cost_wei: None,
+                    funding_source: None,
+                    net_profit_wei: None,
+                    builder_bid_json: None,
+                }])
+                .unwrap();
+
+            // Simulate a file written before v18: drop a representative column
+            // and rewind the version head, then reopen to replay the migration.
+            store
+                .connection()
+                .execute_batch(
+                    "ALTER TABLE opportunities DROP COLUMN funding_source;
+                     PRAGMA user_version = 17;",
+                )
+                .unwrap();
+        }
+
+        let store = ExplorerStore::open(&path).unwrap();
+        assert_eq!(store.user_version().unwrap(), 18);
+        let legacy = store.opportunities_by_run("legacy").unwrap();
+        assert_eq!(legacy.len(), 1);
+        assert!(legacy[0].funding_source.is_none());
+        assert!(legacy[0].risk_flags.is_empty());
+        // Reopening is a no-op, not a second ALTER.
+        let store2 = ExplorerStore::open(&path).unwrap();
+        assert_eq!(store2.user_version().unwrap(), 18);
+        drop(store);
+        drop(store2);
         remove_db(&path);
     }
 

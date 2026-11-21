@@ -159,6 +159,10 @@ pub async fn cmd_live(
         reserve_wei: args.reserve,
         sim: args.sim.clone(),
         exec: args.exec.clone(),
+        funding_provider: args.funding_provider.clone(),
+        max_quote_age_ms: args.max_quote_age_ms,
+        require_risk_clear: args.require_risk_clear,
+        pending_backrun: args.pending_backrun,
         ..Default::default()
     };
 

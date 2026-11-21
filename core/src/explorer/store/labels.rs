@@ -101,8 +101,10 @@ impl ExplorerStore {
             "INSERT OR IGNORE INTO rejected_candidates
                (run_id, chain, block_number, tx_index, strategy, pool_a, pool_b, path,
                 token_in, token_out, input_amount, expected_profit, expected_profit_usd,
-                gas_cost_wei, reject_reason, detail, created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                gas_cost_wei, reject_reason, detail, created_at,
+                quote_expires_at, funding_source, sim_block, risk_flags_json, revert_gas_cost_wei)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
+                    ?18,?19,?20,?21,?22)",
             rusqlite::params![
                 run_id,
                 chain,
@@ -121,6 +123,12 @@ impl ExplorerStore {
                 r.reject_reason,
                 r.detail,
                 r.created_at as i64,
+                // V18: quote/funding context for live-gate reject attribution.
+                r.quote_expires_at.map(|v| v as i64),
+                r.funding_source,
+                r.sim_block.map(|v| v as i64),
+                r.risk_flags_json,
+                r.revert_gas_cost_wei.map(|v| v.to_string()),
             ],
         )?;
         Ok(())

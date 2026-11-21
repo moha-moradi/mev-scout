@@ -436,10 +436,7 @@ mod tests {
         let (out, post) = quote_swap_post(&state, sy, 10_000, pt).expect("pendle quote");
         assert!(out > 0);
         match post {
-            PoolPostState::Pendle {
-                total_pt,
-                total_sy,
-            } => {
+            PoolPostState::Pendle { total_pt, total_sy } => {
                 assert_eq!(total_sy, 1_010_000);
                 assert_eq!(total_pt, 1_000_000 - out);
             }

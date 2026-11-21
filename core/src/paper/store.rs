@@ -31,7 +31,13 @@ impl ExplorerStore {
               exec_revert INTEGER,
               revert_gas_wei TEXT,
               exec_loss_wei TEXT,
-              setup_gas_wei TEXT
+              setup_gas_wei TEXT,
+              funding_fee_wei TEXT,
+              basefee_wei TEXT,
+              priority_fee_wei TEXT,
+              sim_block INTEGER,
+              native_usd REAL,
+              manipulation_risk INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS paper_sessions_created
               ON paper_sessions(created_at);
@@ -64,6 +70,14 @@ impl ExplorerStore {
               exec_net_wei TEXT,
               tx_hash TEXT,
               tags_json TEXT,
+              funding_fee_wei TEXT,
+              funding_source TEXT,
+              sim_block INTEGER,
+              basefee_wei TEXT,
+              priority_fee_wei TEXT,
+              revert_gas_cost_wei TEXT,
+              net_profit_wei TEXT,
+              quote_expires_at INTEGER,
               FOREIGN KEY(session_id) REFERENCES paper_sessions(session_id)
             );
             CREATE INDEX IF NOT EXISTS paper_fills_session
@@ -93,8 +107,11 @@ impl ExplorerStore {
                net_profit_wei, max_drawdown_wei, created_at,
                sim_mode, replay_blocks, log_only_blocks,
                exec_mode, exec_ok, exec_revert,
-               revert_gas_wei, exec_loss_wei, setup_gas_wei
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+               revert_gas_wei, exec_loss_wei, setup_gas_wei,
+               funding_fee_wei, basefee_wei, priority_fee_wei,
+               sim_block, native_usd, manipulation_risk
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,
+                       ?24,?25,?26,?27,?28,?29)",
             rusqlite::params![
                 session_id,
                 chain,
@@ -119,6 +136,12 @@ impl ExplorerStore {
                 ledger.revert_gas_wei.to_string(),
                 ledger.exec_loss_wei.to_string(),
                 ledger.setup_gas_wei.to_string(),
+                ledger.funding_fee_wei.to_string(),
+                ledger.basefee_wei.map(|v| v.to_string()),
+                ledger.priority_fee_wei.map(|v| v.to_string()),
+                ledger.sim_block.map(|v| v as i64),
+                ledger.native_usd,
+                ledger.manipulation_risk as i64,
             ],
         )?;
         for f in &ledger.fills {
@@ -185,7 +208,9 @@ impl ExplorerStore {
                     net_profit_wei, max_drawdown_wei, created_at,
                     sim_mode, replay_blocks, log_only_blocks,
                     exec_mode, exec_ok, exec_revert,
-                    revert_gas_wei, exec_loss_wei, setup_gas_wei
+                    revert_gas_wei, exec_loss_wei, setup_gas_wei,
+                    funding_fee_wei, basefee_wei, priority_fee_wei,
+                    sim_block, native_usd, manipulation_risk
              FROM paper_sessions WHERE session_id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![session_id])?;
@@ -209,7 +234,9 @@ impl ExplorerStore {
                     net_profit_wei, max_drawdown_wei, created_at,
                     sim_mode, replay_blocks, log_only_blocks,
                     exec_mode, exec_ok, exec_revert,
-                    revert_gas_wei, exec_loss_wei, setup_gas_wei
+                    revert_gas_wei, exec_loss_wei, setup_gas_wei,
+                    funding_fee_wei, basefee_wei, priority_fee_wei,
+                    sim_block, native_usd, manipulation_risk
              FROM paper_sessions
              WHERE linked_run_id = ?1
              ORDER BY created_at DESC
@@ -236,7 +263,9 @@ impl ExplorerStore {
                     net_profit_wei, max_drawdown_wei, created_at,
                     sim_mode, replay_blocks, log_only_blocks,
                     exec_mode, exec_ok, exec_revert,
-                    revert_gas_wei, exec_loss_wei, setup_gas_wei
+                    revert_gas_wei, exec_loss_wei, setup_gas_wei,
+                    funding_fee_wei, basefee_wei, priority_fee_wei,
+                    sim_block, native_usd, manipulation_risk
              FROM paper_sessions
              WHERE created_at >= ?1
              ORDER BY created_at DESC
@@ -360,6 +389,12 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<PaperSession> {
         revert_gas_wei: r.get(20)?,
         exec_loss_wei: r.get(21)?,
         setup_gas_wei: r.get(22)?,
+        funding_fee_wei: r.get(23)?,
+        basefee_wei: r.get(24)?,
+        priority_fee_wei: r.get(25)?,
+        sim_block: r.get::<_, Option<i64>>(26)?.map(|v| v as u64),
+        native_usd: r.get(27)?,
+        manipulation_risk: r.get::<_, Option<i64>>(28)?.unwrap_or(0) != 0,
     })
 }
 

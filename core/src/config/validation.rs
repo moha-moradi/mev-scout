@@ -354,6 +354,10 @@ fn validate_common(
                 .is_some_and(|f| !f.is_empty()),
         )),
         FlashLoanProvider::Auto => None,
+        // These providers are funding-tag/expansion paths in this build. They
+        // have no dedicated executor contract field yet; keep validation
+        // non-fatal and let the executor reject an unsupported plan.
+        FlashLoanProvider::Lfj | FlashLoanProvider::V2FlashSwap => None,
     };
     if let Some((contract_field, has_contract)) = forced_contract {
         if !has_contract {
