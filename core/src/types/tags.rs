@@ -17,6 +17,9 @@ pub const CURVE_IMBALANCE: &str = "curve_imbalance";
 pub const RATE_PROVIDER_STALENESS: &str = "rate_provider_staleness";
 pub const FOT_ARB: &str = "fot_arb";
 pub const REBASE_ARB: &str = "rebase_arb";
+/// Oracle–AMM divergence is an expansion-only mechanism tag: the vocabulary
+/// entry exists, but no core atomic-arb detector emits it yet (plan §8.2).
+pub const ORACLE_AMM: &str = "oracle_amm";
 pub const SAVAX_RATE_ARB: &str = "savax_rate_arb";
 pub const EPOCH_TRANSITION: &str = "epoch_transition";
 pub const GMX_ADL_ARB: &str = "gmx_adl_arb";
@@ -104,6 +107,10 @@ pub fn funding_tag_for_source(source: &str) -> &'static str {
 
 /// Split-route is an optimizer/execution mode, never a venue or route shape.
 pub const OPTIMIZER_SPLIT_ROUTE: &str = "optimizer:split_route";
+/// The candidate-`L` sweep selected an amount different from the detector's
+/// first quote (plan A-04 / §38 of `mev_strategies.md`).
+pub const OPTIMIZER_CANDIDATE_L_SWEEP: &str = "optimizer:candidate_L_sweep";
+pub const OPTIMIZER_AMOUNT_OPTIMAL_L: &str = "optimizer:amount_optimal_L";
 pub const ROUTING_PARASWAP_VELORA: &str = "routing:paraswap_velora";
 pub const EXECUTION_SINGLE_TX: &str = "execution:single_tx";
 
@@ -118,6 +125,7 @@ pub const TAG_AXIS_REGISTRY: &[(&str, TagAxis)] = &[
     (RATE_PROVIDER_STALENESS, TagAxis::Mechanism),
     (FOT_ARB, TagAxis::Mechanism),
     (REBASE_ARB, TagAxis::Mechanism),
+    (ORACLE_AMM, TagAxis::Mechanism),
     (SAVAX_RATE_ARB, TagAxis::Mechanism),
     (EPOCH_TRANSITION, TagAxis::Mechanism),
     (GMX_ADL_ARB, TagAxis::Mechanism),
@@ -130,6 +138,8 @@ pub const TAG_AXIS_REGISTRY: &[(&str, TagAxis)] = &[
     (FUNDING_MORPHO_BLUE, TagAxis::Funding),
     (FUNDING_FLASH_LOAN, TagAxis::Funding),
     (OPTIMIZER_SPLIT_ROUTE, TagAxis::Optimizer),
+    (OPTIMIZER_CANDIDATE_L_SWEEP, TagAxis::Optimizer),
+    (OPTIMIZER_AMOUNT_OPTIMAL_L, TagAxis::Optimizer),
     (ROUTING_PARASWAP_VELORA, TagAxis::Routing),
     (EXECUTION_SINGLE_TX, TagAxis::Execution),
 ];
@@ -151,6 +161,7 @@ pub const LIVE_ARB_TAGS: &[&str] = &[
     RATE_PROVIDER_STALENESS,
     FOT_ARB,
     REBASE_ARB,
+    ORACLE_AMM,
     SAVAX_RATE_ARB,
     EPOCH_TRANSITION,
     GMX_ADL_ARB,
@@ -163,6 +174,8 @@ pub const LIVE_ARB_TAGS: &[&str] = &[
     FUNDING_MORPHO_BLUE,
     FUNDING_FLASH_LOAN,
     OPTIMIZER_SPLIT_ROUTE,
+    OPTIMIZER_CANDIDATE_L_SWEEP,
+    OPTIMIZER_AMOUNT_OPTIMAL_L,
     ROUTING_PARASWAP_VELORA,
     EXECUTION_SINGLE_TX,
 ];
@@ -185,6 +198,9 @@ mod tests {
             );
         }
         assert_eq!(axis_of_tag(OPTIMIZER_SPLIT_ROUTE), Some(TagAxis::Optimizer));
+        assert_eq!(axis_of_tag(OPTIMIZER_CANDIDATE_L_SWEEP), Some(TagAxis::Optimizer));
+        assert_eq!(axis_of_tag(OPTIMIZER_AMOUNT_OPTIMAL_L), Some(TagAxis::Optimizer));
+        assert_eq!(axis_of_tag(ORACLE_AMM), Some(TagAxis::Mechanism));
         assert_eq!(axis_of_tag(FUNDING_AAVE_V3), Some(TagAxis::Funding));
     }
 

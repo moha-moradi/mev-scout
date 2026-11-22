@@ -111,6 +111,22 @@ flowchart TB
 - **Layers vs families**: aggregator/router events (1inch, 0x, ParaSwap/Velora, Kyber, OpenOcean) are a **routing** layer decoded as `Amm::Aggregator` swap edges; they are not pool-discovery venues. V2-compatible forks on Avalanche (Pangolin V2, SushiSwap V2, Blackhole) share the V2 mechanics. GMX (two-transaction), Pendle PT/YT (yield/rate) and sAVAX rate arb are explicitly **out of core atomic arb** — retained only as forensic tags/evidence.
 - **Funding cost is runtime state**: Balancer Vault fee, Aave premium, Uni V3 paid amount, LFJ in-kind fee and V2 flash-swap fee are read from live state (with contract defaults as fallback), never treated as an unconditional 0%. When the funding vault is also a route pool, a reentrancy risk flag is raised. DEX swap fees/slippage stay inside the simulated flow residual and must not be subtracted again from net profit.
 
+### Avalanche C-Chain reference addresses (atomic arb)
+
+| Contract | Address |
+|---|---|
+| Uniswap V3 Factory | `0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD` |
+| Uniswap V3 QuoterV2 | `0xbe0F5544EC67e9B3b2D979aaA43f18Fd87E6257F` |
+| WAVAX | `0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7` |
+| USDC | `0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E` |
+| Balancer V2 Vault | `0xBA12222222228d8Ba445958a75a0704d566BF2C8` |
+| BalancerQueries | `0xC128468b7Ce63eA702C1f104D55A2566b13D3ABD` |
+| LFJ V2.2 Factory | `0xb43120c4745967fa9b93E79C149E66B0f2D6Fe0c` |
+| Pharaoh DLMMFactory | `0xEb480050b016f6c6d45203D2346B68bDDDa23D4D` |
+| Pharaoh DLMMQuoter | `0xDdaE0aA4E93be4936c1BcC12d3001b35C75fEF40` |
+
+Notes: Odos shut down permanently on 30 July 2026 — live routing targets ParaSwap/Velora. There is no official Uniswap V2 deployment on Avalanche; V2-compatible forks (Pangolin V2, SushiSwap V2) use the V2 mechanics. Pharaoh has both concentrated-liquidity and DLMM pools. Balancer's fee is historically zero but is read from runtime state.
+
 ---
 
 ## 2. Two SQLite stores

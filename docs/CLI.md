@@ -176,6 +176,15 @@ mev-scout live --exec anvil --blocks 8        # same path on a local Anvil fork
 | `--reserve <wei>` | Gas kept back from the wallet; overrides `[paper].reserve_wei` |
 | `--sim <assumed\|state>` | Ledger fill mode; overrides `[paper].sim` (default `assumed`) |
 | `--exec <none\|revm\|anvil>` | Virtual FlashArb backend; overrides `[paper].exec` (default `none`). Local only — never mainnet broadcast |
+| `--funding-provider <auto\|balancer\|aave\|uniswap\|lfj\|v2_flash_swap>` | Flash-loan funding layer; overrides `[backtest].flash_loan_provider` |
+| `--max-quote-age-ms <ms>` | Reject quotes older than this before ledger admission; overrides `[live].max_quote_age_ms` |
+| `--require-risk-clear` | Reject any opportunity carrying a risk flag (funding reentrancy, drift, …); overrides `[live].require_risk_clear` |
+| `--pending-backrun` | Re-quote backruns around large pending swaps with `quote_expires_at` and `victim_tx_index`; overrides `[live].pending_backrun` |
+
+The four `Live` flags feed the quote gate in `split_by_quote_freshness`, which
+runs **before** `update_ledger`: expired, drifted or risk-flagged candidates
+land in `rejected_candidates` instead of the ledger. See also the `quotes:`
+and `competition:` lines in the end-of-session report below.
 
 #### Implicit bootstrap
 
