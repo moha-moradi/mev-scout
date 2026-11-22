@@ -160,7 +160,9 @@ The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogO
 | Static dashboard `results/explorer-<chain>-*.html` (gitignored) | `explorer` and `explorer index` (read-only; never migrates) | browser |
 | Signature DB (4byte directory snapshot) | resolver only (`core::sigs::SignatureResolver`); `Fetcher::with_sig_resolver` exists but has **no callers** from jobs. Still **not wired** into `run`/`live` ingest | tx decoding (future) |
 
-`ResultsFile` is an in-memory / presentation DTO (CLI tables) — not a durable on-disk JSON artifact. The V18 schema migration added the atomic-arb columns (`quote_expires_at`, `underlying_pools_hash`, `router_version`, `sim_block`, `basefee_wei`, `nonce`, `balance_wei`, `allowance_wei`, `risk_flags`, `optimal_amount`, `revert_gas_cost_wei`, `funding_source`, `net_profit_wei`, `priority_fee_wei`, `builder_bid`) to `opportunities`, `rejected_candidates`, `paper_sessions` and `paper_fills`; all are additive so pre-V18 rows deserialize unchanged.
+`ResultsFile` is an in-memory / presentation DTO (CLI tables) — not a durable on-disk JSON artifact. The V18 schema migration added the atomic-arb columns (`quote_expires_at`, `underlying_pools_hash`, `router_version`, `sim_block`, `basefee_wei`, `nonce`, `balance_wei`, `allowance_wei`, `risk_flags`, `optimal_amount`, `revert_gas_cost_wei`, `funding_source`, `net_profit_wei`, `priority_fee_wei`, `builder_bid`) to `opportunities`, `rejected_candidates`, `paper_sessions` and `paper_fills`; all are additive so pre-V18 rows deserialize unchanged. V19 adds the five WP6 backtest rates (`quote_drift_failure_rate`, `quote_expiry_failure_rate`, `same_block_competition_loss_rate`, `funding_fee_share_of_gas`, `revert_gas_share`) plus their raw counters to `paper_sessions` only.
+
+The dashboard reads `paper_sessions` read-only and recomputes aggregate rates from the raw counters; a legacy file without V19 columns renders an empty metrics panel rather than failing the build.
 
 ---
 

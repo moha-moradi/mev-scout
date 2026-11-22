@@ -19,6 +19,6 @@ pub use sim::{
     PendingSeed, PoolSnapshot, SeedMatchKey, SimFail, SimOutcome, SimPolicy, SimSeeds,
 };
 pub use types::{
-    ExecAttempt, FillSkipReason, LedgerResult, PaperFill, PaperMode, PaperSession, PaperSkip,
-    SimMode,
+    BacktestMetrics, ExecAttempt, FillSkipReason, LedgerResult, PaperFill, PaperMode, PaperSession,
+    PaperSkip, SimMode,
 };

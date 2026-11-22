@@ -17,8 +17,8 @@ use crate::explorer::store::ExplorerStore;
 use crate::fetch::Fetcher;
 use crate::paper::sim::{merge_seeds, SimSeeds};
 use crate::paper::{
-    reconcile_sim_vs_exec, FillSkipReason, LedgerPolicy, LedgerResult, PaperFill, PaperMode,
-    SimMode, SimPolicy, HARD_MAX_FILLS_PER_BLOCK,
+    reconcile_sim_vs_exec, BacktestMetrics, FillSkipReason, LedgerPolicy, LedgerResult, PaperFill,
+    PaperMode, SimMode, SimPolicy, HARD_MAX_FILLS_PER_BLOCK,
 };
 use crate::pipeline::aggregate::StrategyMetrics;
 use crate::pipeline::{aggregate_fills, BacktestRunner, BlockMode, BlockReplayStats};
@@ -81,6 +81,8 @@ pub struct LiveGateConfig {
 /// Per-session counters for the gate, used only by the ledger summary.
 #[derive(Debug, Clone, Default)]
 pub struct LiveGateStats {
+    /// All candidates that entered the gate (denominator for quote rates).
+    pub quote_gate_attempts: u64,
     pub expired: u64,
     pub drift: u64,
     pub risk_blocked: u64,
@@ -702,6 +704,10 @@ impl<'a> LiveContext<'a> {
     /// booked. Gated candidates are recorded as rejects with the full quote
     /// context; only fresh ones are allowed to reach the ledger (M-07).
     fn apply_gate(&mut self, opps: Vec<MevOpportunity>, block_number: u64) -> Vec<MevOpportunity> {
+        self.gate_stats.quote_gate_attempts = self
+            .gate_stats
+            .quote_gate_attempts
+            .saturating_add(opps.len() as u64);
         let gate = self.gate.clone();
         let (fresh, gated) = split_by_quote_freshness(opps, epoch_millis(), &gate);
         for (opp, reason) in gated {
@@ -945,15 +951,31 @@ impl<'a> LiveContext<'a> {
             ledger.start_block = Some(start);
             ledger.end_block = Some(end);
         }
+        let metrics = session_metrics(&ledger, &self.gate_stats);
         store.insert_paper_session(
             &self.session_id,
             &chain.to_string(),
             PaperMode::Live,
             Some(&self.session_run_id),
             &ledger,
+            &metrics,
         )?;
         Ok(self.session_id.clone())
     }
+}
+
+/// WP6 metrics for one finished session. Quote failures are a share of all
+/// gate candidates; gas shares use accepted-fill gas as their basis.
+fn session_metrics(ledger: &LedgerResult, gate: &LiveGateStats) -> BacktestMetrics {
+    BacktestMetrics::from_parts(
+        gate.quote_gate_attempts,
+        gate.drift,
+        gate.expired,
+        ledger.gas_wei,
+        ledger.funding_fee_wei,
+        ledger.revert_gas_wei,
+        gate.competition_loss_wei,
+    )
 }
 
 /// Render one ledger line set for progress output.
@@ -1083,6 +1105,15 @@ pub fn render_ledger_summary_with_gate(
             "  competition: est. {} wei{} same-block bid premium\n",
             gate.competition_loss_wei,
             usd_of(gate.competition_loss_wei),
+        ));
+        let m = session_metrics(ledger, gate);
+        out.push_str(&format!(
+            "  metrics: drift {:.2}% | expiry {:.2}% | competition {:.2}% | funding/gas {:.2}% | revert/gas {:.2}%\n",
+            m.quote_drift_failure_rate * 100.0,
+            m.quote_expiry_failure_rate * 100.0,
+            m.same_block_competition_loss_rate * 100.0,
+            m.funding_fee_share_of_gas * 100.0,
+            m.revert_gas_share * 100.0,
         ));
     }
     out.push_str(&render_by_strategy(&ledger.fills, native_usd));
@@ -2224,6 +2255,36 @@ mod tests {
         assert!(gate.pending_quote_ttl_ms > 0);
     }
 
+    #[test]
+    fn session_metrics_use_quote_and_gas_bases() {
+        let policy = LedgerPolicy {
+            starting_gas_wei: 10_000,
+            reserve_wei: 0,
+            max_fills_per_block: HARD_MAX_FILLS_PER_BLOCK,
+        };
+        let mut ledger = policy.apply(&[]);
+        ledger.gas_wei = 1_000;
+        ledger.funding_fee_wei = 100;
+        ledger.revert_gas_wei = 50;
+        let gate = LiveGateStats {
+            quote_gate_attempts: 10,
+            expired: 2,
+            drift: 1,
+            risk_blocked: 1,
+            competition_loss_wei: 75,
+            funding_source: None,
+        };
+        let m = session_metrics(&ledger, &gate);
+        assert_eq!(m.quote_gate_attempts, 10);
+        assert_eq!(m.quote_drift_fails, 1);
+        assert_eq!(m.quote_expiry_fails, 2);
+        assert!((m.quote_drift_failure_rate - 0.1).abs() < 1e-9);
+        assert!((m.quote_expiry_failure_rate - 0.2).abs() < 1e-9);
+        assert!((m.same_block_competition_loss_rate - 0.075).abs() < 1e-9);
+        assert!((m.funding_fee_share_of_gas - 0.1).abs() < 1e-9);
+        assert!((m.revert_gas_share - 50.0 / 1_050.0).abs() < 1e-9);
+    }
+
     /// M-09: exactly three new lines, without rebuilding the existing
     /// `exec:` / `recon:` / `caps:` / `blocks:` lines.
     #[test]
@@ -2235,6 +2296,7 @@ mod tests {
         };
         let ledger = policy.apply(&[]);
         let gate = LiveGateStats {
+            quote_gate_attempts: 10,
             expired: 2,
             drift: 1,
             risk_blocked: 3,
@@ -2248,6 +2310,10 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("  competition: est. 77 wei"), "{text}");
+        assert!(
+            text.contains("  metrics: drift 10.00% | expiry 20.00%"),
+            "{text}"
+        );
         assert_eq!(text.matches("  exec:").count(), 0);
         assert_eq!(text.matches("  recon:").count(), 0);
         assert_eq!(text.matches("  caps:").count(), 0);

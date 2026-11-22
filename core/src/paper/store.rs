@@ -434,6 +434,16 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<PaperSession> {
         sim_block: r.get::<_, Option<i64>>(26)?.map(|v| v as u64),
         native_usd: r.get(27)?,
         manipulation_risk: r.get::<_, Option<i64>>(28)?.unwrap_or(0) != 0,
+        quote_drift_failure_rate: r.get(29)?,
+        quote_expiry_failure_rate: r.get(30)?,
+        same_block_competition_loss_rate: r.get(31)?,
+        funding_fee_share_of_gas: r.get(32)?,
+        revert_gas_share: r.get(33)?,
+        quote_gate_attempts: r.get::<_, Option<i64>>(34)?.map(|v| v as u64),
+        quote_drift_fails: r.get::<_, Option<i64>>(35)?.map(|v| v as u64),
+        quote_expiry_fails: r.get::<_, Option<i64>>(36)?.map(|v| v as u64),
+        gas_basis_wei: r.get(37)?,
+        competition_loss_wei: r.get(38)?,
     })
 }
 
@@ -463,6 +473,7 @@ mod tests {
             max_fills_per_block: 32,
         };
         let ledger = policy.apply(&[opp]);
+        let metrics = BacktestMetrics::from_parts(4, 1, 1, 100, 10, 5, 8);
         store
             .insert_paper_session(
                 "paper_test_1",
@@ -470,17 +481,69 @@ mod tests {
                 PaperMode::Sim,
                 Some("run_1"),
                 &ledger,
+                &metrics,
             )
             .unwrap();
         let s = store.paper_session("paper_test_1").unwrap().unwrap();
         assert_eq!(s.fills, 1);
         assert_eq!(s.mode, "sim");
         assert_eq!(s.sim_mode.as_deref(), Some("assumed"));
+        assert_eq!(s.quote_gate_attempts, Some(4));
+        assert_eq!(s.quote_drift_fails, Some(1));
+        assert_eq!(s.gas_basis_wei.as_deref(), Some("100"));
+        assert!((s.quote_drift_failure_rate.unwrap_or(-1.0) - 0.25).abs() < 1e-9);
+        assert!((s.funding_fee_share_of_gas.unwrap_or(-1.0) - 0.1).abs() < 1e-9);
+        assert!((s.revert_gas_share.unwrap_or(-1.0) - 5.0 / 105.0).abs() < 1e-9);
         let fills = store.paper_fills("paper_test_1").unwrap();
         assert_eq!(fills.len(), 1);
         assert_eq!(fills[0].net_wei, 900);
         assert_eq!(fills[0].sim_mode, SimMode::Assumed);
         assert_eq!(fills[0].sim_net_wei, 900);
         assert_eq!(fills[0].tags, vec!["flash_arb", "long_tail"]);
+    }
+
+    /// WP6 acceptance: three back-to-back sessions each persist their metrics.
+    #[test]
+    fn three_sessions_persist_wp6_metrics() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let policy = LedgerPolicy {
+            starting_gas_wei: 1_000_000,
+            reserve_wei: 0,
+            max_fills_per_block: 32,
+        };
+        let ledger = policy.apply(&[]);
+        for (i, (attempts, drift, expiry, gas, fee, revert, competition)) in [
+            (4u64, 1u64, 1u64, 100u128, 10u128, 5u128, 8u128),
+            (8, 1, 2, 200, 10, 10, 20),
+            (12, 2, 2, 300, 15, 15, 30),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let metrics =
+                BacktestMetrics::from_parts(attempts, drift, expiry, gas, fee, revert, competition);
+            store
+                .insert_paper_session(
+                    &format!("wp6_session_{i}"),
+                    "avalanche",
+                    PaperMode::Live,
+                    Some(&format!("wp6_run_{i}")),
+                    &ledger,
+                    &metrics,
+                )
+                .unwrap();
+        }
+        let sessions = store.list_paper_sessions(0, 10).unwrap();
+        assert_eq!(sessions.len(), 3);
+        for s in &sessions {
+            assert!(s.quote_drift_failure_rate.is_some());
+            assert!(s.quote_expiry_failure_rate.is_some());
+            assert!(s.same_block_competition_loss_rate.is_some());
+            assert!(s.funding_fee_share_of_gas.is_some());
+            assert!(s.revert_gas_share.is_some());
+            assert!(s.quote_gate_attempts.is_some_and(|n| n > 0));
+            assert!(s.gas_basis_wei.is_some());
+            assert!(s.competition_loss_wei.is_some());
+        }
     }
 }

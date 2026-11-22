@@ -2156,6 +2156,24 @@ pre.raw {
     });
     html += "</tbody></table></div></div>";
 
+    var metrics = S.metrics || {};
+    html += '<div class="card"><h2>Backtest quality metrics</h2>';
+    html += '<div class="caption">' + esc(metrics.note || "") + " · sessions "
+      + (metrics.sessions || 0) + " · gate attempts " + (metrics.quote_gate_attempts || 0) + "</div>";
+    html += '<div class="table-wrap"><table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>';
+    [
+      ["quote_drift_failure_rate", metrics.quote_drift_failure_rate],
+      ["quote_expiry_failure_rate", metrics.quote_expiry_failure_rate],
+      ["same_block_competition_loss_rate", metrics.same_block_competition_loss_rate],
+      ["funding_fee_share_of_gas", metrics.funding_fee_share_of_gas],
+      ["revert_gas_share", metrics.revert_gas_share]
+    ].forEach(function (row) {
+      var v = row[1];
+      html += "<tr><td>" + esc(row[0]) + "</td><td>"
+        + (v == null ? "—" : (v * 100).toFixed(2) + "%") + "</td></tr>";
+    });
+    html += "</tbody></table></div></div>";
+
     html += '<div class="card"><h2>Storage counts</h2><div class="chart chart-sm" id="chart-health-storage"></div></div>';
 
     html += '<div class="card"><h2>JIT open / oracles / prices</h2><div class="caption">Open JIT rows: '

@@ -74,6 +74,22 @@ pub async fn job_report(
             "  wallet: {} → {} wei (reserve {})",
             session.starting_gas_wei, session.ending_gas_wei, session.reserve_wei
         ));
+        if let (Some(drift), Some(expiry), Some(competition), Some(funding), Some(revert)) = (
+            session.quote_drift_failure_rate,
+            session.quote_expiry_failure_rate,
+            session.same_block_competition_loss_rate,
+            session.funding_fee_share_of_gas,
+            session.revert_gas_share,
+        ) {
+            progress.log(&format!(
+                "  metrics: drift {:.2}% | expiry {:.2}% | competition {:.2}% | funding/gas {:.2}% | revert/gas {:.2}%",
+                drift * 100.0,
+                expiry * 100.0,
+                competition * 100.0,
+                funding * 100.0,
+                revert * 100.0,
+            ));
+        }
     }
 
     Ok(ReportOutcome {

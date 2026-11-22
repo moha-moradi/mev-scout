@@ -210,6 +210,10 @@ When the session finishes (one-shot, or `--duration` / `--max-blocks` reached in
 ```
   ledger: 3 fill(s), 0 skipped | net 6700000000000000000 wei ($2.8140)
   wallet: 100000000000000000000 ($42.0000) → 106700000000000000000 ($44.8140) | reserve 0 | max drawdown 0 wei
+  funding: aave_v3 | fee 0 wei
+  quotes: 0 expired / 1 drift | 0 risk-blocked (not in ledger)
+  competition: est. 0 wei same-block bid premium
+  metrics: drift 25.00% | expiry 0.00% | competition 0.00% | funding/gas 0.00% | revert/gas 0.00%
   by strategy (fills accepted):
     jit       1 fill   gas  0.800000  net      +4.200000 wei  $   1.7640
     arb       2 fills  gas  1.500000  net      +2.500000 wei  $   1.0500
@@ -633,6 +637,23 @@ per-block fill selection (pool-conflict aware). Live prints
 `by strategy`, optional `caps:` / `blocks:`). Applied by `live` after every
 pass and persisted once at session end. No mempool racing and **no mainnet
 broadcast**.
+
+WP6 adds a `metrics:` line and five additive `paper_sessions` columns. Rates
+are stored as fractions (`0.12` = 12%) and rendered as percentages:
+
+| Metric | Numerator / denominator |
+|---|---|
+| `quote_drift_failure_rate` | `quote_drift` gate rejects / all quote-gate candidates |
+| `quote_expiry_failure_rate` | `quote_expired` gate rejects / all quote-gate candidates |
+| `same_block_competition_loss_rate` | estimated PGA bid premium / accepted-fill gas |
+| `funding_fee_share_of_gas` | already-netted flash-loan fee / accepted-fill gas |
+| `revert_gas_share` | failed-attempt gas / (accepted-fill gas + failed-attempt gas) |
+
+Raw counts and wei totals are stored with the rates so the dashboard can
+recompute one aggregate across several sessions. The HTML health grid and CSV
+`backtest_metrics` section show all five; the CSV keeps its nine-column header
+by putting the rate in the `label` field. Competitive loss and funding fees are
+informational only — neither is subtracted again from ledger P&L.
 
 Fill modes (`--sim` / `[paper].sim`):
 

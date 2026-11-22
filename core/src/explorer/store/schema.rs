@@ -1309,6 +1309,33 @@ mod tests {
 
         let store = ExplorerStore::open(&path).unwrap();
         assert_eq!(store.user_version().unwrap(), SCHEMA_HEAD);
+        let mut cols_stmt = store
+            .connection()
+            .prepare("PRAGMA table_info(paper_sessions)")
+            .unwrap();
+        let cols: Vec<String> = cols_stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        for col in [
+            "quote_drift_failure_rate",
+            "quote_expiry_failure_rate",
+            "same_block_competition_loss_rate",
+            "funding_fee_share_of_gas",
+            "revert_gas_share",
+            "quote_gate_attempts",
+            "quote_drift_fails",
+            "quote_expiry_fails",
+            "gas_basis_wei",
+            "competition_loss_wei",
+        ] {
+            assert!(
+                cols.iter().any(|c| c == col),
+                "missing paper_sessions.{col}"
+            );
+        }
+        drop(cols_stmt);
         let legacy = store.opportunities_by_run("legacy").unwrap();
         assert_eq!(legacy.len(), 1);
         assert!(legacy[0].funding_source.is_none());

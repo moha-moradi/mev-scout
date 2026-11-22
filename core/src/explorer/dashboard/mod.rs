@@ -19,6 +19,7 @@ use serde::Serialize;
 use crate::explorer::store::{ExplorerStore, SCHEMA_HEAD};
 use crate::explorer::types::MevKind;
 use crate::explorer::RejectReason;
+use crate::paper::types::BacktestMetrics;
 
 use caps::StoreCaps;
 pub use evidence::OperationEconomics;
@@ -301,6 +302,45 @@ pub struct RiskRow {
     pub revert_gas_wei: Option<String>,
 }
 
+/// WP6 (C-08) backtest quality metrics aggregated across `paper_sessions`.
+///
+/// Rates are recomputed from summed numerators/denominators rather than
+/// averaging per-session rates, so three short runs do not outweigh one long
+/// run. Raw totals are kept for auditability.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct BacktestMetricsPanel {
+    pub sessions: i64,
+    pub quote_gate_attempts: u64,
+    pub quote_drift_fails: u64,
+    pub quote_expiry_fails: u64,
+    pub gas_basis_wei: Option<String>,
+    pub competition_loss_wei: Option<String>,
+    pub funding_fee_wei: Option<String>,
+    pub revert_gas_wei: Option<String>,
+    pub quote_drift_failure_rate: f64,
+    pub quote_expiry_failure_rate: f64,
+    pub same_block_competition_loss_rate: f64,
+    pub funding_fee_share_of_gas: f64,
+    pub revert_gas_share: f64,
+    pub note: String,
+}
+
+impl BacktestMetricsPanel {
+    /// Stable `(name, fraction)` pairs for CSV and HTML renderers.
+    pub fn rows(&self) -> [(&'static str, f64); 5] {
+        [
+            ("quote_drift_failure_rate", self.quote_drift_failure_rate),
+            ("quote_expiry_failure_rate", self.quote_expiry_failure_rate),
+            (
+                "same_block_competition_loss_rate",
+                self.same_block_competition_loss_rate,
+            ),
+            ("funding_fee_share_of_gas", self.funding_fee_share_of_gas),
+            ("revert_gas_share", self.revert_gas_share),
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct GeneratorMeta {
     pub version: String,
@@ -321,6 +361,7 @@ pub struct DashboardSnapshot {
     pub panels: ReducedPanels,
     pub rejects: RejectPanel,
     pub risk: RiskPanel,
+    pub metrics: BacktestMetricsPanel,
     pub jit_open: Vec<JitOpenRow>,
     pub oracle_feeds: Vec<OracleFeedRow>,
     pub prices: Vec<PriceRow>,
@@ -455,6 +496,11 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
         opts.window.since_ts,
         opts.window.until_ts,
     )?;
+    let metrics = load_backtest_metrics_panel(
+        &tx,
+        opts.window.since_ts as i64,
+        opts.window.until_ts as i64,
+    )?;
     let jit_open = load_jit_open(&tx)?;
     let oracle_feeds = load_oracle_feeds(&tx)?;
     let prices = load_prices(&tx)?;
@@ -520,6 +566,7 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
         panels,
         rejects,
         risk,
+        metrics,
         jit_open,
         oracle_feeds,
         prices,
@@ -953,6 +1000,91 @@ fn load_risk_panel(
             "Counts from rejected_candidates; revert gas is burned on failed attempts, not realized P&L.".into()
         },
     })
+}
+
+/// WP6 metrics from `paper_sessions`. A legacy DB without V19 columns simply
+/// has no attempts recorded and yields the default panel.
+fn load_backtest_metrics_panel(
+    conn: &rusqlite::Connection,
+    since: i64,
+    until: i64,
+) -> anyhow::Result<BacktestMetricsPanel> {
+    use rusqlite::types::Value;
+
+    let mut panel = BacktestMetricsPanel {
+        note: "No WP6 metrics in window — live sessions before V19 have no stored rates.".into(),
+        ..Default::default()
+    };
+    let sql = "SELECT quote_drift_failure_rate, quote_expiry_failure_rate,
+                      same_block_competition_loss_rate, funding_fee_share_of_gas,
+                      revert_gas_share, quote_gate_attempts, quote_drift_fails,
+                      quote_expiry_fails, gas_basis_wei, competition_loss_wei,
+                      funding_fee_wei, revert_gas_wei
+               FROM paper_sessions
+               WHERE quote_gate_attempts IS NOT NULL
+                 AND created_at >= ?1 AND created_at <= ?2";
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return Ok(panel);
+    };
+    let wei = |value: Value| -> u128 {
+        match value {
+            Value::Text(s) => s.parse().unwrap_or(0),
+            Value::Integer(i) => i.max(0) as u128,
+            _ => 0,
+        }
+    };
+    let rows = stmt.query_map(rusqlite::params![since, until], |r| {
+        Ok((
+            r.get::<_, Option<i64>>(5)?.map(|v| v.max(0) as u64),
+            r.get::<_, Option<i64>>(6)?.map(|v| v.max(0) as u64),
+            r.get::<_, Option<i64>>(7)?.map(|v| v.max(0) as u64),
+            r.get::<_, Value>(8)?,
+            r.get::<_, Value>(9)?,
+            r.get::<_, Value>(10)?,
+            r.get::<_, Value>(11)?,
+        ))
+    })?;
+
+    let mut attempts = 0u64;
+    let mut drift = 0u64;
+    let mut expiry = 0u64;
+    let mut gas = 0u128;
+    let mut competition = 0u128;
+    let mut funding = 0u128;
+    let mut revert = 0u128;
+    for row in rows {
+        let (a, d, e, g, c, f, rv) = row?;
+        attempts = attempts.saturating_add(a.unwrap_or(0));
+        drift = drift.saturating_add(d.unwrap_or(0));
+        expiry = expiry.saturating_add(e.unwrap_or(0));
+        gas = gas.saturating_add(wei(g));
+        competition = competition.saturating_add(wei(c));
+        funding = funding.saturating_add(wei(f));
+        revert = revert.saturating_add(wei(rv));
+        panel.sessions += 1;
+    }
+    if panel.sessions == 0 {
+        return Ok(panel);
+    }
+
+    let m = BacktestMetrics::from_parts(attempts, drift, expiry, gas, funding, revert, competition);
+    panel.quote_gate_attempts = m.quote_gate_attempts;
+    panel.quote_drift_fails = m.quote_drift_fails;
+    panel.quote_expiry_fails = m.quote_expiry_fails;
+    panel.gas_basis_wei = (gas > 0).then(|| gas.to_string());
+    panel.competition_loss_wei = (competition > 0).then(|| competition.to_string());
+    panel.funding_fee_wei = (funding > 0).then(|| funding.to_string());
+    panel.revert_gas_wei = (revert > 0).then(|| revert.to_string());
+    panel.quote_drift_failure_rate = m.quote_drift_failure_rate;
+    panel.quote_expiry_failure_rate = m.quote_expiry_failure_rate;
+    panel.same_block_competition_loss_rate = m.same_block_competition_loss_rate;
+    panel.funding_fee_share_of_gas = m.funding_fee_share_of_gas;
+    panel.revert_gas_share = m.revert_gas_share;
+    panel.note = format!(
+        "Aggregated from {} WP6 paper_sessions row(s); rates are recomputed from raw counts/wei.",
+        panel.sessions
+    );
+    Ok(panel)
 }
 
 fn load_jit_open(conn: &rusqlite::Connection) -> anyhow::Result<Vec<JitOpenRow>> {

@@ -228,6 +228,24 @@ pub fn render_csv(snap: &DashboardSnapshot) -> String {
         ));
     }
 
+    // WP6: rate value stays in the label so the nine-column report contract is
+    // unchanged. `ops` carries the number of contributing sessions.
+    for (name, value) in snap.metrics.rows() {
+        lines.push(csv_row(
+            w,
+            "backtest_metrics",
+            &format!("{name} ({value:.6})"),
+            &[
+                snap.metrics.sessions.to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
+        ));
+    }
+
     lines.join("\n") + "\n"
 }
 
@@ -420,6 +438,67 @@ mod tests {
         let csv = render_csv(&snap);
         assert!(csv.contains(",quote_risk,repay_failed (revert_gas_wei=21000),"));
         assert!(csv.contains(",quote_risk,revert_gas_total (revert_gas_wei=21000),1,"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// WP6 acceptance: three sessions populate paper_sessions and all five
+    /// metrics surface in the HTML snapshot and the fixed-width CSV.
+    #[test]
+    fn csv_includes_wp6_backtest_metrics() {
+        use crate::paper::ledger::LedgerPolicy;
+        use crate::paper::types::{BacktestMetrics, PaperMode};
+
+        let dir = std::env::temp_dir().join(format!("mev_dash_wp6_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("explorer-avalanche.sqlite");
+        {
+            let store = ExplorerStore::open(&path).expect("create");
+            store.set_sync_state(43114, 1, 1).expect("sync");
+            let ledger = LedgerPolicy {
+                starting_gas_wei: 1_000_000,
+                reserve_wei: 0,
+                max_fills_per_block: 32,
+            }
+            .apply(&[]);
+            for i in 0..3 {
+                let metrics =
+                    BacktestMetrics::from_parts(10 + i, 1, 2, 1_000 + i as u128 * 100, 50, 25, 75);
+                store
+                    .insert_paper_session(
+                        &format!("wp6_metrics_{i}"),
+                        "avalanche",
+                        PaperMode::Live,
+                        Some(&format!("wp6_metrics_run_{i}")),
+                        &ledger,
+                        &metrics,
+                    )
+                    .expect("insert session");
+            }
+        }
+        let snap = build(&BuildOptions {
+            db_path: path,
+            window: WindowSpec::all(),
+            ..BuildOptions::default()
+        })
+        .expect("build");
+        assert_eq!(snap.metrics.sessions, 3);
+        assert_eq!(snap.metrics.quote_gate_attempts, 33);
+        assert!((snap.metrics.quote_drift_failure_rate - 3.0 / 33.0).abs() < 1e-9);
+        assert!((snap.metrics.quote_expiry_failure_rate - 6.0 / 33.0).abs() < 1e-9);
+        let csv = render_csv(&snap);
+        for name in [
+            "quote_drift_failure_rate",
+            "quote_expiry_failure_rate",
+            "same_block_competition_loss_rate",
+            "funding_fee_share_of_gas",
+            "revert_gas_share",
+        ] {
+            assert!(
+                csv.contains(&format!(",backtest_metrics,{name} (")),
+                "missing {name}: {csv}"
+            );
+        }
+        assert!(csv.lines().all(|l| l.split(',').count() == 9));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
