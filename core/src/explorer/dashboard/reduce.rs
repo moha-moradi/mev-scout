@@ -135,6 +135,32 @@ pub struct RejectRow {
     pub count: i64,
 }
 
+/// WP5: realized funding / router provenance split across the full op window.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct FundingPanel {
+    pub sources: Vec<FundingSourceRow>,
+    pub routers: Vec<FundingRouterRow>,
+    pub arb_ops: i64,
+    pub provenance_covered: i64,
+    pub note: String,
+}
+
+/// One funding provider (Vault/Aave/…) with its realized operations.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct FundingSourceRow {
+    pub source: String,
+    pub ops: i64,
+    pub gas_usd: f64,
+    pub net_usd: f64,
+}
+
+/// One router generation seen in realized aggregator receipt logs.
+#[derive(Debug, Clone, Serialize)]
+pub struct FundingRouterRow {
+    pub router_version: String,
+    pub ops: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct EventRow {
     pub id: i64,
@@ -263,6 +289,7 @@ pub struct ReducedPanels {
     pub tokens: Vec<TokenRow>,
     pub tag_facets: Vec<FacetRow>,
     pub reason_facets: Vec<FacetRow>,
+    pub funding: FundingPanel,
     pub untagged_ops: i64,
     pub strategy_economics: Vec<StrategyEconomics>,
     pub events: Vec<EventRow>,
@@ -320,6 +347,7 @@ pub fn reduce(
         .map(|o| ParsedDetails::from_details(o.details_json.as_deref()))
         .collect();
     let (tag_facets, reason_facets, untagged_ops) = reduce_facets(ops, &details, catalogue_tags);
+    let funding = reduce_funding_panel(ops, &details);
     let strategy_economics = reduce_strategy_economics(ops);
     let strategy_series = reduce_strategy_series(ops, window, bucket_secs);
     let scatter_cap = max_ops.max(2_000);
@@ -356,6 +384,7 @@ pub fn reduce(
         tokens,
         tag_facets,
         reason_facets,
+        funding,
         untagged_ops,
         strategy_economics,
         events,
@@ -668,6 +697,10 @@ struct ParsedDetails {
     tokens: HashSet<String>,
     /// `details.pnl_basis`, when present.
     pnl_basis: Option<String>,
+    /// WP5: canonical provider written by the realized classifier.
+    funding_source: Option<String>,
+    /// WP5: aggregator router generation from the receipt log topic.
+    router_version: Option<String>,
 }
 
 impl ParsedDetails {
@@ -677,6 +710,8 @@ impl ParsedDetails {
             reasons: Vec::new(),
             tokens: HashSet::new(),
             pnl_basis: None,
+            funding_source: None,
+            router_version: None,
         }
     }
 
@@ -717,12 +752,41 @@ impl ParsedDetails {
                 .get("pnl_basis")
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
+            funding_source: v
+                .get("funding_source")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            router_version: v
+                .get("router_version")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
         }
     }
 
     /// Replaces the old `details_has_token` (substring fallback removed).
     fn has_token(&self, needle: &str) -> bool {
         self.tokens.contains(needle)
+    }
+
+    /// Canonical funding providers for one op: prefer the explicit WP5 value,
+    /// fall back to the persisted `funding:*` tag for pre-WP5 rows.
+    fn funding_sources(&self) -> Vec<&'static str> {
+        use crate::types::tags::canonical_funding_source;
+        if let Some(source) = self.funding_source.as_deref() {
+            return vec![canonical_funding_source(source)];
+        }
+        let mut out: Vec<&'static str> = Vec::new();
+        for tag in &self.tags {
+            if let Some(raw) = tag.strip_prefix("funding:") {
+                let canonical = canonical_funding_source(raw);
+                if !out.contains(&canonical) {
+                    out.push(canonical);
+                }
+            }
+        }
+        out
     }
 }
 
@@ -1235,6 +1299,69 @@ fn event_row(o: &OpRecord, p: &ParsedDetails) -> EventRow {
     }
 }
 
+/// Full-window realized funding / router split (WP5 / M-10).
+///
+/// Built from `mev_ops.details_json`, never from the capped `events`/`evidence`
+/// panels, so the Vault-vs-Aave split stays correct under truncation.
+fn reduce_funding_panel(ops: &[OpRecord], details: &[ParsedDetails]) -> FundingPanel {
+    let mut sources: BTreeMap<String, FundingSourceRow> = BTreeMap::new();
+    let mut routers: BTreeMap<String, i64> = BTreeMap::new();
+    let mut arb_ops = 0i64;
+    let mut provenance_covered = 0i64;
+    let mut seen_any = false;
+    for (op, d) in ops.iter().zip(details) {
+        if op.kind == MevKind::ArbAtomic.as_str() {
+            arb_ops += 1;
+        }
+        let providers = d.funding_sources();
+        if providers.is_empty() {
+            if d.router_version.is_none() {
+                continue;
+            }
+        } else {
+            seen_any = true;
+            provenance_covered += 1;
+            for provider in providers {
+                let row = sources.entry(provider.to_string()).or_default();
+                row.source = provider.to_string();
+                row.ops += 1;
+                row.gas_usd += op.gas_cost_usd.unwrap_or(0.0);
+                row.net_usd += op.net_profit_usd.unwrap_or(0.0);
+            }
+        }
+        if let Some(version) = &d.router_version {
+            seen_any = true;
+            *routers.entry(version.clone()).or_default() += 1;
+        }
+    }
+    let mut sources: Vec<FundingSourceRow> = sources.into_values().collect();
+    sources.sort_by(|a, b| b.ops.cmp(&a.ops).then(a.source.cmp(&b.source)));
+    let mut routers: Vec<FundingRouterRow> = routers
+        .into_iter()
+        .map(|(router_version, ops)| FundingRouterRow {
+            router_version,
+            ops,
+        })
+        .collect();
+    routers.sort_by(|a, b| {
+        b.ops
+            .cmp(&a.ops)
+            .then(a.router_version.cmp(&b.router_version))
+    });
+    FundingPanel {
+        sources,
+        routers,
+        arb_ops,
+        provenance_covered,
+        note: if seen_any {
+            "Realized funding from details.funding_source (fallback: funding:* tags); router from aggregator log topics.".into()
+        } else {
+            "No realized funding/router provenance in window (pre-WP5 rows or recording off)."
+                .into()
+        },
+    }
+}
+
 /// All reject reasons with explicit zeros (P12).
 pub fn reject_ladder(counts: &HashMap<String, i64>) -> Vec<RejectRow> {
     const ALL: &[RejectReason] = &[
@@ -1564,6 +1691,78 @@ mod tests {
             rows,
             "[[1,0,0,0,0,0,null,101,0,1.0,1.0,null,1.0,null,[0],[[0,0]],1],[2,1,1,0,1,1,0,102,1,null,null,null,null,null,[],[],2]]",
         );
+    }
+
+    #[test]
+    fn funding_panel_splits_vault_and_aave_and_falls_back_to_tags() {
+        let a = op(
+            1,
+            1,
+            "arb_atomic",
+            None,
+            "exact",
+            Some(10.0),
+            Some(20.0),
+            Some(2.0),
+            "e",
+            None,
+            Some(r#"{"funding_source":"aave_v3","tags":[]}"#),
+            None,
+        );
+        // Pre-WP5 row: only the persisted namespaced funding tag is available.
+        let b = op(
+            2,
+            2,
+            "arb_atomic",
+            None,
+            "exact",
+            Some(5.0),
+            Some(8.0),
+            Some(1.0),
+            "e",
+            None,
+            Some(r#"{"tags":["funding:balancer_v2_vault"]}"#),
+            None,
+        );
+        let c = op(
+            3,
+            3,
+            "arb_atomic",
+            None,
+            "exact",
+            None,
+            None,
+            None,
+            "e",
+            None,
+            None,
+            None,
+        );
+        let ops = vec![a, b, c];
+        let panels = reduce(
+            &ops,
+            &caps(),
+            &WindowSpec::all(),
+            &[],
+            &HashMap::new(),
+            &HashSet::new(),
+            100,
+            100,
+        )
+        .expect("reduce");
+        assert_eq!(panels.funding.arb_ops, 3);
+        assert_eq!(panels.funding.provenance_covered, 2);
+        let ops_for = |source: &str| {
+            panels
+                .funding
+                .sources
+                .iter()
+                .find(|r| r.source == source)
+                .map(|r| r.ops)
+                .unwrap_or(0)
+        };
+        assert_eq!(ops_for("aave_v3"), 1);
+        assert_eq!(ops_for("balancer_v2_vault"), 1);
     }
 
     fn caps() -> StoreCaps {

@@ -165,6 +165,69 @@ pub fn render_csv(snap: &DashboardSnapshot) -> String {
         ));
     }
 
+    // WP5: realized funding split by provider and router generation.
+    for r in &snap.panels.funding.sources {
+        lines.push(csv_row(
+            w,
+            "funding_source",
+            &r.source,
+            &[
+                r.ops.to_string(),
+                String::new(),
+                String::new(),
+                usd(r.gas_usd),
+                String::new(),
+                usd(r.net_usd),
+            ],
+        ));
+    }
+    for r in &snap.panels.funding.routers {
+        lines.push(csv_row(
+            w,
+            "router_version",
+            &r.router_version,
+            &[r.ops.to_string()],
+        ));
+    }
+
+    // WP5: quote expiry/drift/funding/risk gates and revert-gas evidence.
+    // Revert gas stays in the label so the nine-column report contract is
+    // unchanged; gas burned by a failed attempt is not realized `gas_usd`.
+    for r in &snap.risk.rows {
+        let label = match &r.revert_gas_wei {
+            Some(gas) => format!("{} (revert_gas_wei={gas})", r.reason),
+            None => r.reason.clone(),
+        };
+        lines.push(csv_row(
+            w,
+            "quote_risk",
+            &label,
+            &[
+                r.count.to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
+        ));
+    }
+    if let Some(gas) = &snap.risk.revert_gas_total_wei {
+        lines.push(csv_row(
+            w,
+            "quote_risk",
+            &format!("revert_gas_total (revert_gas_wei={gas})"),
+            &[
+                snap.risk.revert_attempts.to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
+        ));
+    }
+
     lines.join("\n") + "\n"
 }
 
@@ -295,7 +358,68 @@ mod tests {
         let csv = render_csv(&snap);
         let first = csv.lines().next().expect("header");
         assert_eq!(first, HEADER);
+        assert_eq!(
+            first,
+            "window,section,label,ops,volume_usd,gross_usd,gas_usd,flash_fee_usd,net_usd"
+        );
+        assert!(csv.lines().all(|l| l.split(',').count() == 9));
         assert!(csv.contains(",overview,total,"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// WP5 risk panel is sourced from `rejected_candidates`, including the
+    /// revert-gas evidence written for failed arb attempts.
+    #[test]
+    fn csv_includes_wp5_risk_panel_and_revert_gas() {
+        use crate::explorer::RejectedCandidate;
+
+        let dir = std::env::temp_dir().join(format!("mev_dash_wp5_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("explorer-avalanche.sqlite");
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        {
+            let store = ExplorerStore::open(&path).expect("create");
+            store.set_sync_state(43114, 1, 1).expect("sync");
+            let mut reject = RejectedCandidate {
+                block_number: 1,
+                tx_index: Some(0),
+                strategy: "explorer_classify".into(),
+                reject_reason: "repay_failed".into(),
+                created_at,
+                revert_gas_cost_wei: Some(21_000),
+                ..Default::default()
+            };
+            store
+                .insert_rejected_candidate("run", "test", &reject)
+                .expect("insert reverted attempt");
+            reject.tx_index = Some(1);
+            reject.reject_reason = "quote_expired".into();
+            reject.revert_gas_cost_wei = None;
+            store
+                .insert_rejected_candidate("run", "test", &reject)
+                .expect("insert expiry reject");
+        }
+        let snap = build(&BuildOptions {
+            db_path: path,
+            window: WindowSpec::all(),
+            ..BuildOptions::default()
+        })
+        .expect("build");
+        let failed = snap
+            .risk
+            .rows
+            .iter()
+            .find(|r| r.reason == "repay_failed")
+            .expect("repay_failed row");
+        assert_eq!(failed.count, 1);
+        assert_eq!(failed.revert_gas_wei.as_deref(), Some("21000"));
+        assert_eq!(snap.risk.revert_gas_total_wei.as_deref(), Some("21000"));
+        let csv = render_csv(&snap);
+        assert!(csv.contains(",quote_risk,repay_failed (revert_gas_wei=21000),"));
+        assert!(csv.contains(",quote_risk,revert_gas_total (revert_gas_wei=21000),1,"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

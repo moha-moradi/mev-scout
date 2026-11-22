@@ -1802,7 +1802,16 @@ pre.raw {
       factRows.push(["Return on recorded cost", percent(ev.economics.roi_pct) + " (historical, not a forecast)"]);
     }
     if (ev && ev.details && ev.details.funding_mechanism) {
-      factRows.push(["Funding", ev.details.funding_mechanism]);
+      factRows.push(["Funding mechanism", ev.details.funding_mechanism]);
+    }
+    if (ev && ev.details && ev.details.funding_source) {
+      factRows.push(["Funding provider", ev.details.funding_source]);
+    }
+    if (ev && ev.details && ev.details.router_version) {
+      factRows.push(["Router version", ev.details.router_version]);
+    }
+    if (ev && ev.details && ev.details.underlying_pools_hash) {
+      factRows.push(["Underlying pools hash", short(ev.details.underlying_pools_hash)]);
     }
     if (ev && ev.details && ev.details.transfer_tax) {
       var tt = ev.details.transfer_tax;
@@ -2113,6 +2122,37 @@ pre.raw {
     html += '<div class="table-wrap"><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>';
     (rejects.ladder || []).filter(function (r) { return r.count > 0; }).forEach(function (r) {
       html += "<tr><td>" + esc(r.reason) + "</td><td>" + r.count + "</td></tr>";
+    });
+    html += "</tbody></table></div></div>";
+
+    var funding = P.funding || {};
+    html += '<div class="card"><h2>Realized funding &amp; router provenance</h2>';
+    html += '<div class="caption">' + esc(funding.note || "") + " · arb ops "
+      + (funding.arb_ops || 0) + " · funding covered " + (funding.provenance_covered || 0) + "</div>";
+    html += '<div class="table-wrap"><table><thead><tr><th>Provider</th><th>Ops</th><th>Gas ≈USD</th><th>Net ≈USD</th></tr></thead><tbody>';
+    (funding.sources || []).forEach(function (r) {
+      html += "<tr><td>" + esc(r.source) + "</td><td>" + r.ops + "</td><td>"
+        + (r.gas_usd == null ? "—" : "≈" + esc(r.gas_usd.toFixed(2))) + "</td><td>"
+        + (r.net_usd == null ? "—" : "≈" + esc(r.net_usd.toFixed(2))) + "</td></tr>";
+    });
+    if (!(funding.sources || []).length) html += '<tr><td colspan="4">—</td></tr>';
+    html += "</tbody></table></div>";
+    html += '<div class="table-wrap" style="margin-top:8px"><table><thead><tr><th>Router version</th><th>Ops</th></tr></thead><tbody>';
+    (funding.routers || []).forEach(function (r) {
+      html += "<tr><td>" + esc(r.router_version) + "</td><td>" + r.ops + "</td></tr>";
+    });
+    if (!(funding.routers || []).length) html += '<tr><td colspan="2">—</td></tr>';
+    html += "</tbody></table></div></div>";
+
+    var risk = S.risk || {};
+    html += '<div class="card"><h2>Quote risk / expiry / drift</h2>';
+    html += '<div class="caption">' + esc(risk.note || "") + " · failed attempts "
+      + (risk.revert_attempts || 0) + " · revert gas "
+      + esc(risk.revert_gas_total_wei == null ? "—" : risk.revert_gas_total_wei + " wei") + "</div>";
+    html += '<div class="table-wrap"><table><thead><tr><th>Gate</th><th>Count</th><th>Revert gas (wei)</th></tr></thead><tbody>';
+    (risk.rows || []).forEach(function (r) {
+      html += "<tr><td>" + esc(r.reason) + "</td><td>" + r.count + "</td><td>"
+        + esc(r.revert_gas_wei == null ? "—" : r.revert_gas_wei) + "</td></tr>";
     });
     html += "</tbody></table></div></div>";
 

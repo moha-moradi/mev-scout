@@ -3,7 +3,7 @@
 //! These types are the serialization boundary between the core backtest engine,
 //! the CLI output layer, and the API serialization layer.
 use crate::types::strategy::Strategy;
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{keccak256, Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
 /// How an opportunity was detected — stable string at the DB/JSON boundary.
@@ -270,6 +270,24 @@ pub struct CanonicalIdParts {
     pub funding_source: Option<String>,
 }
 
+/// Hash of the underlying pool set behind a route (M-06 / WP5).
+///
+/// Addresses are sorted and deduplicated before hashing so a route walked in
+/// the opposite direction (or a duplicate log) produces the same value on the
+/// simulated and realized sides. Aggregator/router edges must be excluded by
+/// the caller: a wrapper's address changes with the routing layer, not with
+/// the underlying liquidity the opportunity actually used.
+pub fn underlying_pools_hash(pools: &[Address]) -> B256 {
+    let mut sorted: Vec<Address> = pools.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    let mut bytes = Vec::with_capacity(sorted.len() * 20);
+    for pool in sorted {
+        bytes.extend_from_slice(pool.as_slice());
+    }
+    keccak256(bytes)
+}
+
 /// Deterministic canonical suffix for route/provenance refinements (M-06).
 ///
 /// Segments are appended in a fixed order and only when present, so every
@@ -522,5 +540,20 @@ mod tests {
         all.router_version = Some("v1".into());
         all.funding_source = Some("aave_v3".into());
         assert!(compute_canonical_id(all).ends_with(&format!("|h:{h1:#x}|r:v1|f:aave_v3")));
+    }
+
+    #[test]
+    fn underlying_pool_hash_is_order_and_duplicate_invariant() {
+        let a = Address::repeat_byte(0x11);
+        let b = Address::repeat_byte(0x22);
+        assert_eq!(
+            underlying_pools_hash(&[a, b]),
+            underlying_pools_hash(&[b, a])
+        );
+        assert_eq!(
+            underlying_pools_hash(&[a, b]),
+            underlying_pools_hash(&[b, a, b])
+        );
+        assert_ne!(underlying_pools_hash(&[a]), underlying_pools_hash(&[b]));
     }
 }

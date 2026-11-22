@@ -79,6 +79,13 @@ fn annotate_backrun(
         "mode": "realized",
         "tier": "inferred",
         "pool": format!("{pool:#x}"),
+        // Same key the WP4 pending-backrun detector writes to
+        // `MevOpportunity.canonical_id`, so realized and pending candidates can
+        // be joined without changing either side's P&L semantics.
+        "pending_match_key": crate::types::opportunity::compute_backrun_canonical_id(
+            pool,
+            *atx as usize,
+        ),
         "source_tx_index": atx,
         "source_sender": format!("{afrom:#x}"),
         "move": {

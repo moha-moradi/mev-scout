@@ -110,6 +110,23 @@ fn decode_aggregator_inner(log: &LogData) -> Option<SwapFact> {
     None
 }
 
+/// Stable router/version label for a realized aggregator log (WP5 / M-10).
+///
+/// The label comes from the *event topic*, not from a hardcoded address
+/// registry: two router generations expose different `Swap*` signatures, so
+/// this survives new deployments on every chain. It is written to
+/// `MevEvent.details.router_version` and participates in the canonical ID.
+pub(crate) fn aggregator_router_version(topic0: &B256) -> Option<&'static str> {
+    match *topic0 {
+        ONEINCH_SWAPPED_TOPIC => Some("oneinch_v4_v5"),
+        PARASWAP_SWAPPED_TOPIC => Some("paraswap_v3_v4"),
+        PARASWAP_SWAPPED_V3_TOPIC => Some("paraswap_v5_v6"),
+        ZRX_FILL_TOPIC => Some("zrx_fill"),
+        LEGACY_ROUTER_SWAP_TOPIC => Some("legacy_router"),
+        _ => None,
+    }
+}
+
 /// Drop aggregator edges that duplicate registry/DEX swap edges in the same tx
 /// (dedup). Aggregator events often coexist with the underlying pool
 /// `Swap` logs; keeping both would double-count edges in the cycle walk and
@@ -248,3 +265,25 @@ pub const ZRX_FILL_TOPIC: B256 =
 // (retired 2026-07-30; retained only for historical decode).
 pub const LEGACY_ROUTER_SWAP_TOPIC: B256 =
     alloy::primitives::b256!("823eaf01002d7353fbcadb2ea3305cc46fa35d799cb0914846d185ac06f8ad05");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn router_version_is_stable_per_topic_and_unknown_is_none() {
+        assert_eq!(
+            aggregator_router_version(&ONEINCH_SWAPPED_TOPIC),
+            Some("oneinch_v4_v5")
+        );
+        assert_eq!(
+            aggregator_router_version(&PARASWAP_SWAPPED_V3_TOPIC),
+            Some("paraswap_v5_v6")
+        );
+        assert_eq!(
+            aggregator_router_version(&LEGACY_ROUTER_SWAP_TOPIC),
+            Some("legacy_router")
+        );
+        assert_eq!(aggregator_router_version(&B256::ZERO), None);
+    }
+}

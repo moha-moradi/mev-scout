@@ -14,6 +14,8 @@ use crate::explorer::strategy_tags::{self, ArbTagOpts};
 use crate::explorer::types::{
     Amm, Confidence, MevEvent, MevKind, PnlBasis, SwapFact, TransferFact,
 };
+use crate::types::opportunity::underlying_pools_hash;
+use crate::types::tags::canonical_funding_source;
 
 use super::legs::{resolved_cycle_edges, searcher_candidates};
 use super::{append_tag, has_unresolved_tokens, BlockInput, TxInput};
@@ -396,6 +398,29 @@ pub(super) fn classify_atomic_arbs(
             }).collect::<Vec<_>>(),
             "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
         });
+        // WP5 / M-10: persist the realized funding provider, router generation
+        // and underlying pool set. `explorer_canonical_id` already reads these
+        // keys; leaving them absent keeps every pre-WP5 ID byte-identical.
+        if let Some(fl) = tx.flashloans.first() {
+            details["funding_source"] = serde_json::json!(canonical_funding_source(fl.protocol));
+        }
+        let underlying_pools: Vec<Address> = tx
+            .swaps
+            .iter()
+            .filter(|s| s.amm != Amm::Aggregator)
+            .map(|s| s.pool)
+            .collect();
+        if !underlying_pools.is_empty() {
+            details["underlying_pools_hash"] =
+                serde_json::json!(format!("{:#x}", underlying_pools_hash(&underlying_pools)));
+        }
+        if let Some(version) = tx
+            .route_provenance
+            .as_ref()
+            .and_then(|p| p.router_version.as_deref())
+        {
+            details["router_version"] = serde_json::json!(version);
+        }
         if tags.contains(&"savax_rate_arb") {
             details["tag_modes"] = serde_json::json!({ "savax_rate_arb": "exact" });
         }
@@ -972,10 +997,13 @@ fn initiator_blocks_cycle(
 #[cfg(test)]
 mod split_tests {
     use super::*;
+    use crate::explorer::canonical::explorer_canonical_id;
+    use crate::explorer::classify::RouteProvenance;
     use crate::explorer::test_fixtures::{
         block, swap, swap_agg, transfer, tx, ATK, MARKET, POOL_A, POOL_B, TOKA, USDC, WNATIVE,
     };
-    use crate::explorer::types::KeeperFact;
+    use crate::explorer::types::{FlashLoanFact, KeeperFact};
+    use crate::types::opportunity::underlying_pools_hash;
 
     fn tag_opts() -> ArbTagOpts<'static> {
         ArbTagOpts {
@@ -1005,6 +1033,42 @@ mod split_tests {
                 transfer(3, USDC, POOL_B, ATK, 110),
             ],
         )
+    }
+
+    /// WP5: the realized classifier persists the same canonical provenance the
+    /// simulated side and `explorer_canonical_id` consume.
+    #[test]
+    fn realized_arb_carries_canonical_provenance_in_details() {
+        let mut t = arb_tx(0);
+        t.flashloans.push(FlashLoanFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "aave_v3",
+            initiator: ATK,
+            token: Address::ZERO,
+            amount: U256::ZERO,
+            fee: None,
+            recipient: Address::ZERO,
+            provider: Address::ZERO,
+        });
+        // Router leg must not enter the underlying pool hash.
+        t.swaps.push(swap_agg(MARKET, USDC, TOKA, 10, 10));
+        t.route_provenance = Some(RouteProvenance {
+            router_version: Some("paraswap_v5_v6".into()),
+        });
+        let input = block(vec![t]);
+        let (events, _) = classify_atomic_arbs(&input, &tag_opts());
+        assert_eq!(events.len(), 1, "arb fixture must still classify");
+        let d = &events[0].details;
+        assert_eq!(d["funding_source"].as_str(), Some("aave_v3"));
+        assert_eq!(d["router_version"].as_str(), Some("paraswap_v5_v6"));
+        let expected = format!("{:#x}", underlying_pools_hash(&[POOL_A, POOL_B]));
+        assert_eq!(d["underlying_pools_hash"].as_str(), Some(expected.as_str()));
+        let id = explorer_canonical_id(&events[0]);
+        assert!(
+            id.contains("|h:") && id.contains("|r:paraswap_v5_v6|f:aave_v3"),
+            "canonical id must carry the new suffix: {id}"
+        );
     }
 
     #[test]

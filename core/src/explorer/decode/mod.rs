@@ -31,6 +31,7 @@ mod transfer;
 mod tests;
 
 pub use actions::{decode_lb_reward_accumulator, decode_lb_transfer_batch, decode_reward_claim};
+pub(crate) use aggregator::aggregator_router_version;
 pub use aggregator::dedup_aggregator_facts;
 // Topic pins are consumed by `chain::events` tests and decode unit tests.
 #[allow(unused_imports)]

@@ -18,6 +18,7 @@ use serde::Serialize;
 
 use crate::explorer::store::{ExplorerStore, SCHEMA_HEAD};
 use crate::explorer::types::MevKind;
+use crate::explorer::RejectReason;
 
 use caps::StoreCaps;
 pub use evidence::OperationEconomics;
@@ -283,6 +284,23 @@ pub struct RejectPanel {
     pub note: String,
 }
 
+/// WP5 risk/expiry/drift panel, including reverted arb-attempt gas evidence.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct RiskPanel {
+    pub rows: Vec<RiskRow>,
+    pub revert_attempts: i64,
+    pub revert_gas_total_wei: Option<String>,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RiskRow {
+    pub reason: String,
+    pub count: i64,
+    /// Sum of `revert_gas_cost_wei` for this reason (decimal string, u128-safe).
+    pub revert_gas_wei: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct GeneratorMeta {
     pub version: String,
@@ -302,6 +320,7 @@ pub struct DashboardSnapshot {
     pub gaps: GapsPanel,
     pub panels: ReducedPanels,
     pub rejects: RejectPanel,
+    pub risk: RiskPanel,
     pub jit_open: Vec<JitOpenRow>,
     pub oracle_feeds: Vec<OracleFeedRow>,
     pub prices: Vec<PriceRow>,
@@ -430,6 +449,12 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
         },
     };
 
+    let risk = load_risk_panel(
+        &tx,
+        &reject_counts,
+        opts.window.since_ts,
+        opts.window.until_ts,
+    )?;
     let jit_open = load_jit_open(&tx)?;
     let oracle_feeds = load_oracle_feeds(&tx)?;
     let prices = load_prices(&tx)?;
@@ -494,6 +519,7 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
         gaps,
         panels,
         rejects,
+        risk,
         jit_open,
         oracle_feeds,
         prices,
@@ -849,6 +875,84 @@ fn load_reject_counts(
         map.insert(reason, n);
     }
     Ok(map)
+}
+
+/// WP5 quote-expiry / drift / funding / risk counts plus reverted-attempt gas.
+/// Reads only `rejected_candidates`; a legacy DB without the V18 revert-gas
+/// column simply yields no gas figures.
+fn load_risk_panel(
+    conn: &rusqlite::Connection,
+    counts: &HashMap<String, i64>,
+    since: i64,
+    until: i64,
+) -> anyhow::Result<RiskPanel> {
+    use rusqlite::types::Value;
+
+    let mut gas_by_reason: HashMap<String, u128> = HashMap::new();
+    let sql = "SELECT r.reject_reason, r.revert_gas_cost_wei
+               FROM rejected_candidates r
+               LEFT JOIN blocks b ON b.block_number = r.block_number
+               WHERE COALESCE(b.ts, r.created_at) >= ?1
+                 AND COALESCE(b.ts, r.created_at) <= ?2
+                 AND r.revert_gas_cost_wei IS NOT NULL";
+    if let Ok(mut stmt) = conn.prepare(sql) {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![since, until], |r| {
+            let reason = r.get::<_, String>(0)?;
+            let raw = r.get::<_, Value>(1)?;
+            let text = match raw {
+                Value::Text(s) => s,
+                Value::Integer(i) => i.to_string(),
+                _ => String::new(),
+            };
+            Ok((reason, text))
+        }) {
+            for row in rows.flatten() {
+                if let Ok(wei) = row.1.parse::<u128>() {
+                    *gas_by_reason.entry(row.0).or_default() = gas_by_reason
+                        .get(&row.0)
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(wei);
+                }
+            }
+        }
+    }
+
+    let reasons = [
+        RejectReason::QuoteExpired,
+        RejectReason::QuoteDrift,
+        RejectReason::FundingUnavailable,
+        RejectReason::RepayFailed,
+        RejectReason::RiskFlagBlocked,
+    ];
+    let mut rows = Vec::new();
+    let mut revert_attempts = 0i64;
+    for reason in reasons {
+        let key = reason.as_str().to_string();
+        let count = counts.get(&key).copied().unwrap_or(0);
+        let gas = gas_by_reason.get(&key).copied();
+        if reason == RejectReason::RepayFailed {
+            revert_attempts = count;
+        }
+        rows.push(RiskRow {
+            reason: key,
+            count,
+            revert_gas_wei: gas.map(|v| v.to_string()),
+        });
+    }
+    let total: u128 = gas_by_reason
+        .values()
+        .fold(0u128, |a, v| a.saturating_add(*v));
+    Ok(RiskPanel {
+        rows,
+        revert_attempts,
+        revert_gas_total_wei: (total > 0).then(|| total.to_string()),
+        note: if counts.is_empty() {
+            "No rejected_candidates rows in window — recording may be off (record_rejections default false).".into()
+        } else {
+            "Counts from rejected_candidates; revert gas is burned on failed attempts, not realized P&L.".into()
+        },
+    })
 }
 
 fn load_jit_open(conn: &rusqlite::Connection) -> anyhow::Result<Vec<JitOpenRow>> {

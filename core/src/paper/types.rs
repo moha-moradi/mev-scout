@@ -245,6 +245,73 @@ pub struct PaperSkip {
     pub reason: FillSkipReason,
 }
 
+/// Fraction helper for backtest rates. A missing population is reported as
+/// `0.0`, never `NaN`/`inf`, so a zero-gas session stays JSON-safe.
+pub fn metric_ratio(numerator: u128, denominator: u128) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
+    }
+}
+
+/// WP6 (C-08) backtest quality metrics persisted once per live session.
+///
+/// Rate fields are fractions (`0.12` reads as 12%). Revert gas is a share of
+/// all gas spent, so its denominator is accepted-fill gas plus revert gas;
+/// the other gas shares use accepted-fill gas as their basis. Raw counters are
+/// retained so the dashboard can aggregate several sessions without averaging
+/// already-averaged rates.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct BacktestMetrics {
+    pub quote_drift_failure_rate: f64,
+    pub quote_expiry_failure_rate: f64,
+    pub same_block_competition_loss_rate: f64,
+    pub funding_fee_share_of_gas: f64,
+    pub revert_gas_share: f64,
+
+    #[serde(default)]
+    pub quote_gate_attempts: u64,
+    #[serde(default)]
+    pub quote_drift_fails: u64,
+    #[serde(default)]
+    pub quote_expiry_fails: u64,
+    #[serde(default)]
+    pub gas_basis_wei: u128,
+    #[serde(default)]
+    pub competition_loss_wei: u128,
+}
+
+impl BacktestMetrics {
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        quote_gate_attempts: u64,
+        quote_drift_fails: u64,
+        quote_expiry_fails: u64,
+        gas_basis_wei: u128,
+        funding_fee_wei: u128,
+        revert_gas_wei: u128,
+        competition_loss_wei: u128,
+    ) -> Self {
+        let attempts = u128::from(quote_gate_attempts);
+        Self {
+            quote_drift_failure_rate: metric_ratio(u128::from(quote_drift_fails), attempts),
+            quote_expiry_failure_rate: metric_ratio(u128::from(quote_expiry_fails), attempts),
+            same_block_competition_loss_rate: metric_ratio(competition_loss_wei, gas_basis_wei),
+            funding_fee_share_of_gas: metric_ratio(funding_fee_wei, gas_basis_wei),
+            revert_gas_share: metric_ratio(
+                revert_gas_wei,
+                gas_basis_wei.saturating_add(revert_gas_wei),
+            ),
+            quote_gate_attempts,
+            quote_drift_fails,
+            quote_expiry_fails,
+            gas_basis_wei,
+            competition_loss_wei,
+        }
+    }
+}
+
 /// Result of applying the ledger over a batch of opportunities.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LedgerResult {
@@ -375,4 +442,26 @@ pub struct PaperSession {
     pub native_usd: Option<f64>,
     #[serde(default)]
     pub manipulation_risk: bool,
+
+    /// WP6 metrics. `None` on a session written before V19.
+    #[serde(default)]
+    pub quote_drift_failure_rate: Option<f64>,
+    #[serde(default)]
+    pub quote_expiry_failure_rate: Option<f64>,
+    #[serde(default)]
+    pub same_block_competition_loss_rate: Option<f64>,
+    #[serde(default)]
+    pub funding_fee_share_of_gas: Option<f64>,
+    #[serde(default)]
+    pub revert_gas_share: Option<f64>,
+    #[serde(default)]
+    pub quote_gate_attempts: Option<u64>,
+    #[serde(default)]
+    pub quote_drift_fails: Option<u64>,
+    #[serde(default)]
+    pub quote_expiry_fails: Option<u64>,
+    #[serde(default)]
+    pub gas_basis_wei: Option<String>,
+    #[serde(default)]
+    pub competition_loss_wei: Option<String>,
 }

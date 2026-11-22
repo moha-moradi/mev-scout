@@ -43,6 +43,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v16_action_kinds,
     migrate_v17_live_tags,
     migrate_v18_opportunity_contract,
+    migrate_v19_backtest_metrics,
 ];
 
 /// Current schema head (`PRAGMA user_version` after a full migrate).
@@ -518,6 +519,29 @@ fn migrate_v18_opportunity_contract(conn: &Connection) -> anyhow::Result<()> {
         ("paper_fills", "quote_expires_at", "INTEGER"),
     ] {
         ExplorerStore::ensure_column(conn, table, column, ty)?;
+    }
+    Ok(())
+}
+
+/// V19: WP6 (C-08) backtest quality metrics on `paper_sessions`.
+///
+/// The five named rates are stored verbatim for direct SQL inspection. Raw
+/// counts/wei are stored beside them so a dashboard spanning several sessions
+/// can aggregate numerators and denominators instead of averaging rates.
+fn migrate_v19_backtest_metrics(conn: &Connection) -> anyhow::Result<()> {
+    for (column, ty) in [
+        ("quote_drift_failure_rate", "REAL"),
+        ("quote_expiry_failure_rate", "REAL"),
+        ("same_block_competition_loss_rate", "REAL"),
+        ("funding_fee_share_of_gas", "REAL"),
+        ("revert_gas_share", "REAL"),
+        ("quote_gate_attempts", "INTEGER"),
+        ("quote_drift_fails", "INTEGER"),
+        ("quote_expiry_fails", "INTEGER"),
+        ("gas_basis_wei", "TEXT"),
+        ("competition_loss_wei", "TEXT"),
+    ] {
+        ExplorerStore::ensure_column(conn, "paper_sessions", column, ty)?;
     }
     Ok(())
 }
@@ -1284,14 +1308,14 @@ mod tests {
         }
 
         let store = ExplorerStore::open(&path).unwrap();
-        assert_eq!(store.user_version().unwrap(), 18);
+        assert_eq!(store.user_version().unwrap(), SCHEMA_HEAD);
         let legacy = store.opportunities_by_run("legacy").unwrap();
         assert_eq!(legacy.len(), 1);
         assert!(legacy[0].funding_source.is_none());
         assert!(legacy[0].risk_flags.is_empty());
         // Reopening is a no-op, not a second ALTER.
         let store2 = ExplorerStore::open(&path).unwrap();
-        assert_eq!(store2.user_version().unwrap(), 18);
+        assert_eq!(store2.user_version().unwrap(), SCHEMA_HEAD);
         drop(store);
         drop(store2);
         remove_db(&path);

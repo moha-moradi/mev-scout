@@ -59,6 +59,18 @@ use skim::classify_skims;
 pub(crate) use arb::{flow_attributable, is_long_tail_arb};
 pub(crate) use jit::stamp_jit_tx_hashes;
 
+/// Router provenance recovered from a receipt's aggregator log topics (WP5).
+///
+/// Funding provider and underlying pool set are derived by the classifier from
+/// the decoded flash-loan / swap log facts already on [`TxInput`]. Only the
+/// router generation needs a separate carrier because `SwapFact` records the
+/// router address but not the topic that identified it.
+#[derive(Debug, Clone, Default)]
+pub struct RouteProvenance {
+    /// Stable router family+generation label, e.g. `paraswap_v5_v6`.
+    pub router_version: Option<String>,
+}
+
 /// Raw per-tx input the classifier consumes (decoded by `ingest`).
 #[derive(Debug, Clone, Default)]
 pub struct TxInput {
@@ -101,6 +113,8 @@ pub struct TxInput {
     pub epoch_rewards: Vec<EpochRewardFact>,
     /// GMX V2 EventEmitter ADL/liq facts (plan P3.7).
     pub gmx_events: Vec<GmxEventFact>,
+    /// Router generation from aggregator receipt-log topics (WP5 / M-10).
+    pub route_provenance: Option<RouteProvenance>,
 }
 
 /// Registry and configuration inputs shared by every block in a run.
@@ -428,6 +442,8 @@ pub struct DecodedTxFacts {
     pub gmx_events: Vec<GmxEventFact>,
     /// Logs no decoder claimed. Phase 0 visibility: recorded, never acted on.
     pub unmapped_logs: Vec<UnmappedLog>,
+    /// Router generation from aggregator receipt-log topics (WP5 / M-10).
+    pub route_provenance: Option<RouteProvenance>,
 }
 
 fn push_swap(facts: &mut DecodedTxFacts, tx_index: u64, log_idx: u64, log: &crate::data::LogData) {
@@ -449,6 +465,7 @@ pub(crate) fn decode_tx_logs_with_aliases(
     liquidation_protocol_aliases: &HashMap<Address, &'static str>,
 ) -> DecodedTxFacts {
     let mut facts = DecodedTxFacts::default();
+    let mut router_version: Option<String> = None;
     for (log_idx, log) in logs.iter().enumerate() {
         let log_idx = log_idx as u64;
         // Set when no decoder claims this log; cleared when the GMX name-hash
@@ -463,8 +480,13 @@ pub(crate) fn decode_tx_logs_with_aliases(
                         facts.transfers.push(t);
                     }
                 }
-                // Aggregator topics also emit a swap edge.
+                // Aggregator topics also emit a swap edge. Remember the
+                // router generation before dedup drops redundant edges.
                 Some(decode::LogFamily::Aggregator) => {
+                    if router_version.is_none() {
+                        router_version =
+                            decode::aggregator_router_version(&topic0).map(str::to_owned);
+                    }
                     push_swap(&mut facts, tx_index, log_idx, log);
                 }
                 Some(decode::LogFamily::Swap) => push_swap(&mut facts, tx_index, log_idx, log),
@@ -599,6 +621,11 @@ pub(crate) fn decode_tx_logs_with_aliases(
     decode::attach_swap_tokens(&mut facts.swaps, &facts.transfers, pool_tokens);
     // drop aggregator edges already covered by DEX swap edges.
     decode::dedup_aggregator_facts(&mut facts.swaps);
+    if let Some(router_version) = router_version {
+        facts.route_provenance = Some(RouteProvenance {
+            router_version: Some(router_version),
+        });
+    }
     facts
 }
 
@@ -1455,6 +1482,15 @@ mod tests {
             );
             assert_eq!(causal["tier"], serde_json::json!("inferred"));
             assert_eq!(causal["mode"], serde_json::json!("realized"));
+            // WP5: the realized annotation carries the same key the WP4
+            // pending-backrun detector writes, so the two paths can be joined.
+            assert_eq!(
+                causal["pending_match_key"],
+                serde_json::json!(crate::types::opportunity::compute_backrun_canonical_id(
+                    POOL_A,
+                    causal["source_tx_index"].as_u64().unwrap() as usize
+                ))
+            );
             assert_eq!(tagged.len(), 1);
             assert_eq!(ev.victim_hashes, vec![B256::repeat_byte(move_idx as u8)]);
         }

@@ -25,6 +25,7 @@ use crate::explorer::store::{
     BlockFactsInput, ExplorerStore, JitJournalInput, SwapRow, TransferRow, TxEvidenceRow, TxRow,
 };
 use crate::explorer::types::{MevEvent, MevKind, UnmappedLog};
+use crate::explorer::{RejectReason, RejectedCandidate};
 use crate::progress::{JobProgress, ProgressEvent};
 use crate::rpc::RpcClient;
 use crate::types::ChainName;
@@ -369,9 +370,13 @@ struct DecodedTxs {
     /// Logs no decoder claimed, across the whole block. Recorded on the
     /// op-producing txs' evidence payloads; summarised once per block.
     unmapped_logs: Vec<UnmappedLog>,
+    /// WP5: reverted arb-shaped attempts (status=0) kept as revert-gas evidence
+    /// only — never as P&L events.
+    failed_arb_rejects: Vec<RejectedCandidate>,
 }
 
 fn decode_successful_txs(
+    block_number: u64,
     txs: &[TxData],
     receipts: &[ReceiptData],
     pools: PoolViews<'_>,
@@ -387,12 +392,50 @@ fn decode_successful_txs(
         transfer_rows: Vec::new(),
         jit_hashes: HashMap::new(),
         unmapped_logs: Vec::new(),
+        failed_arb_rejects: Vec::new(),
     };
     for tx in txs {
         let Some(receipt) = receipt_by_index.get(&tx.index).copied() else {
             continue;
         };
+        let max_priority_gwei = tx
+            .max_priority_fee_per_gas
+            .map(|p| p as f64 / 1e9)
+            .unwrap_or(0.0);
         if !receipt.status {
+            // WP5: a reverted transaction cannot carry realized P&L, but an
+            // arb-shaped route that burned gas is evidence of a failed attempt.
+            // Keep it in `rejected_candidates` with `revert_gas_cost_wei`;
+            // never turn it into a `MevEvent` (that would invent profit/loss).
+            if cfg.record_rejections {
+                let failed_facts = classify::decode_tx_logs_with_aliases(
+                    tx.index,
+                    &receipt.logs,
+                    pools.tokens,
+                    &cfg.liquidation_protocol_aliases,
+                );
+                if failed_facts.swaps.len() >= 2 {
+                    let effective_gwei =
+                        effective_gas_gwei(tx, receipt, base_fee_gwei, max_priority_gwei);
+                    let gas_wei = U256::from(receipt.gas_used)
+                        .saturating_mul(U256::from((effective_gwei * 1e9).round() as u128));
+                    out.failed_arb_rejects.push(RejectedCandidate {
+                        block_number,
+                        tx_index: Some(tx.index),
+                        strategy: "explorer_classify".to_string(),
+                        pool_a: failed_facts.swaps.first().map(|s| format!("{:#x}", s.pool)),
+                        pool_b: failed_facts.swaps.get(1).map(|s| format!("{:#x}", s.pool)),
+                        reject_reason: RejectReason::RepayFailed.as_str().to_string(),
+                        detail: Some(format!(
+                            "reverted arb attempt: status=0, {} swap legs",
+                            failed_facts.swaps.len()
+                        )),
+                        revert_gas_cost_wei: u128::try_from(gas_wei).ok(),
+                        created_at: crate::utils::epoch_secs(),
+                        ..Default::default()
+                    });
+                }
+            }
             continue;
         }
         let mut facts = classify::decode_tx_logs_with_aliases(
@@ -401,10 +444,6 @@ fn decode_successful_txs(
             pools.tokens,
             &cfg.liquidation_protocol_aliases,
         );
-        let max_priority_gwei = tx
-            .max_priority_fee_per_gas
-            .map(|p| p as f64 / 1e9)
-            .unwrap_or(0.0);
         let effective_gwei = effective_gas_gwei(tx, receipt, base_fee_gwei, max_priority_gwei);
         let priority_gwei = if tx.max_priority_fee_per_gas.is_some() {
             max_priority_gwei.min(effective_gwei)
@@ -474,6 +513,7 @@ fn decode_successful_txs(
             keepers: facts.keepers,
             epoch_rewards: facts.epoch_rewards,
             gmx_events: facts.gmx_events,
+            route_provenance: facts.route_provenance,
         });
     }
     out
@@ -568,7 +608,8 @@ pub async fn index_block_fetched(
         transfer_rows,
         jit_hashes,
         unmapped_logs,
-    } = decode_successful_txs(&txs, &receipts, pools, cfg, base_fee_gwei);
+        failed_arb_rejects,
+    } = decode_successful_txs(block_number, &txs, &receipts, pools, cfg, base_fee_gwei);
     if !unmapped_logs.is_empty() {
         let mut by_topic: HashMap<B256, usize> = HashMap::new();
         for u in &unmapped_logs {
@@ -645,7 +686,9 @@ pub async fn index_block_fetched(
 
     let classified = classify::classify_block(&input);
     blocking_store(|| -> anyhow::Result<()> {
-        if cfg.record_rejections && !classified.rejects.is_empty() {
+        if cfg.record_rejections
+            && (!classified.rejects.is_empty() || !failed_arb_rejects.is_empty())
+        {
             let chain_str = cfg.chain.to_string();
             let run_id = format!("explorer-index-{block_number}");
             // One transaction for the block's reject set. Per-row insert errors
@@ -656,7 +699,7 @@ pub async fn index_block_fetched(
             // `insert_block_facts`: if the facts fail, the retry re-derives them
             // identically and the unique key makes re-insertion a no-op.
             let tx = store.connection().unchecked_transaction()?;
-            for r in &classified.rejects {
+            for r in classified.rejects.iter().chain(failed_arb_rejects.iter()) {
                 if let Err(e) = store.insert_rejected_candidate(&run_id, &chain_str, r) {
                     tracing::warn!("explorer_classify reject insert failed: {e}");
                 }
@@ -920,7 +963,7 @@ async fn fetch_cross_block_jit_evidence(
             continue;
         };
         let base_fee_gwei = block_data.base_fee_per_gas.map(|b| b as f64 / 1e9);
-        let decoded = decode_successful_txs(&txs, &receipts, pools, cfg, base_fee_gwei);
+        let decoded = decode_successful_txs(block, &txs, &receipts, pools, cfg, base_fee_gwei);
         out.extend(build_tx_evidence(
             cfg.chain,
             block,
@@ -2149,6 +2192,90 @@ mod tests {
         let out = llama_token_chunks(&one);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0], one);
+    }
+
+    /// WP5: a reverted arb-shaped tx contributes only revert-gas evidence. It
+    /// must never become an `MevEvent` or a positive/negative P&L row.
+    #[test]
+    fn failed_arb_receipt_is_recorded_as_revert_gas_reject() {
+        use crate::chain::events::V2_SWAP_TOPIC;
+        use crate::data::LogData;
+
+        let pool_a = Address::from([0xa1; 20]);
+        let pool_b = Address::from([0xb1; 20]);
+        let token0 = Address::from([0xc1; 20]);
+        let token1 = Address::from([0xd1; 20]);
+        let swap_log = |pool| LogData {
+            log_index: None,
+            address: pool,
+            topics: vec![V2_SWAP_TOPIC, B256::ZERO, B256::ZERO],
+            data: {
+                let mut data = vec![0u8; 128];
+                data[31] = 100; // amount0In > 0 → token0 is the input leg
+                alloy::primitives::Bytes::from(data)
+            },
+        };
+        let hash = B256::from([0x55; 32]);
+        let tx = TxData {
+            hash,
+            index: 0,
+            tx_type: 2,
+            from: Address::from([0x11; 20]),
+            to: Some(pool_a),
+            input: alloy::primitives::Bytes::from(vec![0xde, 0xad, 0xbe, 0xef]),
+            value: U256::ZERO,
+            gas_limit: 200_000,
+            max_fee_per_gas: 30_000_000_000,
+            max_priority_fee_per_gas: Some(2_000_000_000),
+            gas_price: None,
+            nonce: 1,
+            access_list: vec![],
+            authorization_list: vec![],
+        };
+        let receipt = ReceiptData {
+            block_hash: None,
+            tx_hash: hash,
+            tx_index: 0,
+            status: false,
+            gas_used: 100_000,
+            cumulative_gas_used: 100_000,
+            effective_gas_price: Some(25_000_000_000),
+            logs: vec![swap_log(pool_a), swap_log(pool_b)],
+            contract_address: None,
+        };
+        let tokens = HashMap::from([(pool_a, (token0, token1)), (pool_b, (token0, token1))]);
+        let empty_addresses = HashSet::new();
+        let empty_fees = HashMap::new();
+        let mut cfg = avalanche_cfg();
+        cfg.record_rejections = true;
+        let decoded = decode_successful_txs(
+            77,
+            std::slice::from_ref(&tx),
+            std::slice::from_ref(&receipt),
+            PoolViews {
+                tokens: &tokens,
+                v2_like: &empty_addresses,
+                epoch_venue: &empty_addresses,
+                fee_bps: &empty_fees,
+            },
+            &cfg,
+            Some(20.0),
+        );
+
+        assert!(
+            decoded.tx_inputs.is_empty(),
+            "failed tx must not create an op"
+        );
+        assert_eq!(decoded.failed_arb_rejects.len(), 1);
+        let reject = &decoded.failed_arb_rejects[0];
+        assert_eq!(reject.block_number, 77);
+        assert_eq!(reject.tx_index, Some(0));
+        assert_eq!(reject.reject_reason, RejectReason::RepayFailed.as_str());
+        assert_eq!(reject.revert_gas_cost_wei, Some(2_500_000_000_000_000));
+        assert!(reject
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("status=0") && d.contains("2 swap legs")));
     }
 
     #[test]

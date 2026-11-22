@@ -1,6 +1,8 @@
 //! Paper session / fill persistence on the explorer SQLite database.
 use crate::explorer::store::ExplorerStore;
-use crate::paper::types::{LedgerResult, PaperFill, PaperMode, PaperSession, SimMode};
+use crate::paper::types::{
+    BacktestMetrics, LedgerResult, PaperFill, PaperMode, PaperSession, SimMode,
+};
 use crate::utils::epoch_secs;
 
 impl ExplorerStore {
@@ -37,7 +39,17 @@ impl ExplorerStore {
               priority_fee_wei TEXT,
               sim_block INTEGER,
               native_usd REAL,
-              manipulation_risk INTEGER NOT NULL DEFAULT 0
+              manipulation_risk INTEGER NOT NULL DEFAULT 0,
+              quote_drift_failure_rate REAL,
+              quote_expiry_failure_rate REAL,
+              same_block_competition_loss_rate REAL,
+              funding_fee_share_of_gas REAL,
+              revert_gas_share REAL,
+              quote_gate_attempts INTEGER,
+              quote_drift_fails INTEGER,
+              quote_expiry_fails INTEGER,
+              gas_basis_wei TEXT,
+              competition_loss_wei TEXT
             );
             CREATE INDEX IF NOT EXISTS paper_sessions_created
               ON paper_sessions(created_at);
@@ -95,6 +107,7 @@ impl ExplorerStore {
         mode: PaperMode,
         linked_run_id: Option<&str>,
         ledger: &LedgerResult,
+        metrics: &BacktestMetrics,
     ) -> anyhow::Result<()> {
         self.ensure_paper_tables()?;
         let start = ledger.start_block.unwrap_or(0);
@@ -109,9 +122,13 @@ impl ExplorerStore {
                exec_mode, exec_ok, exec_revert,
                revert_gas_wei, exec_loss_wei, setup_gas_wei,
                funding_fee_wei, basefee_wei, priority_fee_wei,
-               sim_block, native_usd, manipulation_risk
+               sim_block, native_usd, manipulation_risk,
+               quote_drift_failure_rate, quote_expiry_failure_rate,
+               same_block_competition_loss_rate, funding_fee_share_of_gas,
+               revert_gas_share, quote_gate_attempts, quote_drift_fails,
+               quote_expiry_fails, gas_basis_wei, competition_loss_wei
              ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,
-                       ?24,?25,?26,?27,?28,?29)",
+                       ?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,?39)",
             rusqlite::params![
                 session_id,
                 chain,
@@ -142,6 +159,16 @@ impl ExplorerStore {
                 ledger.sim_block.map(|v| v as i64),
                 ledger.native_usd,
                 ledger.manipulation_risk as i64,
+                metrics.quote_drift_failure_rate,
+                metrics.quote_expiry_failure_rate,
+                metrics.same_block_competition_loss_rate,
+                metrics.funding_fee_share_of_gas,
+                metrics.revert_gas_share,
+                metrics.quote_gate_attempts as i64,
+                metrics.quote_drift_fails as i64,
+                metrics.quote_expiry_fails as i64,
+                metrics.gas_basis_wei.to_string(),
+                metrics.competition_loss_wei.to_string(),
             ],
         )?;
         for f in &ledger.fills {
@@ -210,7 +237,11 @@ impl ExplorerStore {
                     exec_mode, exec_ok, exec_revert,
                     revert_gas_wei, exec_loss_wei, setup_gas_wei,
                     funding_fee_wei, basefee_wei, priority_fee_wei,
-                    sim_block, native_usd, manipulation_risk
+                    sim_block, native_usd, manipulation_risk,
+                    quote_drift_failure_rate, quote_expiry_failure_rate,
+                    same_block_competition_loss_rate, funding_fee_share_of_gas,
+                    revert_gas_share, quote_gate_attempts, quote_drift_fails,
+                    quote_expiry_fails, gas_basis_wei, competition_loss_wei
              FROM paper_sessions WHERE session_id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![session_id])?;
@@ -236,7 +267,11 @@ impl ExplorerStore {
                     exec_mode, exec_ok, exec_revert,
                     revert_gas_wei, exec_loss_wei, setup_gas_wei,
                     funding_fee_wei, basefee_wei, priority_fee_wei,
-                    sim_block, native_usd, manipulation_risk
+                    sim_block, native_usd, manipulation_risk,
+                    quote_drift_failure_rate, quote_expiry_failure_rate,
+                    same_block_competition_loss_rate, funding_fee_share_of_gas,
+                    revert_gas_share, quote_gate_attempts, quote_drift_fails,
+                    quote_expiry_fails, gas_basis_wei, competition_loss_wei
              FROM paper_sessions
              WHERE linked_run_id = ?1
              ORDER BY created_at DESC
@@ -265,7 +300,11 @@ impl ExplorerStore {
                     exec_mode, exec_ok, exec_revert,
                     revert_gas_wei, exec_loss_wei, setup_gas_wei,
                     funding_fee_wei, basefee_wei, priority_fee_wei,
-                    sim_block, native_usd, manipulation_risk
+                    sim_block, native_usd, manipulation_risk,
+                    quote_drift_failure_rate, quote_expiry_failure_rate,
+                    same_block_competition_loss_rate, funding_fee_share_of_gas,
+                    revert_gas_share, quote_gate_attempts, quote_drift_fails,
+                    quote_expiry_fails, gas_basis_wei, competition_loss_wei
              FROM paper_sessions
              WHERE created_at >= ?1
              ORDER BY created_at DESC

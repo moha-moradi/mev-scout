@@ -66,18 +66,36 @@ pub const FUNDING_MORPHO_BLUE: &str = "funding:morpho_blue";
 /// Fallback for a flash provider with no dedicated tag yet.
 pub const FUNDING_FLASH_LOAN: &str = "funding:flash_loan";
 
-/// Map a config provider or decoded event protocol to its funding-axis tag.
+/// Canonical per-opportunity funding source for a config provider or a
+/// decoded event protocol (WP5 / M-10). This is the *value* stored on
+/// `MevOpportunity.funding_source` and `MevEvent.details.funding_source`;
+/// the tags below are its namespaced dashboard representation.
+///
 /// Accepts both config spellings (`aave`, `balancer`, `lfj`) and event
-/// protocols (`aave_v3`, `balancer_v2`, `lfj_lb_flash`) so the decoder, the
-/// live detector and the explorer share one vocabulary. Flash loans are a
-/// funding layer, never an arbitrage family (A-01).
-pub fn funding_tag_for_source(source: &str) -> &'static str {
+/// protocols (`aave_v3`, `balancer_v2`, `lfj_lb_flash`) so the live detector
+/// and the realized explorer write exactly the same value.
+pub fn canonical_funding_source(source: &str) -> &'static str {
     match source {
-        "auto" | "balancer" | "balancer_v2" | "balancer_v2_vault" => FUNDING_BALANCER_V2,
-        "aave" | "aave_v3" => FUNDING_AAVE_V3,
+        "auto" | "balancer" | "balancer_v2" | "balancer_v2_vault" => "balancer_v2_vault",
+        "aave" | "aave_v3" => "aave_v3",
+        "aave_v2" => "aave_v2",
+        "uniswap" | "uniswap_v3" | "univ3_flash" => "univ3_flash",
+        "lfj" | "lfj_lb_flash" => "lfj_lb_flash",
+        "v2_flash_swap" => "v2_flash_swap",
+        "morpho_blue" => "morpho_blue",
+        _ => "flash_loan",
+    }
+}
+
+/// Map a config provider or decoded event protocol to its funding-axis tag.
+/// Flash loans are a funding layer, never an arbitrage family (A-01).
+pub fn funding_tag_for_source(source: &str) -> &'static str {
+    match canonical_funding_source(source) {
+        "balancer_v2_vault" => FUNDING_BALANCER_V2,
+        "aave_v3" => FUNDING_AAVE_V3,
         "aave_v2" => FUNDING_AAVE_V2,
-        "uniswap" | "uniswap_v3" | "univ3_flash" => FUNDING_UNIV3_FLASH,
-        "lfj" | "lfj_lb_flash" => FUNDING_LFJ_LB_FLASH,
+        "univ3_flash" => FUNDING_UNIV3_FLASH,
+        "lfj_lb_flash" => FUNDING_LFJ_LB_FLASH,
         "v2_flash_swap" => FUNDING_V2_FLASH_SWAP,
         "morpho_blue" => FUNDING_MORPHO_BLUE,
         _ => FUNDING_FLASH_LOAN,
@@ -168,5 +186,33 @@ mod tests {
         }
         assert_eq!(axis_of_tag(OPTIMIZER_SPLIT_ROUTE), Some(TagAxis::Optimizer));
         assert_eq!(axis_of_tag(FUNDING_AAVE_V3), Some(TagAxis::Funding));
+    }
+
+    #[test]
+    fn canonical_funding_source_matches_live_provider_and_decoder() {
+        use crate::types::strategy::FlashLoanProvider;
+        for provider in [
+            FlashLoanProvider::Auto,
+            FlashLoanProvider::Balancer,
+            FlashLoanProvider::Aave,
+            FlashLoanProvider::Uniswap,
+            FlashLoanProvider::Lfj,
+            FlashLoanProvider::V2FlashSwap,
+        ] {
+            assert_eq!(
+                canonical_funding_source(&provider.to_string()),
+                provider.funding_source()
+            );
+            assert_eq!(
+                funding_tag_for_source(&provider.to_string()),
+                funding_tag_for_source(provider.funding_source())
+            );
+        }
+        // Realized decoder protocols map to the same canonical values.
+        assert_eq!(canonical_funding_source("balancer_v2"), "balancer_v2_vault");
+        assert_eq!(canonical_funding_source("aave_v3"), "aave_v3");
+        assert_eq!(canonical_funding_source("uniswap_v3"), "univ3_flash");
+        assert_eq!(canonical_funding_source("morpho_blue"), "morpho_blue");
+        assert_eq!(canonical_funding_source("unknown"), "flash_loan");
     }
 }
