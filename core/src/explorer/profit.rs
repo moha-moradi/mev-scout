@@ -17,7 +17,7 @@
 //! coinbase→searcher) are not observable in logs-only mode — only the tx
 //! `value` debit is. A NULL or low native-denominated figure is that data
 //! limit, not evidence of "no profit".
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, U256};
 
@@ -216,6 +216,92 @@ pub fn has_closed_cycle(edges: &[(Address, Address, Address)]) -> bool {
 /// (usually 2–4 hops); the cap keeps DFS bounded on dense token graphs while
 /// still admitting longer multi-hop routes.
 const MAX_CYCLE_EDGES: usize = 8;
+
+/// Upper bound on enumerated closed walks per transaction. Real atomic arbs
+/// are short; this keeps a dense token graph bounded while still surfacing
+/// more than one candidate cycle for attribution/scoring.
+const MAX_CYCLE_CANDIDATES: usize = 64;
+
+/// Every distinct simple cycle as `(anchor_token, ordered_edge_indices)`.
+/// A walk may revisit its anchor only on the final edge; intermediate tokens
+/// are not repeated.
+///
+/// `edges` is `(token_in, token_out, pool)` per resolved swap; the indices
+/// point back into that slice, so callers can recover the ordered pools and
+/// amounts of a specific cycle instead of receiving only a token set.
+///
+/// Walks are canonicalised by requiring the smallest edge index in the walk
+/// to be the start edge, so the same rotated cycle is reported once. Order is
+/// deterministic: start edges ascending, then DFS edge order.
+pub fn closed_cycle_walks(edges: &[(Address, Address, Address)]) -> Vec<(Address, Vec<usize>)> {
+    if edges.len() < 2 {
+        return Vec::new();
+    }
+    let n = edges.len();
+    let mut used = vec![false; n];
+    let mut walk = Vec::new();
+    let mut out = Vec::new();
+    for start in 0..n {
+        if out.len() >= MAX_CYCLE_CANDIDATES {
+            break;
+        }
+        let mut seen = HashSet::from([edges[start].0]);
+        dfs_cycle_walks(
+            edges, start, start, &mut used, &mut seen, &mut walk, &mut out,
+        );
+    }
+    out
+}
+
+fn dfs_cycle_walks(
+    edges: &[(Address, Address, Address)],
+    start_edge: usize,
+    cur_edge: usize,
+    used: &mut [bool],
+    seen_tokens: &mut HashSet<Address>,
+    walk: &mut Vec<usize>,
+    out: &mut Vec<(Address, Vec<usize>)>,
+) {
+    if out.len() >= MAX_CYCLE_CANDIDATES {
+        return;
+    }
+    let (_, next, _) = edges[cur_edge];
+    let start = edges[start_edge].0;
+    let closes_at_start = next == start;
+    // A route is a *simple* cycle: no token repeats before the final return.
+    // Otherwise two independent cycles in one receipt would also surface as
+    // one concatenated candidate and compete for attribution.
+    if !closes_at_start && !seen_tokens.insert(next) {
+        return;
+    }
+    used[cur_edge] = true;
+    walk.push(cur_edge);
+
+    if closes_at_start && walk.len() >= 2 {
+        let pools: HashSet<Address> = walk.iter().map(|&i| edges[i].2).collect();
+        // Canonical rotation: only the lowest-indexed edge may start a walk.
+        if pools.len() >= 2 && walk.iter().min().copied() == Some(start_edge) {
+            if !out.iter().any(|(_, w)| w == walk) {
+                out.push((start, walk.clone()));
+            }
+        }
+    } else if walk.len() < MAX_CYCLE_EDGES {
+        for e in 0..edges.len() {
+            if !used[e] && edges[e].0 == next {
+                dfs_cycle_walks(edges, start_edge, e, used, seen_tokens, walk, out);
+                if out.len() >= MAX_CYCLE_CANDIDATES {
+                    break;
+                }
+            }
+        }
+    }
+
+    walk.pop();
+    used[cur_edge] = false;
+    if !closes_at_start {
+        seen_tokens.remove(&next);
+    }
+}
 
 /// First closed walk: `(anchor_token, tokens_on_walk)`. The walk is
 /// deterministic for a given edge order and at most [`MAX_CYCLE_EDGES`] edges
@@ -462,6 +548,39 @@ mod tests {
         // Acyclic edge set (no path back to start) is rejected.
         let no_cycle = vec![(a, b, p1), (b, c, p2)];
         assert!(!has_closed_cycle(&no_cycle));
+    }
+
+    #[test]
+    fn closed_cycle_walks_lists_both_cycles_in_edge_order() {
+        let usdc = token(1, 0);
+        let weth = token(2, 0);
+        let avax = token(3, 0);
+        let p1 = token(1, 1);
+        let p2 = token(2, 1);
+        let p3 = token(3, 1);
+        let p4 = token(4, 1);
+        let edges = [
+            (usdc, weth, p1),
+            (weth, usdc, p2),
+            (usdc, avax, p3),
+            (avax, usdc, p4),
+        ];
+        let walks = closed_cycle_walks(&edges);
+        assert_eq!(walks.len(), 2, "both cycles must be candidates: {walks:?}");
+        let first = &walks[0];
+        assert_eq!(first.0, usdc);
+        assert_eq!(
+            first.1.iter().map(|&i| edges[i].2).collect::<Vec<_>>(),
+            vec![p1, p2]
+        );
+        let second = &walks[1];
+        assert_eq!(
+            second.1.iter().map(|&i| edges[i].2).collect::<Vec<_>>(),
+            vec![p3, p4]
+        );
+        // A rotated duplicate of the first cycle is not reported again.
+        let rotated = [edges[1], edges[0], edges[3], edges[2]];
+        assert_eq!(closed_cycle_walks(&rotated).len(), 2);
     }
 
     #[test]

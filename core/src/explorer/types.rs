@@ -409,7 +409,8 @@ pub struct SwapFact {
     pub owner: Option<Address>,
 }
 
-/// A decoded flash-loan fact (Aave V2/V3, Balancer V2, Uni V3).
+/// A decoded or inferred flash-loan fact (Aave V2/V3, Balancer V2, Uni V3,
+/// Morpho Blue, LFJ/Trader Joe LB, V2 flash swaps inferred from transfers).
 #[derive(Debug, Clone)]
 pub struct FlashLoanFact {
     pub tx_index: u64,

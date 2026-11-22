@@ -118,6 +118,7 @@ pub async fn cmd_backfill(
             v2_like: &registry.v2_like,
             epoch_venue: &registry.epoch_venue,
             fee_bps: &registry.fee_bps,
+            dex_name: &registry.dex_name,
         },
         RangeRequest {
             from_block: from,

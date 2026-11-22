@@ -213,6 +213,8 @@ mod tests {
         assert_eq!(canonical_funding_source("aave_v3"), "aave_v3");
         assert_eq!(canonical_funding_source("uniswap_v3"), "univ3_flash");
         assert_eq!(canonical_funding_source("morpho_blue"), "morpho_blue");
+        assert_eq!(canonical_funding_source("lfj_lb_flash"), "lfj_lb_flash");
+        assert_eq!(canonical_funding_source("v2_flash_swap"), "v2_flash_swap");
         assert_eq!(canonical_funding_source("unknown"), "flash_loan");
     }
 }

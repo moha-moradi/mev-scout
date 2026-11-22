@@ -4,8 +4,9 @@ use alloy::primitives::{address, b256, Address, B256, U256};
 
 use crate::chain::events::{
     AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC, AAVE_V3_LIQUIDATION_CALL_TOPIC,
-    COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, DONASWAP_V3_SWAP_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
-    TRANSFER_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC,
+    COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, DONASWAP_V3_SWAP_TOPIC, LFJ_LB_FLASH_LOAN_TOPIC,
+    LFJ_LB_FLASH_LOAN_V20_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRANSFER_TOPIC, V2_SWAP_TOPIC,
+    V3_SWAP_TOPIC,
 };
 use crate::data::LogData;
 use crate::explorer::decode::jit::V3_COLLECT_TOPIC;
@@ -32,6 +33,14 @@ fn word(v: u128) -> Vec<u8> {
 
 fn hexdata(s: &str) -> Vec<u8> {
     alloy::primitives::hex::decode(s).expect("valid hex")
+}
+
+/// LFJ `PackedUint128`: amountX in the low 16 bytes, amountY in the high 16.
+fn packed_lb_xy(x: u128, y: u128) -> Vec<u8> {
+    let mut b = [0u8; 32];
+    b[16..32].copy_from_slice(&x.to_be_bytes());
+    b[0..16].copy_from_slice(&y.to_be_bytes());
+    b.to_vec()
 }
 
 #[test]
@@ -425,6 +434,163 @@ fn aave_flash_loans_decode() {
         tags::axis_of_tag(flash_loan_funding_tag(&f)),
         Some(tags::TagAxis::Funding)
     );
+}
+
+#[test]
+fn lfj_lb_flash_loan_decodes() {
+    let sender = b256!("0000000000000000000000001111111111111111111111111111111111111111");
+    let receiver = b256!("0000000000000000000000002222222222222222222222222222222222222222");
+    let pool = address!("4444444444444444444444444444444444444444");
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&word(42)); // activeId
+    data.extend_from_slice(&packed_lb_xy(1_000, 7_000)); // borrowed X/Y
+    data.extend_from_slice(&packed_lb_xy(5, 35)); // total fees X/Y
+    data.extend_from_slice(&packed_lb_xy(1, 7)); // protocol fees X/Y (ignored)
+
+    let f = decode_flash_loan(&log(
+        pool,
+        vec![*LFJ_LB_FLASH_LOAN_TOPIC, sender, receiver],
+        data,
+    ))
+    .expect("LFJ LB 2.1/2.2 flash loan must decode");
+
+    assert_eq!(f.protocol, "lfj_lb_flash");
+    assert_eq!(
+        f.initiator,
+        address!("1111111111111111111111111111111111111111")
+    );
+    assert_eq!(
+        f.recipient,
+        address!("2222222222222222222222222222222222222222")
+    );
+    // Token is not in the event; netting resolves it from transfers (Uni V3 parity).
+    assert_eq!(f.token, Address::ZERO);
+    // Larger leg (Y) wins; the packed fee for that leg is used.
+    assert_eq!(f.amount, U256::from(7_000));
+    assert_eq!(f.fee, Some(U256::from(35)));
+    assert_eq!(f.provider, pool);
+    assert_eq!(flash_loan_funding_tag(&f), tags::FUNDING_LFJ_LB_FLASH);
+}
+
+#[test]
+fn lfj_lb_v20_flash_loan_decodes() {
+    let sender = b256!("0000000000000000000000001111111111111111111111111111111111111111");
+    let receiver = b256!("0000000000000000000000002222222222222222222222222222222222222222");
+    let token = address!("3333333333333333333333333333333333333333");
+    let pool = address!("4444444444444444444444444444444444444444");
+
+    let mut data = vec![0u8; 32];
+    data[12..32].copy_from_slice(token.as_slice());
+    data.extend_from_slice(&word(3_000));
+    data.extend_from_slice(&word(7));
+
+    let f = decode_flash_loan(&log(
+        pool,
+        vec![*LFJ_LB_FLASH_LOAN_V20_TOPIC, sender, receiver],
+        data,
+    ))
+    .expect("legacy LFJ LB 2.0 flash loan must decode");
+
+    assert_eq!(f.protocol, "lfj_lb_flash");
+    assert_eq!(f.token, token);
+    assert_eq!(f.amount, U256::from(3_000));
+    assert_eq!(f.fee, Some(U256::from(7)));
+    assert_eq!(f.provider, pool);
+    assert_eq!(flash_loan_funding_tag(&f), tags::FUNDING_LFJ_LB_FLASH);
+}
+
+#[test]
+fn v2_flash_swap_is_inferred_as_funding() {
+    let pool = address!("3000000000000000000000000000000000000003");
+    let callback = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let tin = address!("1111111111111111111111111111111111111111");
+    let tout = address!("2222222222222222222222222222222222222222");
+    let transfers = vec![
+        TransferFact {
+            tx_index: 0,
+            log_index: 1,
+            token: tout,
+            from: pool,
+            to: callback,
+            amount: U256::from(1_000),
+        },
+        TransferFact {
+            tx_index: 0,
+            log_index: 2,
+            token: tin,
+            from: callback,
+            to: pool,
+            amount: U256::from(300),
+        },
+    ];
+    let swaps = vec![SwapFact {
+        tx_index: 0,
+        log_index: 3,
+        pool,
+        amm: Amm::V2,
+        token_in: tin,
+        token_out: tout,
+        token_source: LegSource::Transfer,
+        amount_in: U256::from(300),
+        amount_out: U256::from(1_000),
+        tick: None,
+        owner: Some(callback),
+    }];
+
+    let f = infer_v2_flash_swap(&swaps, &transfers).expect("V2 flash swap must be inferred");
+    assert_eq!(f.protocol, "v2_flash_swap");
+    assert_eq!(f.initiator, callback);
+    assert_eq!(f.recipient, callback);
+    // Both legs are already in the ledger; zero token keeps the netter from
+    // subtracting the principal a second time.
+    assert_eq!(f.token, Address::ZERO);
+    assert_eq!(f.amount, U256::from(1_000));
+    assert_eq!(f.fee, None);
+    assert_eq!(f.provider, pool);
+    assert_eq!(flash_loan_funding_tag(&f), tags::FUNDING_V2_FLASH_SWAP);
+}
+
+#[test]
+fn prefunded_v2_swap_is_not_inferred_as_flash_loan() {
+    let pool = address!("3000000000000000000000000000000000000003");
+    let caller = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let tin = address!("1111111111111111111111111111111111111111");
+    let tout = address!("2222222222222222222222222222222222222222");
+    // A plain V2 swap: input is transferred into the pool before the pool
+    // pays output, so the callback-ordering signature does not apply.
+    let transfers = vec![
+        TransferFact {
+            tx_index: 0,
+            log_index: 1,
+            token: tin,
+            from: caller,
+            to: pool,
+            amount: U256::from(300),
+        },
+        TransferFact {
+            tx_index: 0,
+            log_index: 2,
+            token: tout,
+            from: pool,
+            to: caller,
+            amount: U256::from(1_000),
+        },
+    ];
+    let swaps = vec![SwapFact {
+        tx_index: 0,
+        log_index: 3,
+        pool,
+        amm: Amm::V2,
+        token_in: tin,
+        token_out: tout,
+        token_source: LegSource::Transfer,
+        amount_in: U256::from(300),
+        amount_out: U256::from(1_000),
+        tick: None,
+        owner: Some(caller),
+    }];
+    assert!(infer_v2_flash_swap(&swaps, &transfers).is_none());
 }
 
 #[test]
@@ -1089,9 +1255,10 @@ fn dispatched_topics_are_unique_and_classified() {
         COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC,
         COMPOUND_V3_BUY_COLLATERAL_TOPIC, EULER_V2_LIQUIDATE_TOPIC, GELATO_EXEC_SUCCESS_TOPIC,
         INF_CL_SWAP_TOPIC, LB_BIN_REWARD_UPDATED_TOPIC, LB_CLAIM_REWARDS_TOPIC,
-        LB_TRANSFER_BATCH_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC, MORPHO_BLUE_LIQUIDATE_TOPIC,
-        NOTIFY_REWARD_TOPIC, SILO_V2_LIQUIDATION_CALL_TOPIC, UNI_V3_FLASH_TOPIC, V2_BURN_TOPIC,
-        V2_MINT_TOPIC, V2_SYNC_TOPIC, V4_SWAP_TOPIC,
+        LB_TRANSFER_BATCH_TOPIC, LFJ_LB_FLASH_LOAN_TOPIC, LFJ_LB_FLASH_LOAN_V20_TOPIC,
+        MORPHO_BLUE_FLASH_LOAN_TOPIC, MORPHO_BLUE_LIQUIDATE_TOPIC, NOTIFY_REWARD_TOPIC,
+        SILO_V2_LIQUIDATION_CALL_TOPIC, UNI_V3_FLASH_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC,
+        V2_SYNC_TOPIC, V4_SWAP_TOPIC,
     };
     use crate::pool::decoders::{
         BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
@@ -1132,6 +1299,8 @@ fn dispatched_topics_are_unique_and_classified() {
         (*AAVE_V2_FLASH_LOAN_TOPIC, LogFamily::FlashLoan),
         (*BALANCER_FLASH_LOAN_TOPIC, LogFamily::FlashLoan),
         (*MORPHO_BLUE_FLASH_LOAN_TOPIC, LogFamily::FlashLoan),
+        (*LFJ_LB_FLASH_LOAN_TOPIC, LogFamily::FlashLoan),
+        (*LFJ_LB_FLASH_LOAN_V20_TOPIC, LogFamily::FlashLoan),
         (*COMPOUND_V3_BUY_COLLATERAL_TOPIC, LogFamily::BuyCollateral),
         (V3_MINT_TOPIC, LogFamily::V3Liquidity),
         (V3_BURN_TOPIC, LogFamily::V3Liquidity),
@@ -1164,5 +1333,5 @@ fn dispatched_topics_are_unique_and_classified() {
             "topic0 {topic} misclassified"
         );
     }
-    assert_eq!(seen.len(), 50);
+    assert_eq!(seen.len(), 52);
 }

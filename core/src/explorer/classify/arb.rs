@@ -6,8 +6,8 @@ use alloy::primitives::{Address, U256};
 
 use crate::explorer::decode;
 use crate::explorer::profit::{
-    deficit_amount, find_closed_cycle, is_dust_deficit, net_flash_loan, select_profit_token,
-    DeltaLedger, NATIVE_MARKER,
+    deficit_amount, is_dust_deficit, net_flash_loan, select_profit_token, DeltaLedger,
+    ProfitTokenPolicy, NATIVE_MARKER,
 };
 use crate::explorer::reject::{RejectReason, RejectedCandidate};
 use crate::explorer::strategy_tags::{self, ArbTagOpts};
@@ -17,7 +17,9 @@ use crate::explorer::types::{
 use crate::types::opportunity::underlying_pools_hash;
 use crate::types::tags::canonical_funding_source;
 
-use super::legs::{resolved_cycle_edges, searcher_candidates};
+use super::legs::{
+    resolve_arb_routes, resolved_cycle_edges, searcher_candidates, ResolvedArbRoute,
+};
 use super::{append_tag, has_unresolved_tokens, BlockInput, TxInput};
 
 const CLASSIFY_STRATEGY: &str = "explorer_classify";
@@ -55,11 +57,6 @@ pub(super) fn classify_atomic_arbs(
                         || input.ctx.gmx_event_emitters.contains(&g.emitter))
             });
         seen_gmx_adl = adl_seen;
-        let gmx_route_hit = tx.swaps.iter().any(|s| {
-            input.ctx.gmx_market_tokens.contains(&s.token_in)
-                || input.ctx.gmx_market_tokens.contains(&s.token_out)
-        });
-        let gmx_adl_signal = adl_seen && gmx_route_hit;
         if !tx.success {
             continue;
         }
@@ -165,8 +162,27 @@ pub(super) fn classify_atomic_arbs(
         // USDC "arbs" via the KyberSwap executor that mev.zone does not
         // count). Genuine searcher cycles run over real DEX pools (v2/v3/v4).
         let resolved_edges = resolved_cycle_edges(tx);
+        let routes = resolve_arb_routes(tx);
 
-        let Some((anchor, walk_tokens)) = find_closed_cycle(&resolved_edges) else {
+        // One event per tx, but the route is chosen from *all* closed walks
+        // using ledger evidence instead of whichever walk DFS found first.
+        // A cycle owned by an unrelated actor cannot be this tx's arb even if
+        // its ledger residual looks attractive; filter before scoring so a
+        // valid second cycle is not lost behind a contaminated first one.
+        let attributable_routes: Vec<&ResolvedArbRoute> = routes
+            .iter()
+            .filter(|r| {
+                let swaps: Vec<SwapFact> = r.swaps(tx).into_iter().cloned().collect();
+                flow_attributable(&swaps, &candidates)
+            })
+            .collect();
+        let Some(route) = select_route(
+            &attributable_routes,
+            &ledger,
+            tx.from,
+            &candidates,
+            &input.ctx.profit_policy,
+        ) else {
             if resolved_edges.len() >= 2 {
                 rejects.push(classify_reject(
                     input.block,
@@ -177,7 +193,17 @@ pub(super) fn classify_atomic_arbs(
             }
             continue;
         };
-        if !flow_attributable(&tx.swaps, &candidates) {
+        let anchor = route.anchor;
+        let walk_tokens = route.walk_tokens();
+        // The selected walk is the single source of truth for route metadata,
+        // tags, pools and canonical hash. Unrelated receipt swaps stay out.
+        let route_swaps: Vec<SwapFact> = route.swaps(tx).into_iter().cloned().collect();
+        let gmx_route_hit = route_swaps.iter().any(|s| {
+            input.ctx.gmx_market_tokens.contains(&s.token_in)
+                || input.ctx.gmx_market_tokens.contains(&s.token_out)
+        });
+        let gmx_adl_signal = adl_seen && gmx_route_hit;
+        if !flow_attributable(&route_swaps, &candidates) {
             rejects.push(classify_reject(
                 input.block,
                 tx.tx_index,
@@ -187,12 +213,12 @@ pub(super) fn classify_atomic_arbs(
             continue;
         }
 
-        let hop_max = hop_max_by_token(&tx.swaps);
+        let hop_max = hop_max_by_token(&route_swaps);
         // Route pools often appear in `candidates` via transfer participation and
         // can hold a transient positive residual on the anchor (inventory of the
         // hop). They must never be the profit holder — otherwise a net-zero
         // executor that forwards profit never reaches the forwarded heuristic.
-        let route_pools: HashSet<Address> = resolved_edges.iter().map(|(_, _, p)| *p).collect();
+        let route_pools: HashSet<Address> = route.edges.iter().map(|e| e.pool).collect();
         let profit_candidates: Vec<Address> = candidates
             .iter()
             .copied()
@@ -208,7 +234,7 @@ pub(super) fn classify_atomic_arbs(
         let forwarded = forwarded_recipient(
             &ledger,
             &tx.transfers,
-            &tx.swaps,
+            &route_swaps,
             &profit_candidates,
             &input.tip_sinks,
             &input.ctx.profit_policy.priority,
@@ -347,7 +373,7 @@ pub(super) fn classify_atomic_arbs(
         // P0.4: flash-swap / flash-loan flag when principal was borrowed.
         let flash_arb = !tx.flashloans.is_empty() || flashloan_fee_wei.is_some();
         // P1.3: multi-hop arb whose route includes a non-blue-chip token.
-        let long_tail = is_long_tail_arb(&tx.swaps, &input.ctx.profit_policy.priority);
+        let long_tail = is_long_tail_arb(&route_swaps, &input.ctx.profit_policy.priority);
         let mut tags: Vec<&str> = Vec::new();
         if flash_arb {
             tags.push("flash_arb");
@@ -367,8 +393,8 @@ pub(super) fn classify_atomic_arbs(
             gmx_adl_signal,
             ..*arb_tag_opts
         };
-        tags.extend(strategy_tags::arb_strategy_tags(&tx.swaps, &tag_opts));
-        let delivered = route_delivery(tx);
+        tags.extend(strategy_tags::arb_strategy_tags(&route_swaps, &tag_opts));
+        let delivered = route_delivery(tx, &route_swaps);
         let mut details = serde_json::json!({
             "mode": "realized",
             "tags": tags,
@@ -379,16 +405,18 @@ pub(super) fn classify_atomic_arbs(
                 "profit_token": format!("{profit_token:#x}"),
             },
             "other_residuals": other_positives,
-            "route": tx.swaps.iter().enumerate().map(|(i, s)| {
+            "route": route.edges.iter().enumerate().map(|(i, e)| {
                 let (in_net, out_net) = delivered.get(i).copied().unwrap_or((None, None));
                 serde_json::json!({
-                    "pool": format!("{:#x}", s.pool),
-                    "amm": s.amm.as_str(),
-                    "token_in": format!("{:#x}", s.token_in),
-                    "token_out": format!("{:#x}", s.token_out),
-                    "token_source": s.token_source.as_str(),
-                    "amount_in": s.amount_in.to_string(),
-                    "amount_out": s.amount_out.to_string(),
+                    "swap_index": e.swap_index,
+                    "log_index": e.log_index,
+                    "pool": format!("{:#x}", e.pool),
+                    "amm": e.amm.as_str(),
+                    "token_in": format!("{:#x}", e.token_in),
+                    "token_out": format!("{:#x}", e.token_out),
+                    "token_source": tx.swaps[e.swap_index].token_source.as_str(),
+                    "amount_in": e.amount_in.to_string(),
+                    "amount_out": e.amount_out.to_string(),
                     // Tokens actually received by this pool / delivered to the
                     // next hop. Null when the flow is searcher-mediated or the
                     // same (pool, token) appears in several swaps.
@@ -396,7 +424,7 @@ pub(super) fn classify_atomic_arbs(
                     "amount_out_net": out_net.map(|v| v.to_string()),
                 })
             }).collect::<Vec<_>>(),
-            "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
+            "arb_meta": arb_route_meta(&route_swaps, flash_arb, &input.ctx.pool_dex),
         });
         // WP5 / M-10: persist the realized funding provider, router generation
         // and underlying pool set. `explorer_canonical_id` already reads these
@@ -404,16 +432,23 @@ pub(super) fn classify_atomic_arbs(
         if let Some(fl) = tx.flashloans.first() {
             details["funding_source"] = serde_json::json!(canonical_funding_source(fl.protocol));
         }
-        let underlying_pools: Vec<Address> = tx
-            .swaps
-            .iter()
-            .filter(|s| s.amm != Amm::Aggregator)
-            .map(|s| s.pool)
-            .collect();
+        let underlying_pools = route.pools();
         if !underlying_pools.is_empty() {
             details["underlying_pools_hash"] =
                 serde_json::json!(format!("{:#x}", underlying_pools_hash(&underlying_pools)));
         }
+        // Route attribution is a separate confidence axis from the realized
+        // P&L basis. Unknown leg owners or competing closed walks only lower
+        // this classification signal; they never invent or erase ledger profit.
+        let unattributed_flow = route.unattributed_legs();
+        details["candidate_route_count"] = serde_json::json!(routes.len());
+        details["unattributed_flow"] = serde_json::json!(unattributed_flow);
+        details["classification_confidence"] =
+            serde_json::json!(if routes.len() == 1 && unattributed_flow == 0 {
+                "exact"
+            } else {
+                "inferred"
+            });
         if let Some(version) = tx
             .route_provenance
             .as_ref()
@@ -446,7 +481,7 @@ pub(super) fn classify_atomic_arbs(
             details["forwarded_from"] = serde_json::json!(format!("{from_addr:#x}"));
         }
         events.push(MevEvent {
-            pools: tx.swaps.iter().map(|s| s.pool).collect(),
+            pools: route_swaps.iter().map(|s| s.pool).collect(),
             profit_token: Some(profit_token),
             profit_amount: Some(amount),
             profit_tokens,
@@ -475,6 +510,72 @@ pub(super) fn classify_atomic_arbs(
         });
     }
     (events, rejects)
+}
+
+/// Pick the candidate cycle this tx's profit belongs to. Only one event is
+/// emitted per tx, so ranking must be explicit rather than "first DFS walk".
+///
+/// The ranking is intentionally conservative: no raw amounts of different
+/// tokens are compared (that would be a valuation guess). It prefers a route
+/// whose anchor actually holds a searcher residual, then the route touching
+/// the highest-priority residual token, then the shorter / lower-log-index
+/// route as a deterministic tie-break.
+fn select_route<'a>(
+    routes: &[&'a ResolvedArbRoute],
+    ledger: &DeltaLedger,
+    eoa: Address,
+    candidates: &[Address],
+    policy: &ProfitTokenPolicy,
+) -> Option<&'a ResolvedArbRoute> {
+    let anchor_hit = |route: &ResolvedArbRoute| {
+        candidates
+            .iter()
+            .any(|c| !profit_amount(ledger, eoa, *c, route.anchor).is_zero())
+    };
+    let priority_rank = |route: &ResolvedArbRoute| {
+        let tokens = route.walk_tokens();
+        policy
+            .priority
+            .iter()
+            .position(|t| {
+                tokens.contains(t)
+                    && candidates
+                        .iter()
+                        .any(|c| !profit_amount(ledger, eoa, *c, *t).is_zero())
+            })
+            .unwrap_or(usize::MAX)
+    };
+
+    let tie_key = |route: &ResolvedArbRoute| {
+        (
+            route.edges.len(),
+            route
+                .edges
+                .iter()
+                .map(|e| (e.log_index, e.swap_index))
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let mut best: Option<&ResolvedArbRoute> = None;
+    for &route in routes {
+        let better = match best {
+            None => true,
+            Some(prev) => {
+                if anchor_hit(route) != anchor_hit(prev) {
+                    anchor_hit(route)
+                } else if priority_rank(route) != priority_rank(prev) {
+                    priority_rank(route) < priority_rank(prev)
+                } else {
+                    tie_key(route) < tie_key(prev)
+                }
+            }
+        };
+        if better {
+            best = Some(route);
+        }
+    }
+    best
 }
 
 /// Keeper / automation execution (plan P1.5): Gelato ExecSuccess /
@@ -618,9 +719,9 @@ fn classify_reject(
 /// visible instead of the nominal swap amount being trusted blindly. `None`
 /// means the amount is not attributable (searcher-mediated hop, ambiguous
 /// duplicate pool/token, or no matching transfer).
-fn route_delivery(tx: &TxInput) -> Vec<(Option<U256>, Option<U256>)> {
+fn route_delivery(tx: &TxInput, swaps: &[SwapFact]) -> Vec<(Option<U256>, Option<U256>)> {
     let mut counts: HashMap<(Address, Address), usize> = HashMap::new();
-    for s in &tx.swaps {
+    for s in swaps {
         *counts.entry((s.pool, s.token_in)).or_default() += 1;
     }
     fn transfer_sum(tx: &TxInput, pred: impl Fn(&TransferFact) -> bool) -> Option<U256> {
@@ -631,7 +732,7 @@ fn route_delivery(tx: &TxInput) -> Vec<(Option<U256>, Option<U256>)> {
             .fold(U256::ZERO, |acc, t| acc.saturating_add(t.amount));
         (!total.is_zero()).then_some(total)
     }
-    tx.swaps
+    swaps
         .iter()
         .enumerate()
         .map(|(i, s)| {
@@ -641,8 +742,7 @@ fn route_delivery(tx: &TxInput) -> Vec<(Option<U256>, Option<U256>)> {
             } else {
                 None
             };
-            let out_net = tx
-                .swaps
+            let out_net = swaps
                 .get(i + 1)
                 .filter(|n| n.token_in == s.token_out)
                 .and_then(|n| {
@@ -657,7 +757,11 @@ fn route_delivery(tx: &TxInput) -> Vec<(Option<U256>, Option<U256>)> {
 
 /// Derive route geometry metadata for an atomic arb (spec /).
 /// Does not invent new `MevKind`s — annotation only.
-fn arb_route_meta(swaps: &[SwapFact], flashloan_funded: bool) -> serde_json::Value {
+fn arb_route_meta(
+    swaps: &[SwapFact],
+    flashloan_funded: bool,
+    pool_dex: &HashMap<Address, String>,
+) -> serde_json::Value {
     let hop_count = swaps.len();
     let mut pools: Vec<Address> = swaps.iter().map(|s| s.pool).collect();
     pools.sort();
@@ -682,18 +786,43 @@ fn arb_route_meta(swaps: &[SwapFact], flashloan_funded: bool) -> serde_json::Val
     } else {
         "multi_hop"
     };
-    serde_json::json!({
+    // Prefer real DEX identity when every leg has one. Without it we keep the
+    // legacy AMM-family answer but say so explicitly instead of silently
+    // equating "v2" with a DEX.
+    let known_venues: Vec<&str> = swaps
+        .iter()
+        .filter_map(|s| {
+            pool_dex
+                .get(&s.pool)
+                .map(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+        })
+        .collect();
+    let protocol_basis = !swaps.is_empty() && known_venues.len() == swaps.len();
+    let mut venues: Vec<&str> = known_venues;
+    venues.sort_unstable();
+    venues.dedup();
+    let (dex_count, is_cross_dex, cross_dex_basis) = if protocol_basis {
+        (venues.len(), venues.len() > 1, "protocol")
+    } else {
+        (amms.len(), amms.len() > 1, "amm_family")
+    };
+    let mut meta = serde_json::json!({
         "hop_count": hop_count,
         "pool_count": pools.len(),
-        // These count AMM families (v2/v3/v4/…), not DEX protocols.
-        // `dex_count` is kept as a legacy alias for stored/exported consumers.
         "amm_family_count": amms.len(),
-        "dex_count": amms.len(),
-        "is_cross_dex": amms.len() > 1,
+        // Legacy alias: protocol identity when known, AMM-family count otherwise.
+        "dex_count": dex_count,
+        "is_cross_dex": is_cross_dex,
+        "cross_dex_basis": cross_dex_basis,
         "flashloan_funded": flashloan_funded,
         "arb_shape": arb_shape,
         "unique_tokens": unique_tokens,
-    })
+    });
+    if protocol_basis {
+        meta["venues"] = serde_json::json!(venues);
+    }
+    meta
 }
 
 /// Multi-hop arb whose route includes a non-blue-chip token (plan P1.3 /).
@@ -1000,10 +1129,12 @@ mod split_tests {
     use crate::explorer::canonical::explorer_canonical_id;
     use crate::explorer::classify::RouteProvenance;
     use crate::explorer::test_fixtures::{
-        block, swap, swap_agg, transfer, tx, ATK, MARKET, POOL_A, POOL_B, TOKA, USDC, WNATIVE,
+        block, swap, swap_agg, swap_at_tick, swap_owned, transfer, tx, ATK, MARKET, POOL_A, POOL_B,
+        TOKA, USDC, WNATIVE,
     };
     use crate::explorer::types::{FlashLoanFact, KeeperFact};
     use crate::types::opportunity::underlying_pools_hash;
+    use alloy::primitives::address;
 
     fn tag_opts() -> ArbTagOpts<'static> {
         ArbTagOpts {
@@ -1157,6 +1288,153 @@ mod split_tests {
                 .map(|e| (e.kind, e.tx_index))
                 .collect::<Vec<_>>()
         );
+    }
+
+    const POOL_C: Address = address!("3000000000000000000000000000000000000005");
+    const POOL_D: Address = address!("3000000000000000000000000000000000000006");
+    const TOKB: Address = address!("5000000000000000000000000000000000000007");
+
+    /// Two independent closed walks in one receipt must still emit one event,
+    /// and that event's route/meta/hash must describe only the winning walk.
+    #[test]
+    fn two_cycles_emit_one_event_from_selected_route() {
+        let t = tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, USDC, 200, 110),
+                swap(POOL_C, WNATIVE, TOKB, 5, 10),
+                swap(POOL_D, TOKB, WNATIVE, 10, 6),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+                transfer(2, TOKA, ATK, POOL_B, 200),
+                transfer(3, USDC, POOL_B, ATK, 110),
+                transfer(4, WNATIVE, ATK, POOL_C, 5),
+                transfer(5, TOKB, POOL_C, ATK, 10),
+                transfer(6, TOKB, ATK, POOL_D, 10),
+                transfer(7, WNATIVE, POOL_D, ATK, 6),
+            ],
+        );
+        let input = block(vec![t]);
+        let (events, _) = classify_atomic_arbs(&input, &tag_opts());
+
+        assert_eq!(events.len(), 1, "one event per tx even with two cycles");
+        let ev = &events[0];
+        assert_eq!(ev.details["candidate_route_count"], serde_json::json!(2));
+        assert_eq!(ev.details["classification_confidence"], "inferred");
+        assert_eq!(ev.profit_token, Some(USDC));
+        assert_eq!(ev.pools, vec![POOL_A, POOL_B]);
+        let route = ev.details["route"].as_array().expect("route");
+        assert_eq!(route.len(), 2);
+        assert_eq!(route[0]["pool"], format!("{POOL_A:#x}"));
+        assert_eq!(route[1]["pool"], format!("{POOL_B:#x}"));
+        assert_eq!(ev.details["arb_meta"]["unique_tokens"], 2);
+        let expected = format!("{:#x}", underlying_pools_hash(&[POOL_A, POOL_B]));
+        assert_eq!(
+            ev.details["underlying_pools_hash"].as_str(),
+            Some(expected.as_str())
+        );
+    }
+
+    /// A profitable one-way swap in the same receipt is not part of the cycle.
+    #[test]
+    fn unrelated_swap_is_excluded_from_route_and_meta() {
+        let t = tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap_owned(ATK, POOL_A, USDC, TOKA, 100, 200),
+                swap_owned(ATK, POOL_B, TOKA, USDC, 200, 110),
+                swap(POOL_C, USDC, TOKB, 7, 9),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+                transfer(2, TOKA, ATK, POOL_B, 200),
+                transfer(3, USDC, POOL_B, ATK, 110),
+                transfer(4, USDC, ATK, POOL_C, 7),
+                transfer(5, TOKB, POOL_C, ATK, 9),
+            ],
+        );
+        let input = block(vec![t]);
+        let (events, _) = classify_atomic_arbs(&input, &tag_opts());
+
+        assert_eq!(events.len(), 1);
+        let ev = &events[0];
+        assert_eq!(ev.details["candidate_route_count"], serde_json::json!(1));
+        assert_eq!(ev.details["unattributed_flow"], serde_json::json!(0));
+        assert_eq!(ev.details["classification_confidence"], "exact");
+        assert_eq!(ev.pools, vec![POOL_A, POOL_B]);
+        assert_eq!(ev.details["arb_meta"]["hop_count"], 2);
+        assert_eq!(ev.details["arb_meta"]["unique_tokens"], 2);
+        let route = ev.details["route"].as_array().expect("route");
+        assert_eq!(route.len(), 2);
+    }
+
+    /// Unknown funder identities are a route-attribution signal only; they
+    /// must not change the realized P&L confidence axis.
+    #[test]
+    fn unknown_owner_lowers_classification_confidence_only() {
+        let input = block(vec![arb_tx(0)]);
+        let (events, _) = classify_atomic_arbs(&input, &tag_opts());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].details["unattributed_flow"], serde_json::json!(2));
+        assert_eq!(events[0].details["classification_confidence"], "inferred");
+        assert_eq!(events[0].confidence, Confidence::Exact);
+    }
+
+    #[test]
+    fn cross_dex_uses_protocol_identity_not_amm_family() {
+        let swaps = vec![
+            swap(POOL_A, USDC, TOKA, 100, 200),
+            swap(POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let pool_dex = HashMap::from([
+            (POOL_A, "sushiswap".to_string()),
+            (POOL_B, "uniswap".to_string()),
+        ]);
+        let meta = arb_route_meta(&swaps, false, &pool_dex);
+        assert_eq!(meta["is_cross_dex"], true);
+        assert_eq!(meta["dex_count"], 2);
+        assert_eq!(meta["amm_family_count"], 1);
+        assert_eq!(meta["cross_dex_basis"], "protocol");
+        assert_eq!(meta["venues"][0], "sushiswap");
+        assert_eq!(meta["venues"][1], "uniswap");
+    }
+
+    #[test]
+    fn same_dex_different_amm_is_not_cross_dex() {
+        let swaps = vec![
+            swap(POOL_A, USDC, TOKA, 100, 200),
+            swap_at_tick(POOL_B, TOKA, USDC, 200, 110, 0),
+        ];
+        let pool_dex = HashMap::from([
+            (POOL_A, "uniswap".to_string()),
+            (POOL_B, "uniswap".to_string()),
+        ]);
+        let meta = arb_route_meta(&swaps, false, &pool_dex);
+        assert_eq!(meta["is_cross_dex"], false);
+        assert_eq!(meta["dex_count"], 1);
+        assert_eq!(meta["amm_family_count"], 2);
+        assert_eq!(meta["cross_dex_basis"], "protocol");
+    }
+
+    #[test]
+    fn cross_dex_metadata_declares_amm_family_fallback() {
+        let swaps = vec![
+            swap(POOL_A, USDC, TOKA, 100, 200),
+            swap_at_tick(POOL_B, TOKA, USDC, 200, 110, 0),
+        ];
+        let meta = arb_route_meta(&swaps, false, &HashMap::new());
+        assert_eq!(meta["is_cross_dex"], true);
+        assert_eq!(meta["dex_count"], 2);
+        assert_eq!(meta["cross_dex_basis"], "amm_family");
+        assert!(meta["venues"].is_null());
     }
 
     #[test]

@@ -42,6 +42,10 @@ pub struct PoolRegistry {
     /// V3-style pool → fee in bps (JIT fee capture). Pools whose stored fee is
     /// absent or implausible are simply omitted.
     pub fee_bps: HashMap<Address, u32>,
+    /// Pool → normalized `dex_name` from discovery. Feeds realized cross-DEX
+    /// metadata so "same AMM family, different protocol" is not equated with
+    /// one venue.
+    pub dex_name: HashMap<Address, String>,
     /// Metadata consistency counters; never consulted by classification.
     pub health: RegistryHealth,
 }
@@ -98,6 +102,7 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
     let mut v2_like = HashSet::new();
     let mut epoch_venue = HashSet::new();
     let mut fee_bps = HashMap::new();
+    let mut dex_name = HashMap::new();
     let mut health = RegistryHealth::default();
     // Bounded sample of rows whose skim-eligibility class would change.
     let mut stale: Vec<(Address, DexType, DexType)> = Vec::new();
@@ -140,6 +145,14 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
                         }
                     }
                     tokens.insert(p.address, (p.token0, p.token1));
+                    if let Some(name) = p
+                        .dex_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|n| !n.is_empty())
+                    {
+                        dex_name.insert(p.address, name.to_ascii_lowercase());
+                    }
                     if is_skim_eligible(&p) {
                         v2_like.insert(p.address);
                     }
@@ -199,6 +212,7 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
         v2_like,
         epoch_venue,
         fee_bps,
+        dex_name,
         health,
     }
 }
@@ -430,6 +444,18 @@ mod tests {
         assert_eq!(
             registry.tokens.get(&stale.address).map(|t| t.0),
             Some(stale.token0)
+        );
+        assert_eq!(
+            registry.dex_name.get(&stale.address).map(String::as_str),
+            Some("pharaoh"),
+            "discovery venue labels must reach realized cross-DEX metadata"
+        );
+        assert_eq!(
+            registry
+                .dex_name
+                .get(&Address::repeat_byte(0x8b))
+                .map(String::as_str),
+            Some("pharaoh")
         );
 
         {

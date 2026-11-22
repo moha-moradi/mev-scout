@@ -220,6 +220,8 @@ pub struct PoolViews<'a> {
     pub epoch_venue: &'a HashSet<Address>,
     /// Known V3-style pool fee tiers in bps (JIT fee capture).
     pub fee_bps: &'a HashMap<Address, u32>,
+    /// Pool → normalized DEX name for realized cross-DEX metadata.
+    pub dex_name: &'a HashMap<Address, String>,
 }
 
 /// Result of indexing one block.
@@ -269,6 +271,7 @@ fn run_block_context(cfg: &IngestConfig, pools: PoolViews<'_>) -> BlockContext {
         causal_price_min_pct: cfg.causal_price_min_pct,
         jit_pool_fee_bps: cfg.jit_pool_fee_bps,
         pool_fee_bps: std::sync::Arc::new(pools.fee_bps.clone()),
+        pool_dex: std::sync::Arc::new(pools.dex_name.clone()),
     }
 }
 
@@ -2246,6 +2249,7 @@ mod tests {
         let tokens = HashMap::from([(pool_a, (token0, token1)), (pool_b, (token0, token1))]);
         let empty_addresses = HashSet::new();
         let empty_fees = HashMap::new();
+        let empty_dex: HashMap<Address, String> = HashMap::new();
         let mut cfg = avalanche_cfg();
         cfg.record_rejections = true;
         let decoded = decode_successful_txs(
@@ -2257,6 +2261,7 @@ mod tests {
                 v2_like: &empty_addresses,
                 epoch_venue: &empty_addresses,
                 fee_bps: &empty_fees,
+                dex_name: &empty_dex,
             },
             &cfg,
             Some(20.0),

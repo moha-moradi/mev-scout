@@ -148,6 +148,10 @@ pub struct BlockContext {
     pub jit_pool_fee_bps: u32,
     /// Registry pool → fee bps for V3-style pools (overrides the estimate).
     pub pool_fee_bps: Arc<HashMap<Address, u32>>,
+    /// Optional pool → DEX identity (e.g. `sushiswap`, `uniswap`, `pharaoh`).
+    /// Empty by default: cross-DEX metadata then falls back to the legacy
+    /// AMM-family basis and records that choice in `arb_meta.cross_dex_basis`.
+    pub pool_dex: Arc<HashMap<Address, String>>,
 }
 
 impl Default for BlockContext {
@@ -166,6 +170,7 @@ impl Default for BlockContext {
             causal_price_min_pct: legs::CAUSAL_PRICE_MIN_PCT,
             jit_pool_fee_bps: jit::POOL_FEE_BPS,
             pool_fee_bps: Arc::new(HashMap::new()),
+            pool_dex: Arc::new(HashMap::new()),
         }
     }
 }
@@ -621,6 +626,14 @@ pub(crate) fn decode_tx_logs_with_aliases(
     decode::attach_swap_tokens(&mut facts.swaps, &facts.transfers, pool_tokens);
     // drop aggregator edges already covered by DEX swap edges.
     decode::dedup_aggregator_facts(&mut facts.swaps);
+    // V2 flash swaps have no log event; infer them from the transfer stream
+    // only when no explicit provider already funded the tx.
+    if facts.flashloans.is_empty() {
+        if let Some(mut fl) = decode::infer_v2_flash_swap(&facts.swaps, &facts.transfers) {
+            fl.tx_index = tx_index;
+            facts.flashloans.push(fl);
+        }
+    }
     if let Some(router_version) = router_version {
         facts.route_provenance = Some(RouteProvenance {
             router_version: Some(router_version),
@@ -664,11 +677,62 @@ mod tests {
         WNATIVE,
     };
     use crate::explorer::types::{
-        has_backrun_tag, utility_subkind, Confidence, JitFact, KeeperFact, MevKind, UnmappedLog,
-        V2PairOpFact, V2PairOpKind,
+        has_backrun_tag, utility_subkind, Amm, Confidence, JitFact, KeeperFact, MevKind,
+        UnmappedLog, V2PairOpFact, V2PairOpKind,
     };
     use crate::types::ChainName;
     use alloy::primitives::{address, b256, Address, U256};
+
+    /// V2 flash swaps have no event of their own: the transfer-order
+    /// inference must reach `DecodedTxFacts` so the funding tag survives.
+    #[test]
+    fn v2_flash_swap_is_wired_into_decoded_facts() {
+        use crate::data::LogData;
+        use alloy::primitives::Bytes;
+
+        let pool = address!("3000000000000000000000000000000000000003");
+        let callback = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let tin = address!("1111111111111111111111111111111111111111");
+        let tout = address!("2222222222222222222222222222222222222222");
+        let topic = |a: Address| {
+            let mut b = [0u8; 32];
+            b[12..32].copy_from_slice(a.as_slice());
+            B256::from(b)
+        };
+        let word = |v: u64| {
+            let mut b = [0u8; 32];
+            b[24..32].copy_from_slice(&v.to_be_bytes());
+            b.to_vec()
+        };
+        let transfer = |li: u64, token: Address, from: Address, to: Address, amount: u64| LogData {
+            log_index: Some(li),
+            address: token,
+            topics: vec![crate::chain::events::TRANSFER_TOPIC, topic(from), topic(to)],
+            data: Bytes::from(word(amount)),
+        };
+
+        let logs = vec![
+            transfer(0, tout, pool, callback, 1_000),
+            transfer(1, tin, callback, pool, 300),
+            LogData {
+                log_index: Some(2),
+                address: pool,
+                topics: vec![
+                    crate::chain::events::V2_SWAP_TOPIC,
+                    topic(callback),
+                    topic(callback),
+                ],
+                data: Bytes::from([word(300), word(0), word(0), word(1_000)].concat()),
+            },
+        ];
+
+        let facts = decode_tx_logs_with_aliases(0, &logs, &HashMap::new(), &HashMap::new());
+        assert_eq!(facts.flashloans.len(), 1, "inferred V2 flash swap missing");
+        assert_eq!(facts.flashloans[0].protocol, "v2_flash_swap");
+        assert_eq!(facts.flashloans[0].recipient, callback);
+        assert_eq!(facts.flashloans[0].amount, U256::from(1_000));
+        assert!(facts.swaps.iter().any(|s| s.amm == Amm::V2));
+    }
 
     /// Unmapped receipt logs are retained (never silently dropped) while
     /// mapped families still decode normally.

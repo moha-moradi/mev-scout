@@ -9,6 +9,8 @@
 //! - liquidation registry: Aave V3 `LiquidationCall` (+ Spark address alias),
 //!   Compound V3 `Absorb`/`BuyCollateral`, Compound V2 `LiquidateBorrow`,
 //!   Morpho Blue / Silo V2 / Euler V2 liquidations ( / /)
+//! - flash-loan events: Aave V2/V3, Balancer V2, Uniswap V3 `Flash`,
+//!   Morpho Blue, LFJ/Trader Joe LB 2.0 and 2.1/2.2
 //! - V3 `Mint`/`Burn` (JIT positions)
 //! - UniV2 `Sync`/`Mint`/`Burn` (skim exclusion)
 //!
@@ -40,7 +42,7 @@ pub use aggregator::{
     PARASWAP_SWAPPED_V3_TOPIC, ZRX_FILL_TOPIC,
 };
 pub use attach::attach_swap_tokens;
-pub use flash_loan::{decode_flash_loan, flash_loan_funding_tag};
+pub use flash_loan::{decode_flash_loan, flash_loan_funding_tag, infer_v2_flash_swap};
 pub use jit::{decode_lb_bins_liquidity, decode_v3_mint_burn};
 pub use liquidation::{decode_buy_collateral, decode_liquidation, remap_liquidation_protocol};
 pub use sentinels::{is_unresolved_token, TOKEN0_SENTINEL, TOKEN1_SENTINEL};
@@ -104,10 +106,11 @@ fn topic_families() -> &'static HashMap<B256, LogFamily> {
             COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC,
             COMPOUND_V3_BUY_COLLATERAL_TOPIC, DONASWAP_V3_SWAP_TOPIC, EULER_V2_LIQUIDATE_TOPIC,
             GELATO_EXEC_SUCCESS_TOPIC, INF_CL_SWAP_TOPIC, LB_BIN_REWARD_UPDATED_TOPIC,
-            LB_CLAIM_REWARDS_TOPIC, LB_TRANSFER_BATCH_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC,
-            MORPHO_BLUE_LIQUIDATE_TOPIC, NOTIFY_REWARD_TOPIC, SILO_V2_LIQUIDATION_CALL_TOPIC,
-            TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRANSFER_TOPIC, UNI_V3_FLASH_TOPIC, V2_BURN_TOPIC,
-            V2_MINT_TOPIC, V2_SWAP_TOPIC, V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
+            LB_CLAIM_REWARDS_TOPIC, LB_TRANSFER_BATCH_TOPIC, LFJ_LB_FLASH_LOAN_TOPIC,
+            LFJ_LB_FLASH_LOAN_V20_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC, MORPHO_BLUE_LIQUIDATE_TOPIC,
+            NOTIFY_REWARD_TOPIC, SILO_V2_LIQUIDATION_CALL_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
+            TRANSFER_TOPIC, UNI_V3_FLASH_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC, V2_SWAP_TOPIC,
+            V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
         };
         use crate::pool::decoders::{
             BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
@@ -148,6 +151,8 @@ fn topic_families() -> &'static HashMap<B256, LogFamily> {
         table.insert(*AAVE_V2_FLASH_LOAN_TOPIC, LogFamily::FlashLoan);
         table.insert(*BALANCER_FLASH_LOAN_TOPIC, LogFamily::FlashLoan);
         table.insert(*MORPHO_BLUE_FLASH_LOAN_TOPIC, LogFamily::FlashLoan);
+        table.insert(*LFJ_LB_FLASH_LOAN_TOPIC, LogFamily::FlashLoan);
+        table.insert(*LFJ_LB_FLASH_LOAN_V20_TOPIC, LogFamily::FlashLoan);
         table.insert(*COMPOUND_V3_BUY_COLLATERAL_TOPIC, LogFamily::BuyCollateral);
         table.insert(V3_MINT_TOPIC, LogFamily::V3Liquidity);
         table.insert(V3_BURN_TOPIC, LogFamily::V3Liquidity);

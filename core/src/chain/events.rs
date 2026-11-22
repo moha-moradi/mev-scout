@@ -325,6 +325,21 @@ pub static TRADER_JOE_LB_SWAP_LEGACY_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256("Swap(address,address,uint24,bytes32,bytes32,uint24,bytes32,bytes32)")
 });
 
+/// LFJ / Trader Joe LB 2.1/2.2 Pair `FlashLoan(address indexed sender,
+/// ILBFlashLoanCallback indexed receiver, uint24 activeId, bytes32 amounts,
+/// bytes32 totalFees, bytes32 protocolFees)` — verified against lfj-gg/joe-v2
+/// branches main/v2.1/v2.2. `amounts`/`totalFees` pack X in the low 128 bits
+/// and Y in the high 128 bits; the token address is not in the log.
+pub static LFJ_LB_FLASH_LOAN_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("FlashLoan(address,address,uint24,bytes32,bytes32,bytes32)"));
+
+/// Legacy LFJ / Trader Joe LB 2.0 Pair `FlashLoan(address indexed sender,
+/// ILBFlashLoanCallback indexed receiver, IERC20 token, uint256 amount,
+/// uint256 fee)` — verified against lfj-gg/joe-v2 tag v2.0. Kept because the
+/// repo's LB swap decoder covers both 2.0 and 2.1/2.2 pair generations.
+pub static LFJ_LB_FLASH_LOAN_V20_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("FlashLoan(address,address,address,uint256,uint256)"));
+
 /// Pharaoh / LB rewarder `ClaimRewards(address caller, address reward,
 /// uint256 amount)` with `caller`/`reward` indexed. First observed on
 /// Avalanche tx `0x6ded44c4…ad4a9` (rewarder `0x138ce0…`, PHAR token).

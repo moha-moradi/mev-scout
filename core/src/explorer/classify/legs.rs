@@ -1,14 +1,14 @@
 //! Shared swap-leg helpers for the causal backrun pass.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, B256, U256};
 
 use super::{flow_attributable, has_unresolved_tokens, BlockInput, TxInput};
 use crate::explorer::decode;
 use crate::explorer::profit::{
-    has_closed_cycle, has_inventory_spend, select_profit_token, DeltaLedger,
+    closed_cycle_walks, has_closed_cycle, has_inventory_spend, select_profit_token, DeltaLedger,
 };
-use crate::explorer::types::Amm;
+use crate::explorer::types::{Amm, SwapFact};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct SwapLeg {
@@ -96,13 +96,110 @@ pub(super) fn price_better_by(b: &SwapLeg, r: &SwapLeg, min_pct: f64) -> bool {
 pub(super) fn resolved_cycle_edges(tx: &TxInput) -> Vec<(Address, Address, Address)> {
     tx.swaps
         .iter()
-        .filter(|s| {
-            s.amm != Amm::Aggregator
-                && !has_unresolved_tokens(s)
-                && s.token_in != decode::TOKEN0_SENTINEL
-                && s.token_in != decode::TOKEN1_SENTINEL
-        })
+        .filter(|s| is_cycle_edge(s))
         .map(|s| (s.token_in, s.token_out, s.pool))
+        .collect()
+}
+
+fn is_cycle_edge(s: &SwapFact) -> bool {
+    s.amm != Amm::Aggregator
+        && !has_unresolved_tokens(s)
+        && s.token_in != decode::TOKEN0_SENTINEL
+        && s.token_in != decode::TOKEN1_SENTINEL
+}
+
+/// One leg of a *selected* cycle, with its position in `tx.swaps` so the
+/// classifier can recover the exact ordered route (pools, amounts, owners)
+/// instead of falling back to every swap in the receipt.
+#[derive(Debug, Clone)]
+pub(super) struct ResolvedCycleEdge {
+    pub(super) swap_index: usize,
+    pub(super) log_index: u64,
+    pub(super) pool: Address,
+    pub(super) amm: Amm,
+    pub(super) token_in: Address,
+    pub(super) token_out: Address,
+    pub(super) amount_in: U256,
+    pub(super) amount_out: U256,
+    pub(super) owner: Option<Address>,
+}
+
+/// A closed, ordered route recovered from the tx's resolved swap graph.
+#[derive(Debug, Clone)]
+pub(super) struct ResolvedArbRoute {
+    pub(super) anchor: Address,
+    pub(super) edges: Vec<ResolvedCycleEdge>,
+}
+
+impl ResolvedArbRoute {
+    /// Every token touched by this route only (never unrelated receipt swaps).
+    pub(super) fn walk_tokens(&self) -> HashSet<Address> {
+        let mut tokens = HashSet::new();
+        for e in &self.edges {
+            tokens.insert(e.token_in);
+            tokens.insert(e.token_out);
+        }
+        tokens
+    }
+
+    /// Sorted, deduplicated pool set for canonical hashing.
+    pub(super) fn pools(&self) -> Vec<Address> {
+        let mut pools: Vec<Address> = self.edges.iter().map(|e| e.pool).collect();
+        pools.sort_unstable();
+        pools.dedup();
+        pools
+    }
+
+    pub(super) fn unattributed_legs(&self) -> usize {
+        self.edges.iter().filter(|e| e.owner.is_none()).count()
+    }
+
+    pub(super) fn swaps<'a>(&self, tx: &'a TxInput) -> Vec<&'a SwapFact> {
+        self.edges.iter().map(|e| &tx.swaps[e.swap_index]).collect()
+    }
+}
+
+/// All candidate cycles of one tx. The caller scores them against the ledger
+/// and emits at most one event; enumerating here avoids the old "first DFS
+/// walk wins" bias when a receipt contains two unrelated cycles.
+pub(super) fn resolve_arb_routes(tx: &TxInput) -> Vec<ResolvedArbRoute> {
+    let indices: Vec<usize> = tx
+        .swaps
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| is_cycle_edge(s))
+        .map(|(i, _)| i)
+        .collect();
+    let edges: Vec<(Address, Address, Address)> = indices
+        .iter()
+        .map(|&i| {
+            let s = &tx.swaps[i];
+            (s.token_in, s.token_out, s.pool)
+        })
+        .collect();
+    closed_cycle_walks(&edges)
+        .into_iter()
+        .map(|(anchor, walk)| ResolvedArbRoute {
+            anchor,
+            edges: walk
+                .into_iter()
+                .map(|pos| {
+                    let swap_index = indices[pos];
+                    let s = &tx.swaps[swap_index];
+                    ResolvedCycleEdge {
+                        swap_index,
+                        log_index: s.log_index,
+                        pool: s.pool,
+                        amm: s.amm,
+                        token_in: s.token_in,
+                        token_out: s.token_out,
+                        amount_in: s.amount_in,
+                        amount_out: s.amount_out,
+                        owner: s.owner,
+                    }
+                })
+                .collect(),
+        })
         .collect()
 }
 
