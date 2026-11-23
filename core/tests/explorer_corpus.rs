@@ -541,6 +541,76 @@ const CORPUS: &[CorpusCase] = &[
     },
 ];
 
+/// G-06: full 64-hex AVAX hashes pinned from
+/// `docs/arb_atomic_audit_gaps_plan.md` §3. They are deliberately Rust
+/// literals: the cache DB is git-ignored and must not be a test dependency.
+/// `profit_usd`/`net_profit_usd` are the values recorded in that table; only
+/// the first two rows have USD figures, so the other two assert the metadata
+/// and a finite net only.
+struct RealArbGolden {
+    id: &'static str,
+    block: u64,
+    tx_hash: &'static str,
+    arb_shape: &'static str,
+    hop_count: u64,
+    unique_tokens: u64,
+    profit_usd: Option<f64>,
+    net_profit_usd: Option<f64>,
+    confidence: Option<&'static str>,
+}
+
+const REAL_ARB_GOLDEN: &[RealArbGolden] = &[
+    RealArbGolden {
+        id: "av-arb-100528634",
+        block: 100_528_634,
+        tx_hash: "0x37b413bbbd6af98b4919897223d39bfb3313f1e261232936c7b8cde54563bff9",
+        arb_shape: "two_pool",
+        hop_count: 3,
+        unique_tokens: 2,
+        profit_usd: Some(0.025902),
+        net_profit_usd: Some(0.010206),
+        confidence: Some("exact"),
+    },
+    RealArbGolden {
+        id: "av-arb-100529098",
+        block: 100_529_098,
+        tx_hash: "0x7c709477088b85667b3b641d1b80546d833a6082b6570890244b975ecc106f1a",
+        arb_shape: "multi_hop",
+        hop_count: 4,
+        unique_tokens: 4,
+        profit_usd: Some(0.023446),
+        net_profit_usd: Some(0.003250),
+        confidence: Some("inferred"),
+    },
+    RealArbGolden {
+        id: "av-arb-100529236",
+        block: 100_529_236,
+        tx_hash: "0x4d03e567171248c005a64da265667342bc1dedc6d9724e39643b0ba6268851e9",
+        arb_shape: "multi_hop",
+        hop_count: 4,
+        unique_tokens: 4,
+        profit_usd: None,
+        net_profit_usd: None,
+        confidence: Some("inferred"),
+    },
+    RealArbGolden {
+        id: "av-arb-100529720",
+        block: 100_529_720,
+        tx_hash: "0x952f7e215908ea1d35fb59c43bc1c7dec109f935c18a615d62f0155025ea3d16",
+        arb_shape: "triangular",
+        hop_count: 4,
+        unique_tokens: 3,
+        profit_usd: None,
+        net_profit_usd: None,
+        confidence: None,
+    },
+];
+
+/// USD figures in the plan were recorded from a priced cache, so an E2E run
+/// without the same price cache can differ. This is a regression band, not an
+/// exact pin; the exact recorded values stay in the plan table.
+const GOLDEN_USD_REL_TOLERANCE: f64 = 0.5;
+
 /// Build the runtime config for a corpus chain: defaults + chain + the
 /// caller's RPC. If the repo pool-registry cache exists it is wired in so
 /// classification matches the seed run; otherwise the registry degrades to
@@ -925,14 +995,10 @@ fn record_report(store: &ExplorerStore, windows: &[(u64, u64)]) {
     println!("{}", lines.join("\n"));
 }
 
-#[tokio::test]
-#[ignore = "live RPC — set MEV_SCOUT_E2E=1 and RPC_URL"]
-async fn real_block_corpus_matches_derived_facts() -> anyhow::Result<()> {
-    let Some(rpc_url) = rpc_url() else {
-        // `rpc_url()` is `None` both when the live gate was not requested and
-        // when it was requested without an endpoint. Either way an explicit
-        // request must not read as a pass: `MEV_SCOUT_E2E=1` alone fails, and
-        // so does an endpoint supplied without `MEV_SCOUT_E2E=1`.
+/// Shared live gate: `None` means "not requested", an error means an
+/// explicitly requested run is misconfigured and must not read as a pass.
+fn live_rpc_url() -> anyhow::Result<Option<String>> {
+    let Some(url) = rpc_url() else {
         if std::env::var("MEV_SCOUT_E2E").as_deref() == Ok("1") {
             anyhow::bail!("MEV_SCOUT_E2E=1 but RPC_URL is unset or empty");
         }
@@ -942,6 +1008,15 @@ async fn real_block_corpus_matches_derived_facts() -> anyhow::Result<()> {
                  this live test, or unset RPC_URL to skip it"
             );
         }
+        return Ok(None);
+    };
+    Ok(Some(url))
+}
+
+#[tokio::test]
+#[ignore = "live RPC — set MEV_SCOUT_E2E=1 and RPC_URL"]
+async fn real_block_corpus_matches_derived_facts() -> anyhow::Result<()> {
+    let Some(rpc_url) = live_rpc_url()? else {
         eprintln!("Skipping: MEV_SCOUT_E2E/RPC_URL not set");
         return Ok(());
     };
@@ -981,6 +1056,198 @@ async fn real_block_corpus_matches_derived_facts() -> anyhow::Result<()> {
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// Assert one pinned real hash against its persisted row. The `arb_shape`
+/// family and the route are exact; USD values get a documented band because
+/// the recorded figures came from a priced cache that an E2E run may not have.
+fn assert_real_arb_golden(store: &ExplorerStore, case: &RealArbGolden) {
+    let mut ops = store
+        .ops_for_tx(case.tx_hash)
+        .unwrap_or_else(|e| panic!("{}: ops_for_tx failed: {e}", case.id));
+    ops.retain(|o| o.kind == "arb_atomic");
+    let op = ops
+        .first()
+        .unwrap_or_else(|| panic!("{}: no arb_atomic op for {}", case.id, case.tx_hash));
+
+    assert_eq!(op.block_number, case.block, "{}: block mismatch", case.id);
+    if let Some(want) = case.confidence {
+        assert_eq!(op.confidence, want, "{}: confidence mismatch", case.id);
+    }
+
+    let details: serde_json::Value = serde_json::from_str(op.details_json.as_deref().unwrap_or("{}"))
+        .unwrap_or_else(|e| panic!("{}: details_json parse failed: {e}", case.id));
+    let meta = &details["arb_meta"];
+    assert_eq!(
+        meta["arb_shape"].as_str(),
+        Some(case.arb_shape),
+        "{}: arb_shape mismatch",
+        case.id
+    );
+    assert_eq!(
+        meta["arb_shape_basis"].as_str(),
+        Some("token_count"),
+        "{}: arb_shape_basis mismatch",
+        case.id
+    );
+    assert_eq!(
+        meta["hop_count"].as_u64(),
+        Some(case.hop_count),
+        "{}: hop_count mismatch",
+        case.id
+    );
+    assert_eq!(
+        meta["unique_tokens"].as_u64(),
+        Some(case.unique_tokens),
+        "{}: unique_tokens mismatch",
+        case.id
+    );
+
+    // Route: both the separate persisted column and details["route"] must be
+    // present and agree with the hop count.
+    let route_in_details = details["route"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{}: details.route is not an array", case.id));
+    assert_eq!(
+        route_in_details.len() as u64,
+        case.hop_count,
+        "{}: route edge count mismatch",
+        case.id
+    );
+    let route_json = op
+        .route_json
+        .as_deref()
+        .unwrap_or_else(|| panic!("{}: route_json missing", case.id));
+    let route_column: Vec<serde_json::Value> = serde_json::from_str(route_json)
+        .unwrap_or_else(|e| panic!("{}: route_json parse failed: {e}", case.id));
+    assert_eq!(
+        route_column.len(),
+        route_in_details.len(),
+        "{}: route_json and details.route disagree",
+        case.id
+    );
+
+    // cross_dex_basis: protocol identity is only claimed when every leg has a
+    // pool_dex; otherwise the AMM-family fallback is used. Assert the observed
+    // basis is one of the two and internally consistent with cross-dex counts.
+    let basis = meta["cross_dex_basis"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}: cross_dex_basis missing", case.id));
+    assert!(
+        matches!(basis, "protocol" | "amm_family"),
+        "{}: unknown cross_dex_basis {basis:?}",
+        case.id
+    );
+    let cross = meta["is_cross_dex"]
+        .as_bool()
+        .unwrap_or_else(|| panic!("{}: is_cross_dex missing", case.id));
+    let dex_count = meta["dex_count"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("{}: dex_count missing", case.id));
+    assert_eq!(
+        cross,
+        dex_count > 1,
+        "{}: is_cross_dex disagrees with dex_count",
+        case.id
+    );
+    if basis == "protocol" {
+        let venues = meta["venues"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{}: protocol basis without venues", case.id));
+        assert!(!venues.is_empty(), "{}: empty protocol venues", case.id);
+    } else {
+        assert!(
+            meta.get("venues").is_none(),
+            "{}: amm_family basis must not publish protocol venues",
+            case.id
+        );
+    }
+
+    // P&L: always finite, with a regression band where the plan records a
+    // value. `net_profit_usd` is the canonical net; no recomputation here.
+    let net = op
+        .net_profit_usd
+        .unwrap_or_else(|| panic!("{}: net_profit_usd missing", case.id));
+    assert!(net.is_finite(), "{}: non-finite net_profit_usd", case.id);
+    if let Some(expected) = case.net_profit_usd {
+        assert_usd_band(net, expected, case.id, "net_profit_usd");
+    }
+    if let Some(expected) = case.profit_usd {
+        let profit = op
+            .profit_usd
+            .unwrap_or_else(|| panic!("{}: profit_usd missing", case.id));
+        assert_usd_band(profit, expected, case.id, "profit_usd");
+    }
+
+    eprintln!(
+        "{}: ok — shape={} basis={basis} hops={} net=${net:.6}",
+        case.id, case.arb_shape, case.hop_count
+    );
+}
+
+fn assert_usd_band(actual: f64, expected: f64, id: &str, field: &str) {
+    let low = expected * (1.0 - GOLDEN_USD_REL_TOLERANCE);
+    let high = expected * (1.0 + GOLDEN_USD_REL_TOLERANCE);
+    assert!(
+        actual.is_finite() && (low..=high).contains(&actual),
+        "{id}: expected {field} in [${low:.6}, ${high:.6}] \
+         (recorded ${expected:.6}), observed ${actual:.6}"
+    );
+}
+
+/// G-06 acceptance: replay four full AVAX hashes from an archive RPC and
+/// reproduce route, `arb_meta.arb_shape`, `cross_dex_basis` and canonical net.
+#[tokio::test]
+#[ignore = "live RPC — set MEV_SCOUT_E2E=1 and RPC_URL (archive for AVAX 100.5M)"]
+async fn pinned_real_arb_hashes_reproduce_route_meta_and_pnl() -> anyhow::Result<()> {
+    let Some(rpc_url) = live_rpc_url()? else {
+        eprintln!("Skipping: MEV_SCOUT_E2E/RPC_URL not set");
+        return Ok(());
+    };
+
+    let chain = ChainName::Avalanche;
+    let config = corpus_config(chain, &rpc_url);
+    let setup = init_rpc(&config, chain, true).await?;
+    let tip = setup.rpc.get_block_number().await?;
+    let golden_tip = REAL_ARB_GOLDEN
+        .iter()
+        .map(|c| c.block)
+        .max()
+        .unwrap_or_default();
+    anyhow::ensure!(
+        tip >= golden_tip,
+        "RPC tip {tip} is below pinned golden block {golden_tip}; an archive endpoint is required"
+    );
+
+    let (_, chain_cfg) = resolve_chain(&config)?;
+    let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);
+    cfg.confirmations = config.explorer.confirmations;
+    let registry = load_pool_registry(&config, &chain);
+    let store = ExplorerStore::open_in_memory()?;
+
+    for case in REAL_ARB_GOLDEN {
+        run_range(
+            &setup.rpc,
+            &store,
+            &cfg,
+            PoolViews {
+                tokens: &registry.tokens,
+                v2_like: &registry.v2_like,
+                epoch_venue: &registry.epoch_venue,
+                fee_bps: &registry.fee_bps,
+                dex_name: &registry.dex_name,
+            },
+            RangeRequest {
+                from_block: case.block,
+                to_block: case.block,
+                block_concurrency: 1,
+            },
+            &NoopProgress,
+        )
+        .await?;
+        assert_real_arb_golden(&store, case);
     }
     Ok(())
 }

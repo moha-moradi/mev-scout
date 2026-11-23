@@ -17,7 +17,7 @@
 | G-03 (P0) | ✅ تمام | `details.funding_providers[]` + یک تگ بهازای هر provider؛ `funding_source` همان first entry؛ تست double-flash با جمع صحیح fee و بدون کسر مضاعف. |
 | G-04 (P0) | ✅ تمام | `explorer_tags.json` شامل `forwarded_profit` و ۸ تگ `funding:*`؛ تست `vocabulary_covers_every_emitted_arb_tag`. |
 | G-05 (P1) | مسدود | ۷ ردیف Hunt نیاز به RPC/archive دارند. |
-| G-06 (P1) | مسدود | ۴ هش §3 نیاز به `MEV_SCOUT_E2E=1 RPC_URL=...` دارند. |
+| G-06 (P1) | ✅ تست گیتد اضافه شد | ۴ هش §3 بهعنوان literal در `core/tests/explorer_corpus.rs` pin شدند (`pinned_real_arb_hashes_reproduce_route_meta_and_pnl`)؛ اجرا منوط به `MEV_SCOUT_E2E=1 RPC_URL=...` با endpoint آرشیو است و تاکنون اجرا نشدهاست. |
 | G-07 (P2) | ✅ تمام | `details.profit_cause` صرفاً metadata؛ صفر تغییر در `net_profit_usd`. |
 | G-08 (P2) | ✅ تمام | تست موجود `other_residuals_usd_is_audited_but_not_summed` سیاست را پوشش میدهد. |
 | G-09 (P2) | ✅ تمام | negative fixture `unrelated_transfer_is_not_a_forwarded_payee`؛ TP موجود حفظ شد. |
@@ -104,6 +104,7 @@
 - **پیشنهاد:** pin کردن ۴ هش کامل کش محلی (جدول section 3) بهعنوان fixture گیتد همراه با assert بر `route`, `arb_meta.arb_shape`, `net_profit_usd` و `cross_dex_basis`.
 - **معیار پذیرش:** تستی که با `MEV_SCOUT_E2E=1 RPC_URL=...` اجرا شود و ۴ ردیف را بازتولید کند.
 - **نکته:** اینها git-ignored cacheاند؛ هشها را باید در فایل تست pin کرد، نه وابسته به مسیر cache.
+- **بهروزرسانی 2026-11-23:** تست `pinned_real_arb_hashes_reproduce_route_meta_and_pnl` در `core/tests/explorer_corpus.rs` اضافه شد: چهار هش کامل را literal نگه میدارد، تکبلکها را با `run_range` بازتولید میکند و `route`، `arb_meta.arb_shape`/`hop_count`/`unique_tokens`، `cross_dex_basis` (سازگاری درونی protocol/amm_family) و `net_profit_usd` را assert میکند. مقادیر USD recorded با باند ±۵۰٪ (وابسته به price cache) بررسی میشوند؛ اجرای live هنوز نیاز به RPC آرشیو دارد.
 
 ### G-07 — P&L مکانیسممحور (P2)
 
@@ -220,6 +221,9 @@ cargo test -p mev-scout-core --test causal_fp_corpus -- --nocapture
 $env:MEV_SCOUT_E2E="1"; $env:RPC_URL="<archive-rpc>"
 cargo test -p mev-scout-core --test explorer_corpus
 
+# G-06: four pinned AVAX hashes (gated, ignored by default)
+cargo test -p mev-scout-core --test explorer_corpus -- --ignored pinned_real_arb_hashes
+
 # Tag vocabulary (ignored, live)
 $env:MEV_SCOUT_COVERAGE="1"
 cargo test -p mev-scout-core --test explorer_tag_coverage -- --ignored --nocapture
@@ -250,7 +254,7 @@ cargo test -p mev-scout-core --test live_tag_parity
 - [ ] I-1..I-3 دریافت و سلولهای ID نهایی شدند.
 - [ ] جدول 29+7 با Evidence Level و Verdict کامل است.
 - [ ] تمام ۷ ردیف Hunt یا Seeded شدند یا نتیجهٔ منفی صریح ثبت شد.
-- [ ] ۴ هش کامل section 3 در تست گیتد pin شدند.
+- [x] ۴ هش کامل section 3 در تست گیتد pin شدند (اجرای live منوط به RPC آرشیو باقی است).
 - [ ] `explorer_tags.json` با تگهای emitشده همساز است.
 - [ ] `funding_providers[]` و `profit_cause` بدون تغییر net اضافه شدند (در صورت تصویب).
 - [ ] جلسهٔ تصمیم shape (توکنمحور یا استخرمحور) تشکیل و مستند شد.
