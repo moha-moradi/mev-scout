@@ -19,12 +19,42 @@ use mev_scout_core::explorer::ingest::{
 use mev_scout_core::explorer::store::ExplorerStore;
 use mev_scout_core::jobs::{init_rpc, load_pool_registry};
 use mev_scout_core::types::ChainName;
+use mev_scout_core::types::tags::{
+    FUNDING_AAVE_V2, FUNDING_AAVE_V3, FUNDING_BALANCER_V2, FUNDING_FLASH_LOAN,
+    FUNDING_LFJ_LB_FLASH, FUNDING_MORPHO_BLUE, FUNDING_UNIV3_FLASH, FUNDING_V2_FLASH_SWAP,
+};
 
 /// Single source of the classifier's tag vocabulary, shared with
 /// `scripts/tag_coverage.py`.
 fn expected_tags() -> Vec<String> {
     serde_json::from_str(include_str!("../data/explorer_tags.json"))
         .unwrap_or_else(|e| panic!("core/data/explorer_tags.json: {e}"))
+}
+
+/// G-04: the vocabulary must list every tag the explorer classifier can emit
+/// for an atomic arb, including the namespaced funding axis and the
+/// realized-only `forwarded_profit` label. `oracle_amm` is intentionally
+/// vocabulary-only and is not emitted by the core explorer pass.
+#[test]
+fn vocabulary_covers_every_emitted_arb_tag() {
+    let expected = expected_tags();
+    let required = [
+        "forwarded_profit",
+        FUNDING_BALANCER_V2,
+        FUNDING_AAVE_V3,
+        FUNDING_AAVE_V2,
+        FUNDING_UNIV3_FLASH,
+        FUNDING_LFJ_LB_FLASH,
+        FUNDING_V2_FLASH_SWAP,
+        FUNDING_MORPHO_BLUE,
+        FUNDING_FLASH_LOAN,
+    ];
+    for tag in required {
+        assert!(
+            expected.iter().any(|t| t.as_str() == tag),
+            "core/data/explorer_tags.json is missing emitted tag {tag}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

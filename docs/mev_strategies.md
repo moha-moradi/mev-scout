@@ -2991,10 +2991,15 @@ both the nominal swap amounts and `amount_in_net`/`amount_out_net` from
 transfers; volume prices the received input when it is unambiguous.
 
 `details.arb_meta` shape fields: `arb_shape` (`two_pool`/`triangular`/
-`multi_hop`), `is_cross_dex`, `hop_count`, `pool_count`, `unique_tokens`,
-`amm_family_count` (formerly `dex_count`, which always counted AMM families
-such as v2/v3, not DEX protocols), and `flashloan_funded` (explicit flash
-loans only).
+`multi_hop`) is a **token-count** label (`arb_shape_basis="token_count"`),
+matching how the checklist describes routes ("triangular 6-hop",
+"two_pool 4-hop"). Pool geometry is separate: `pool_shape`
+(`two_pool`/`three_pool`/`multi_pool`), plus `is_cross_dex`, `hop_count`,
+`pool_count`, `unique_tokens`, `amm_family_count` (formerly `dex_count`, which
+always counted AMM families such as v2/v3, not DEX protocols), and
+`flashloan_funded` (explicit flash loans only). A 3-hop route over 2 pools is
+therefore `arb_shape=two_pool`, `pool_shape=two_pool`, `hop_count=3`,
+`pool_count=2`.
 
 Operational accuracy knobs: `explorer index --reclassify` rebuilds a range
 after detector changes; `--discover-pools` (or `mev-scout discover`) fills the

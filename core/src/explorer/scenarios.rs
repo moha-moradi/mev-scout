@@ -748,6 +748,9 @@ fn p3_5_curve_imbalance() {
     let ev = cross(Amm::Curve, Amm::V2);
     assert!(has_tag(std::slice::from_ref(&ev), "curve_imbalance"));
     assert_eq!(pnl_basis(&ev), Some("R"));
+    // G-07: mechanism metadata follows the tag, P&L basis stays `R`.
+    assert_eq!(ev.details["profit_cause"]["mechanism"], "curve_imbalance");
+    assert_eq!(ev.details["profit_cause"]["basis"], "R");
     let ev = cross(Amm::Curve, Amm::Curve);
     assert!(!has_tag(std::slice::from_ref(&ev), "curve_imbalance"));
     let ev = cross(Amm::V2, Amm::V2);

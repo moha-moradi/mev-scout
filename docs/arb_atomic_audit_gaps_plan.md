@@ -1,10 +1,34 @@
 #plan پیشنهادی بستن گپهای ممیزی `MevKind::ArbAtomic`
 
-> **وضعیت:** ضمایم audit اضافه شد؛ اجرای WPها منتظر تأیید و ورودیهای I-1..I-3  
+> **وضعیت:** لایهٔ کد WP-A (G-03، G-04) و موارد code-only P1/P2 (G-02، G-07–G-10) پیادهسازی شد و `cargo test --workspace --quiet` سبز است؛ بقیه منوط به I-1..I-3 و دسترسی RPC/archive است.  
 > **تاریخ:** 2026-11-23  
 > **دامنه:** فقط `core/src/explorer/` و فقط تراکنشهای `success=true` با `MevKind::ArbAtomic` محققشده  
 > **ساختار:** دو لایه — `§0..§8` plan/gap registry و `§9..§13` audit snapshot @ `ef29f73`.  
-> **قید مهم:** هیچ کد، تست، کامیت یا PRی ایجاد نشده است. تنها همین فایل md اضافه/تکمیل شد.
+> **قید مهم:** تغییرات فقط در `core/src/explorer/`، `core/data/`، `core/tests/` و docs مربوطهاند؛ نه `MevKind` جدیدی اضافه شد، نه `compute_net_profit`/basis `R`/thresholdهای causal تغییر کرد و نه event دومی ایجاد شد. هشهای real و ورودیهای I-1..I-3 هنوز تأمین نشدهاند.
+
+---
+
+## خلاصهٔ اجرا (2026-11-23)
+
+| گپ | وضعیت | شواهد / یادداشت |
+|---|---|---|
+| G-01 (P0) | جزئی | کد `cross_dex_basis=protocol` و تست آن از قبل موجود است؛ pin کردن ردیف real مسدود است چون `pool_dex` کش ناقص است و enrichment در `jobs/index.rs` خارج از دامنه است. |
+| G-02 (P1) | ✅ تمام | `arb_shape_basis="token_count"` + فیلد مستقل `pool_shape`؛ ماتریس ۴ حالته؛ مستندات همساز شد. |
+| G-03 (P0) | ✅ تمام | `details.funding_providers[]` + یک تگ بهازای هر provider؛ `funding_source` همان first entry؛ تست double-flash با جمع صحیح fee و بدون کسر مضاعف. |
+| G-04 (P0) | ✅ تمام | `explorer_tags.json` شامل `forwarded_profit` و ۸ تگ `funding:*`؛ تست `vocabulary_covers_every_emitted_arb_tag`. |
+| G-05 (P1) | مسدود | ۷ ردیف Hunt نیاز به RPC/archive دارند. |
+| G-06 (P1) | مسدود | ۴ هش §3 نیاز به `MEV_SCOUT_E2E=1 RPC_URL=...` دارند. |
+| G-07 (P2) | ✅ تمام | `details.profit_cause` صرفاً metadata؛ صفر تغییر در `net_profit_usd`. |
+| G-08 (P2) | ✅ تمام | تست موجود `other_residuals_usd_is_audited_but_not_summed` سیاست را پوشش میدهد. |
+| G-09 (P2) | ✅ تمام | negative fixture `unrelated_transfer_is_not_a_forwarded_payee`؛ TP موجود حفظ شد. |
+| G-10 (P2) | ✅ تمام | `details.rejected_routes` + assert در تست دوچرخه، بدون double P&L. |
+| G-11 (P3) | عمداً خارج | تا زمانی که مدل/اجرای end-to-end وجود ندارد detector اضافه نمیشود. |
+| G-12 / G-13 / G-15 (P3) | انجام نشده | خارج از دامنهٔ code-only P1/P2 این فاز. |
+| G-14 (P1) | مسدود | پنجرهٔ holdout مستقل + RPC لازم است. |
+
+**ورودیهای مسدودکننده:** I-1 (۲۱ شناسهٔ AR)، I-2 (۷ شناسهٔ FUND)، I-3 (متن ۶ سؤال).  
+**تأیید:** `cargo test --workspace --quiet` ← exit 0 (۶۹۳ تست passed، ۲ ignored در lib؛ تمام integration suites سبز).  
+**کامیت:** این بهروزرسانی همراه با کد/تستها در یک کامیت ثبت شد.
 
 ---
 

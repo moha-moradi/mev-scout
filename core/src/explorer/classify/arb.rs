@@ -372,15 +372,29 @@ pub(super) fn classify_atomic_arbs(
             .collect();
         // P0.4: flash-swap / flash-loan flag when principal was borrowed.
         let flash_arb = !tx.flashloans.is_empty() || flashloan_fee_wei.is_some();
+        // G-03: every flash loan is a funding layer, not only the first. Keep
+        // first-appearance order so `funding_source` remains the
+        // backward-compatible first entry and the canonical ID is unchanged.
+        let funding_providers: Vec<&'static str> = {
+            let mut seen = HashSet::new();
+            tx.flashloans
+                .iter()
+                .map(|fl| canonical_funding_source(fl.protocol))
+                .filter(|provider| seen.insert(*provider))
+                .collect()
+        };
         // P1.3: multi-hop arb whose route includes a non-blue-chip token.
         let long_tail = is_long_tail_arb(&route_swaps, &input.ctx.profit_policy.priority);
         let mut tags: Vec<&str> = Vec::new();
         if flash_arb {
             tags.push("flash_arb");
             // WP2: the decoder identifies the funding layer. Keep the legacy
-            // alias above and add a namespaced axis tag for the same fact.
-            if let Some(fl) = tx.flashloans.first() {
-                tags.push(decode::flash_loan_funding_tag(fl));
+            // alias above and add a namespaced axis tag for every provider.
+            for fl in &tx.flashloans {
+                let tag = decode::flash_loan_funding_tag(fl);
+                if !tags.contains(&tag) {
+                    tags.push(tag);
+                }
             }
         }
         if long_tail {
@@ -426,11 +440,16 @@ pub(super) fn classify_atomic_arbs(
             }).collect::<Vec<_>>(),
             "arb_meta": arb_route_meta(&route_swaps, flash_arb, &input.ctx.pool_dex),
         });
-        // WP5 / M-10: persist the realized funding provider, router generation
-        // and underlying pool set. `explorer_canonical_id` already reads these
-        // keys; leaving them absent keeps every pre-WP5 ID byte-identical.
-        if let Some(fl) = tx.flashloans.first() {
-            details["funding_source"] = serde_json::json!(canonical_funding_source(fl.protocol));
+        // WP5 / M-10: persist the realized funding provider(s), router
+        // generation and underlying pool set. `funding_source` stays the first
+        // provider so pre-G-03 canonical IDs are byte-identical; the array
+        // carries every layer for multi-flash routes. `explorer_canonical_id`
+        // reads only `funding_source`, never the array.
+        if let Some(first) = funding_providers.first() {
+            details["funding_source"] = serde_json::json!(first);
+        }
+        if !funding_providers.is_empty() {
+            details["funding_providers"] = serde_json::json!(funding_providers);
         }
         let underlying_pools = route.pools();
         if !underlying_pools.is_empty() {
@@ -442,6 +461,31 @@ pub(super) fn classify_atomic_arbs(
         // this classification signal; they never invent or erase ledger profit.
         let unattributed_flow = route.unattributed_legs();
         details["candidate_route_count"] = serde_json::json!(routes.len());
+        // G-10: expose the closed walks that lost selection so the one-event
+        // undercount is auditable. This is metadata, never a second P&L row.
+        let rejected_routes: Vec<serde_json::Value> = routes
+            .iter()
+            .filter(|r| !std::ptr::eq(*r, route))
+            .map(|r| {
+                let attributable = attributable_routes
+                    .iter()
+                    .any(|candidate| std::ptr::eq(*candidate, r));
+                serde_json::json!({
+                    "anchor": format!("{:#x}", r.anchor),
+                    "hop_count": r.edges.len(),
+                    "pools": r
+                        .pools()
+                        .iter()
+                        .map(|pool| format!("{pool:#x}"))
+                        .collect::<Vec<_>>(),
+                    "attributable": attributable,
+                })
+            })
+            .collect();
+        details["rejected_routes"] = serde_json::json!(rejected_routes);
+        // G-07: mechanism attribution only; `profit_amount`/`net_profit_usd`
+        // and the `R` basis stay the sole P&L authority.
+        details["profit_cause"] = profit_cause(&tags);
         details["unattributed_flow"] = serde_json::json!(unattributed_flow);
         details["classification_confidence"] =
             serde_json::json!(if routes.len() == 1 && unattributed_flow == 0 {
@@ -779,12 +823,19 @@ fn arb_route_meta(
     tokens.sort();
     tokens.dedup();
     let unique_tokens = tokens.len();
-    let arb_shape = if hop_count == 2 || unique_tokens == 2 {
-        "two_pool"
-    } else if hop_count == 3 || unique_tokens == 3 {
-        "triangular"
-    } else {
-        "multi_hop"
+    // G-02: `arb_shape` is a token-count label, matching the existing docs
+    // ("triangular 6-hop", "two_pool 4-hop"). Pool geometry is reported
+    // separately so a shape claim is reproducible from pool count instead of
+    // conflating hops with pools; `hop_count` stays the hop fact.
+    let arb_shape = match unique_tokens {
+        2 => "two_pool",
+        3 => "triangular",
+        _ => "multi_hop",
+    };
+    let pool_shape = match pools.len() {
+        2 => "two_pool",
+        3 => "three_pool",
+        _ => "multi_pool",
     };
     // Prefer real DEX identity when every leg has one. Without it we keep the
     // legacy AMM-family answer but say so explicitly instead of silently
@@ -817,12 +868,39 @@ fn arb_route_meta(
         "cross_dex_basis": cross_dex_basis,
         "flashloan_funded": flashloan_funded,
         "arb_shape": arb_shape,
+        "arb_shape_basis": "token_count",
+        "pool_shape": pool_shape,
         "unique_tokens": unique_tokens,
     });
     if protocol_basis {
         meta["venues"] = serde_json::json!(venues);
     }
     meta
+}
+
+/// G-07: why the realized residual exists, as metadata. The mechanism is a
+/// label over already-emitted strategy tags; the P&L authority stays
+/// `compute_net_profit` and the family basis (`R`) is unchanged.
+fn profit_cause(tags: &[&str]) -> serde_json::Value {
+    const MECHANISMS: &[&str] = &[
+        "savax_rate_arb",
+        "gmx_adl_arb",
+        "epoch_transition",
+        "curve_imbalance",
+        "rate_provider_staleness",
+        "fot_arb",
+        "rebase_arb",
+    ];
+    let evidence_tags: Vec<&str> = MECHANISMS
+        .iter()
+        .copied()
+        .filter(|tag| tags.contains(tag))
+        .collect();
+    serde_json::json!({
+        "mechanism": evidence_tags.first().copied().unwrap_or("cross_pool_arb"),
+        "evidence_tags": evidence_tags,
+        "basis": PnlBasis::R.as_str(),
+    })
 }
 
 /// Multi-hop arb whose route includes a non-blue-chip token (plan P1.3 /).
@@ -1333,6 +1411,26 @@ mod split_tests {
         assert_eq!(route[0]["pool"], format!("{POOL_A:#x}"));
         assert_eq!(route[1]["pool"], format!("{POOL_B:#x}"));
         assert_eq!(ev.details["arb_meta"]["unique_tokens"], 2);
+        // G-10: the losing walk is visible without becoming a second event.
+        let rejected = ev.details["rejected_routes"]
+            .as_array()
+            .expect("rejected_routes");
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0]["hop_count"], 2);
+        assert_eq!(rejected[0]["attributable"], true);
+        let rejected_pools: Vec<String> = rejected[0]["pools"]
+            .as_array()
+            .expect("rejected pools")
+            .iter()
+            .map(|v| v.as_str().expect("pool string").to_string())
+            .collect();
+        assert_eq!(
+            rejected_pools,
+            vec![format!("{POOL_C:#x}"), format!("{POOL_D:#x}")]
+        );
+        // G-07: plain cyclic arb still reports a mechanism without moving P&L.
+        assert_eq!(ev.details["profit_cause"]["mechanism"], "cross_pool_arb");
+        assert_eq!(ev.details["profit_cause"]["basis"], "R");
         let expected = format!("{:#x}", underlying_pools_hash(&[POOL_A, POOL_B]));
         assert_eq!(
             ev.details["underlying_pools_hash"].as_str(),
@@ -1386,6 +1484,63 @@ mod split_tests {
         assert_eq!(events[0].details["unattributed_flow"], serde_json::json!(2));
         assert_eq!(events[0].details["classification_confidence"], "inferred");
         assert_eq!(events[0].confidence, Confidence::Exact);
+    }
+
+    /// G-02: `arb_shape` is the token-count label; `pool_shape` reports pool
+    /// geometry separately so a shape claim never conflates hops with pools.
+    #[test]
+    fn route_shape_matrix_separates_tokens_from_pools() {
+        const TOKC: Address = address!("6000000000000000000000000000000000000008");
+        let case = |swaps: Vec<SwapFact>| {
+            let meta = arb_route_meta(&swaps, false, &HashMap::new());
+            (
+                meta["hop_count"].as_u64().unwrap(),
+                meta["pool_count"].as_u64().unwrap(),
+                meta["unique_tokens"].as_u64().unwrap(),
+                meta["arb_shape"].as_str().unwrap().to_string(),
+                meta["pool_shape"].as_str().unwrap().to_string(),
+            )
+        };
+        // (hop=3, pool=2, token=2)
+        assert_eq!(
+            case(vec![
+                swap(POOL_A, TOKA, USDC, 100, 100),
+                swap(POOL_B, USDC, TOKA, 100, 100),
+                swap(POOL_A, TOKA, USDC, 100, 100),
+            ]),
+            (3, 2, 2, "two_pool".into(), "two_pool".into())
+        );
+        // (hop=3, token=3)
+        assert_eq!(
+            case(vec![
+                swap(POOL_A, TOKA, USDC, 100, 100),
+                swap(POOL_B, USDC, TOKB, 100, 100),
+                swap(POOL_C, TOKB, TOKA, 100, 100),
+            ]),
+            (3, 3, 3, "triangular".into(), "three_pool".into())
+        );
+        // (hop=6, token=3): repeats the same three tokens/pools twice.
+        assert_eq!(
+            case(vec![
+                swap(POOL_A, TOKA, USDC, 100, 100),
+                swap(POOL_B, USDC, TOKB, 100, 100),
+                swap(POOL_C, TOKB, TOKA, 100, 100),
+                swap(POOL_A, TOKA, USDC, 100, 100),
+                swap(POOL_B, USDC, TOKB, 100, 100),
+                swap(POOL_C, TOKB, TOKA, 100, 100),
+            ]),
+            (6, 3, 3, "triangular".into(), "three_pool".into())
+        );
+        // (hop=4, token=4)
+        assert_eq!(
+            case(vec![
+                swap(POOL_A, TOKA, USDC, 100, 100),
+                swap(POOL_B, USDC, TOKB, 100, 100),
+                swap(POOL_C, TOKB, TOKC, 100, 100),
+                swap(POOL_D, TOKC, TOKA, 100, 100),
+            ]),
+            (4, 4, 4, "multi_hop".into(), "multi_pool".into())
+        );
     }
 
     #[test]
@@ -1641,6 +1796,52 @@ mod attribution_tests {
             .any(|r| r.reject_reason == "net_zero_searcher"));
     }
 
+    /// G-09: a normal transfer between two unrelated addresses must not be
+    /// mistaken for a forwarded payee. The executor is net-zero and no holder
+    /// is funder-fed, so the tx is rejected instead of attributed.
+    #[test]
+    fn unrelated_transfer_is_not_a_forwarded_payee() {
+        let mut input = block(vec![tx_to(
+            0,
+            ATK,
+            EXEC,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, WNATIVE, 200, 50),
+                swap(POOL_C, WNATIVE, USDC, 40, 100),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, EXEC, 200),
+                transfer(2, TOKA, EXEC, POOL_B, 200),
+                transfer(3, WNATIVE, POOL_B, EXEC, 50),
+                transfer(4, WNATIVE, EXEC, POOL_C, 50),
+                transfer(5, USDC, POOL_C, ATK, 100),
+                // Unrelated peer-to-peer transfer: neither side financed the
+                // executor, so this holder must be dropped as a bystander.
+                transfer(6, USDC, BYSTANDER, OTHER_PAYEE, 20),
+            ],
+        )]);
+        input.ctx.profit_policy.priority.push(WNATIVE);
+
+        let out = classify_block(&input);
+        assert!(
+            !out.events.iter().any(|e| e.kind == MevKind::ArbAtomic),
+            "a bystander-funded EOA is not a forwarded payee"
+        );
+        assert!(
+            out.rejects
+                .iter()
+                .any(|r| r.reject_reason == "net_zero_searcher"),
+            "expected net_zero_searcher, got {:?}",
+            out.rejects
+                .iter()
+                .map(|r| r.reject_reason.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
     /// Multi-router route: the searcher contract funds the first leg and the
     /// executor contract funds the second; both are tx-level candidates, so
     /// the cycle is attributable and must classify.
@@ -1869,6 +2070,85 @@ mod repay_tests {
                 .and_then(|v| v.as_bool()),
             Some(true)
         );
+        assert_eq!(
+            arb.details
+                .get("flashloan_fee_netted_in_ledger")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
+
+    /// G-03: two flash loans from different providers must persist both in
+    /// `funding_providers`, emit one funding tag each, keep the first as the
+    /// backward-compatible `funding_source`, and sum the fees only once.
+    #[test]
+    fn multiple_flash_providers_are_all_persisted_and_tagged() {
+        let mut t = tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 1000, 1100),
+                swap(POOL_B, TOKA, USDC, 1100, 1200),
+            ],
+            vec![
+                transfer(0, USDC, PROVIDER, ATK, 500),
+                transfer(1, USDC, PROVIDER, ATK, 500),
+                transfer(2, USDC, ATK, POOL_A, 1000),
+                transfer(3, TOKA, POOL_A, ATK, 1100),
+                transfer(4, TOKA, ATK, POOL_B, 1100),
+                transfer(5, USDC, POOL_B, ATK, 1200),
+            ],
+        );
+        t.flashloans.push(FlashLoanFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "aave_v3",
+            initiator: ATK,
+            token: USDC,
+            amount: U256::from(500u64),
+            fee: Some(U256::from(5u64)),
+            recipient: ATK,
+            provider: PROVIDER,
+        });
+        t.flashloans.push(FlashLoanFact {
+            tx_index: 0,
+            log_index: 1,
+            protocol: "balancer_v2",
+            initiator: ATK,
+            token: USDC,
+            amount: U256::from(500u64),
+            fee: Some(U256::from(7u64)),
+            recipient: ATK,
+            provider: PROVIDER,
+        });
+        let out = classify_block(&block(vec![t]));
+        let arb = out
+            .events
+            .iter()
+            .find(|e| e.kind == MevKind::ArbAtomic)
+            .expect("arb present");
+        let providers: Vec<&str> = arb.details["funding_providers"]
+            .as_array()
+            .expect("funding_providers must be an array")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(providers, vec!["aave_v3", "balancer_v2_vault"]);
+        // Backward-compatible scalar stays the first provider.
+        assert_eq!(arb.details["funding_source"].as_str(), Some("aave_v3"));
+        let tags: Vec<&str> = arb.details["tags"]
+            .as_array()
+            .expect("tags")
+            .iter()
+            .filter_map(|t| t.as_str())
+            .collect();
+        assert!(tags.contains(&"funding:aave_v3"));
+        assert!(tags.contains(&"funding:balancer_v2_vault"));
+        // Fees are summed once and already netted by the ledger: 1200 - 1000
+        // principal - 12 fees = 188. A second subtraction would yield 176.
+        assert_eq!(arb.flashloan_fee_wei, Some(U256::from(12u64)));
+        assert_eq!(arb.profit_amount, Some(U256::from(188u64)));
         assert_eq!(
             arb.details
                 .get("flashloan_fee_netted_in_ledger")

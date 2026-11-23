@@ -15,5 +15,14 @@
   "automation",
   "claim_and_sell",
   "airdrop",
-  "lb_bin_jit"
+  "lb_bin_jit",
+  "forwarded_profit",
+  "funding:balancer_v2_vault",
+  "funding:aave_v3",
+  "funding:aave_v2",
+  "funding:univ3_flash",
+  "funding:lfj_lb_flash",
+  "funding:v2_flash_swap",
+  "funding:morpho_blue",
+  "funding:flash_loan"
 ]
