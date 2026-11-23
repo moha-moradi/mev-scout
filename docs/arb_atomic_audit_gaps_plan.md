@@ -23,12 +23,14 @@
 | G-09 (P2) | ✅ تمام | negative fixture `unrelated_transfer_is_not_a_forwarded_payee`؛ TP موجود حفظ شد. |
 | G-10 (P2) | ✅ تمام | `details.rejected_routes` + assert در تست دوچرخه، بدون double P&L. |
 | G-11 (P3) | عمداً خارج | تا زمانی که مدل/اجرای end-to-end وجود ندارد detector اضافه نمیشود. |
-| G-12 / G-13 / G-15 (P3) | انجام نشده | خارج از دامنهٔ code-only P1/P2 این فاز. |
+| G-12 / G-13 / G-15 (P3) | ✅ تمام | WP-D: G-12 flag `underlying_pools_unknown` + ۲ تست (aggregator+DEX متمایز از DEX-only)؛ G-13 یادداشت محدودیت native inflow در `docs/ARCHITECTURE.md` + ۱ negative test در `profit.rs`؛ G-15 جدول تثبیت `explorer tag ↔ live scope tag ↔ disposition` در §3.3.1 با ثبت کامل `NA_TAGS`. |
 | G-14 (P1) | مسدود | پنجرهٔ holdout مستقل + RPC لازم است. |
 
 **ورودیهای مسدودکننده:** I-1 (۲۱ شناسهٔ AR)، I-2 (۷ شناسهٔ FUND)، I-3 (متن ۶ سؤال).  
 **تأیید:** `cargo test --workspace --quiet` ← exit 0 (۶۹۳ تست passed، ۲ ignored در lib؛ تمام integration suites سبز).  
-**کامیت:** این بهروزرسانی همراه با کد/تستها در یک کامیت ثبت شد.
+**کامیت:** این بهروزرسانی همراه با کد/تستها در یک کامیت ثبت شد.  
+**بازتأیید ۲۰۲۶-۱۱-۲۳:** ادامهٔ اجرای plan از نقطهٔ توقف — `cargo test --workspace --quiet` ← exit 0 (۶۹۳ passed / ۲ ignored)؛ کد و تستهای G-02..G-10 و `explorer_tags.json` در درخت موجود تأیید شد. بررسی کاشهای محلی (`cache/*.sqlite`) نشان داد هیچ‌یک از ۴ هش pin (بلاک‌های ۱۰۰.۵M) و هیچ تگ Hunt در کاش نیست؛ بنابراین G-05، اجرای live G-06 و G-14 همچنان به RPC آرشیو (AVAX) محدود است و G-01 به enrichment `pool_dex` (فایل `jobs/index.rs` خارج از دامنهٔ فاز) محدود است.
+**بازتأیید WP-D ۲۰۲۶-۱۱-۲۳:** G-12/G-13/G-15 پیاده و تست‌شده — `cargo test --workspace --quiet` ← exit 0؛ `underlying_pools_unknown` (G-12) در `classify/arb.rs`، یادداشت محدودیت + negative test (G-13) در `docs/ARCHITECTURE.md`/`explorer/profit.rs`، و جدول تثبیت scope/disposition + ثبت کامل `NA_TAGS` (G-15) در `docs/atomic_capital_free_arb_plan.md` §3.3.1.
 
 ---
 
@@ -104,7 +106,8 @@
 - **پیشنهاد:** pin کردن ۴ هش کامل کش محلی (جدول section 3) بهعنوان fixture گیتد همراه با assert بر `route`, `arb_meta.arb_shape`, `net_profit_usd` و `cross_dex_basis`.
 - **معیار پذیرش:** تستی که با `MEV_SCOUT_E2E=1 RPC_URL=...` اجرا شود و ۴ ردیف را بازتولید کند.
 - **نکته:** اینها git-ignored cacheاند؛ هشها را باید در فایل تست pin کرد، نه وابسته به مسیر cache.
-- **بهروزرسانی 2026-11-23:** تست `pinned_real_arb_hashes_reproduce_route_meta_and_pnl` در `core/tests/explorer_corpus.rs` اضافه شد: چهار هش کامل را literal نگه میدارد، تکبلکها را با `run_range` بازتولید میکند و `route`، `arb_meta.arb_shape`/`hop_count`/`unique_tokens`، `cross_dex_basis` (سازگاری درونی protocol/amm_family) و `net_profit_usd` را assert میکند. مقادیر USD recorded با باند ±۵۰٪ (وابسته به price cache) بررسی میشوند؛ اجرای live هنوز نیاز به RPC آرشیو دارد.
+- **بهروزرسانی 2026-11-23:** تست `pinned_real_arb_hashes_reproduce_route_meta_and_pnl` در `core/tests/explorer_corpus.rs` اضافه شد: چهار هش کامل را literal نگه میدارد، تکبلکها را با `run_range` بازتولید میکند و `route`، `arb_meta.arb_shape`/`hop_count`/`unique_tokens`، `cross_dex_basis` (سازگاری درونی protocol/amm_family) و `net_profit_usd` را assert میکند. مقادیر USD recorded با باند ±۵۰٪ (وابسته به price cache) بررسی میشوند.
+- **بهروزرسانی 2026-11-23 (اجرای live):** با RPC آرشیو Dwellir (`api-avalanche-mainnet-archive.n.dwellir.com`) اجرا شد و ۴ ردیف بازتولید شد (100528634، 100529098، 100529236، 100529720). `hop_count` دو ردیف با extraction G-02 (رد کردن لبه‌های اضافی/غیرقابل‌بازگشت) نسبت به ارزش اولیهٔ pin تغییر کرد: 100528634: ۳→۲، 100529720: ۴→۳؛ این مقادیر در جدول §۳ و fixture گیتد به‌روزرسانی شدند. confidence ردیف 100529720 = `inferred` ثبت شد.
 
 ### G-07 — P&L مکانیسممحور (P2)
 
@@ -168,10 +171,10 @@
 
 | بلاک | هش کامل | shape | hop/uniq | profit_usd | net | conf |
 |---|---|---|---|---|---|---|
-| 100528634 | `0x37b413bbbd6af98b4919897223d39bfb3313f1e261232936c7b8cde54563bff9` | two_pool | 3 / 2 | 0.025902 | 0.010206 | exact |
+| 100528634 | `0x37b413bbbd6af98b4919897223d39bfb3313f1e261232936c7b8cde54563bff9` | two_pool | 2 / 2 | 0.025902 | 0.010206 | exact |
 | 100529098 | `0x7c709477088b85667b3b641d1b80546d833a6082b6570890244b975ecc106f1a` | multi_hop | 4 / 4 | 0.023446 | 0.003250 | inferred |
 | 100529236 | `0x4d03e567171248c005a64da265667342bc1dedc6d9724e39643b0ba6268851e9` | multi_hop | 4 / 4 | — | — | inferred |
-| 100529720 | `0x952f7e215908ea1d35fb59c43bc1c7dec109f935c18a615d62f0155025ea3d16` | triangular | 4 / 3 | — | — | — |
+| 100529720 | `0x952f7e215908ea1d35fb59c43bc1c7dec109f935c18a615d62f0155025ea3d16` | triangular | 3 / 3 | — | — | inferred |
 
 **Seedهای از پیش pinشده (status=1):**
 

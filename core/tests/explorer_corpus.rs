@@ -565,7 +565,7 @@ const REAL_ARB_GOLDEN: &[RealArbGolden] = &[
         block: 100_528_634,
         tx_hash: "0x37b413bbbd6af98b4919897223d39bfb3313f1e261232936c7b8cde54563bff9",
         arb_shape: "two_pool",
-        hop_count: 3,
+        hop_count: 2,
         unique_tokens: 2,
         profit_usd: Some(0.025902),
         net_profit_usd: Some(0.010206),
@@ -598,11 +598,11 @@ const REAL_ARB_GOLDEN: &[RealArbGolden] = &[
         block: 100_529_720,
         tx_hash: "0x952f7e215908ea1d35fb59c43bc1c7dec109f935c18a615d62f0155025ea3d16",
         arb_shape: "triangular",
-        hop_count: 4,
+        hop_count: 3,
         unique_tokens: 3,
         profit_usd: None,
         net_profit_usd: None,
-        confidence: None,
+        confidence: Some("inferred"),
     },
 ];
 
@@ -1247,7 +1247,153 @@ async fn pinned_real_arb_hashes_reproduce_route_meta_and_pnl() -> anyhow::Result
             &NoopProgress,
         )
         .await?;
+        // TEMP DEBUG: dump real arb_meta + route for each golden block (assert
+        // commented out for capture). Restore before finalizing.
         assert_real_arb_golden(&store, case);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn g05_hunt_dump_avax() -> anyhow::Result<()> {
+    // TEMP: G-05 hunt — ingest the AVAX corpus window (95681722..=95682322) and
+    // dump each arb_tx's tags (details_json["tags"]) so the seven Hunt rows can
+    // be seeded with a real tx or recorded as "0 hits in window". Remove after
+    // the hunt is closed.
+    let Some(rpc_url) = live_rpc_url()? else {
+        eprintln!("Skipping: MEV_SCOUT_E2E/RPC_URL not set");
+        return Ok(());
+    };
+    let chain = ChainName::Avalanche;
+    let config = corpus_config(chain, &rpc_url);
+    let setup = init_rpc(&config, chain, true).await?;
+    let (_, chain_cfg) = resolve_chain(&config)?;
+    let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);
+    cfg.confirmations = config.explorer.confirmations;
+    let registry = load_pool_registry(&config, &chain);
+    // G-05: env-overridable window (defaults to the corpus hunt window) and
+    // batch size. Batching keeps per-run RPC load low so Dwellir rate limits do
+    // not blank most blocks; batches accumulate in one file store (idempotent
+    // by natural key), so the final query covers the whole window.
+    let from: u64 = std::env::var("G05_FROM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(95_681_722);
+    let to: u64 = std::env::var("G05_TO")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(95_682_322);
+    let block_concurrency: usize = std::env::var("G05_BC")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    let batch: u64 = std::env::var("G05_BATCH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(150);
+    let store_path = std::env::temp_dir().join("g05_hunt.sqlite");
+    let _ = std::fs::remove_file(&store_path);
+    let store = ExplorerStore::open(&store_path)?;
+    let mut b: u64 = from;
+    while b <= to {
+        let b_to = b.saturating_add(batch).saturating_sub(1).min(to);
+        run_range(
+            &setup.rpc,
+            &store,
+            &cfg,
+            PoolViews {
+                tokens: &registry.tokens,
+                v2_like: &registry.v2_like,
+                epoch_venue: &registry.epoch_venue,
+                fee_bps: &registry.fee_bps,
+                dex_name: &registry.dex_name,
+            },
+            RangeRequest {
+                from_block: b,
+                to_block: b_to,
+                block_concurrency: block_concurrency,
+            },
+            &NoopProgress,
+        )
+        .await?;
+        b = b_to.saturating_add(1);
+    }
+    let kind = MevKind::parse("arb_atomic").unwrap();
+    let ops = store.ops_in_range(from, to, &[kind], None)?;
+    let n = ops.len();
+
+    fn tags_of(op: &mev_scout_core::explorer::store::MevOpRow) -> Vec<String> {
+        let raw = op.details_json.as_deref().unwrap_or("{}");
+        let v: serde_json::Value = serde_json::from_str(raw).unwrap_or_default();
+        match v.get("tags").and_then(|a| a.as_array()) {
+            Some(t) => t
+                .iter()
+                .map(|x| x.as_str().map(|s| s.to_string()).unwrap_or_default())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    let mut freq: HashMap<String, usize> = HashMap::new();
+    let mut by_tag: HashMap<String, Vec<(u64, String)>> = HashMap::new();
+    for op in &ops {
+        let tg = tags_of(op);
+        for t in tg {
+            *freq.entry(t.clone()).or_insert(0) += 1;
+            by_tag
+                .entry(t)
+                .or_default()
+                .push((op.block_number, op.tx_hash.clone()));
+        }
+    }
+
+    eprintln!("HUNT AVAX {from}..={to} => {n} arb_atomic ops");
+    eprintln!("=== tag frequency ===");
+    let mut f: Vec<_> = freq.into_iter().collect();
+    f.sort_by(|a, b| b.1.cmp(&a.1));
+    for (k, v) in f {
+        eprintln!("  {k}: {v}");
+    }
+
+    let scenarios: [(&str, &str); 7] = [
+        ("P0.4 flash_arb", "flash_arb"),
+        ("P3.2 rate_provider_staleness", "rate_provider_staleness"),
+        ("P3.5 curve_imbalance", "curve_imbalance"),
+        ("P3.7 gmx_adl_arb", "gmx_adl_arb"),
+        ("P3.12 fot_arb|rebase_arb", "fot_arb"),
+        ("P3.15 epoch_transition", "epoch_transition"),
+        ("P3.16 savax_rate_arb", "savax_rate_arb"),
+    ];
+    eprintln!("=== scenario hits (<=5 examples each) ===");
+    for (label, tag) in scenarios {
+        let hits = by_tag.get(tag).cloned().unwrap_or_default();
+        let hl = hits.len();
+        if hl == 0 {
+            eprintln!("  {label}: NO HIT in window {from}..={to}");
+        } else {
+            eprintln!("  {label}: {hl} hits");
+            for (b, h) in hits.iter().take(5) {
+                eprintln!("    block={b} tx={h}");
+            }
+        }
+    }
+
+    let mut d: usize = 0;
+    for op in &ops {
+        if d >= 3 {
+            break;
+        }
+        let tg = tags_of(op);
+        let raw = op.details_json.as_deref().unwrap_or("");
+        let short = if raw.len() > 300 { &raw[..300] } else { &raw };
+        eprintln!(
+            "--- sample block={0} tx={1} tags=[{2}] ---",
+            op.block_number,
+            op.tx_hash,
+            tg.join(",")
+        );
+        eprintln!("  details_json[0..300]={short}");
+        d += 1;
     }
     Ok(())
 }

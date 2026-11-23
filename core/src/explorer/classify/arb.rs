@@ -456,6 +456,13 @@ pub(super) fn classify_atomic_arbs(
             details["underlying_pools_hash"] =
                 serde_json::json!(format!("{:#x}", underlying_pools_hash(&underlying_pools)));
         }
+        // G-12: aggregator-mediated routes expose only the selected DEX cycle
+        // as `underlying_pools_hash`; the router's internal path is opaque in
+        // logs-only mode, so the pool set is a lower bound on the tx's full
+        // path, not exact.
+        if tx.route_provenance.is_some() {
+            details["underlying_pools_unknown"] = serde_json::json!(true);
+        }
         // Route attribution is a separate confidence axis from the realized
         // P&L basis. Unknown leg owners or competing closed walks only lower
         // this classification signal; they never invent or erase ledger profit.
@@ -1273,11 +1280,25 @@ mod split_tests {
         assert_eq!(d["router_version"].as_str(), Some("paraswap_v5_v6"));
         let expected = format!("{:#x}", underlying_pools_hash(&[POOL_A, POOL_B]));
         assert_eq!(d["underlying_pools_hash"].as_str(), Some(expected.as_str()));
+        // G-12: aggregator-mediated routes flag the pool set as a lower bound.
+        assert_eq!(d["underlying_pools_unknown"].as_bool(), Some(true));
         let id = explorer_canonical_id(&events[0]);
         assert!(
             id.contains("|h:") && id.contains("|r:paraswap_v5_v6|f:aave_v3"),
             "canonical id must carry the new suffix: {id}"
         );
+    }
+
+    /// G-12: a DEX-only cycle (no router provenance) hashes its exact pool set
+    /// and must not claim the underlying pools are unknown.
+    #[test]
+    fn dex_only_cycle_leaves_underlying_pools_known() {
+        let t = arb_tx(0);
+        let input = block(vec![t]);
+        let (events, _) = classify_atomic_arbs(&input, &tag_opts());
+        assert_eq!(events.len(), 1, "dex-only arb fixture must still classify");
+        let d = &events[0].details;
+        assert_eq!(d["underlying_pools_unknown"].as_bool(), None);
     }
 
     #[test]

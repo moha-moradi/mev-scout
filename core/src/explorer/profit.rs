@@ -446,7 +446,8 @@ pub fn compute_net_profit(gross_profit_wei: U256, costs: ProfitCosts) -> U256 {
 mod tests {
     use super::*;
     use crate::explorer::types::TransferFact;
-    use alloy::primitives::{address, U256};
+    use alloy::primitives::{address, I256, U256};
+    use std::ops::Neg;
 
     const W: Address = Address::new([0x0du8; 20]); // stand-in wrapped native
 
@@ -750,6 +751,31 @@ mod tests {
         );
         assert!(ledger.net_signed(me, wrapped_native_marker()).is_negative());
         assert_eq!(ledger.net(me, usdc), U256::from(300));
+    }
+
+    /// G-13: in logs-only mode native inflows other than the tx's `value`
+    /// debit are unobservable (coinbase→searcher kickbacks, unwrap-to-beneficiary
+    /// credits). `DeltaLedger` has no native-credit channel — the only native
+    /// entry is a debit on the `value` spender — so such inflows can never be
+    /// counted as native profit.
+    #[test]
+    fn native_inflows_other_than_value_debit_cannot_be_credited() {
+        let me = address!("1000000000000000000000000000000000000000");
+        let stranger = address!("9000000000000000000000000000000000000000");
+
+        let ledger = DeltaLedger::from_transfers(&[], W, (me, U256::from(1_000_000)));
+
+        // The visible native flow is exactly the sender's debit:
+        assert_eq!(
+            ledger.net_signed(me, NATIVE_MARKER),
+            I256::from_raw(U256::from(1_000_000)).neg()
+        );
+        assert_eq!(ledger.net(me, NATIVE_MARKER), U256::ZERO);
+        // Never positive: a kickback must not inflate native profit.
+        assert!(!ledger.positive_tokens(me).contains(&NATIVE_MARKER));
+        // A non-sender (coinbase, unwrap beneficiary) cannot touch the marker
+        // through this API at all.
+        assert!(ledger.touched_tokens(stranger).is_empty());
     }
 
     /// WP1 acceptance: gas, flash premium and revert gas are external costs,

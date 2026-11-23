@@ -179,6 +179,60 @@
 
 > **MevKind جدید اضافه نکن.** Backrun همان `ArbAtomic` + `backrun` tag باقی میماند.
 
+### 3.3.1 جدول تثبیت‌شده: تگ explorer ←→ تگ scope live ←→ disposition (G-15)
+
+هر تگی که live به یک `ArbAtomic` opportunity می‌چسبد دقیقاً به یکی از سه
+disposition تعلق دارد: **core** (شامل sim/exec/ranking)، **forensic** (حفظ
+شدن ولی با `out_of_core` گیت‌شدن و خارج از sim/exec/ranking)، یا **expansion**
+(مکانیزم آینده؛ هنوز توسط detector هسته‌ای emit نمی‌شود). این جدول تفسیر نهایی
+است. هر تگ تازه‌ای قبل از emit باید هم اینجا و (در صورت chain-gated بودن) هم در
+`NA_TAGS` ثبت شود تا هیچ NA-tag پنهانی باقی نماند (معیار پذیرش G-15).
+
+| explorer tag | live scope tag | disposition |
+|---|---|---|
+| `flash_arb` | — | core |
+| `long_tail` | — | core |
+| `backrun` | — | core |
+| `curve_imbalance` | — | core |
+| `rate_provider_staleness` | — | core |
+| `fot_arb` | — | core * |
+| `rebase_arb` | — | core * |
+| `savax_rate_arb` | `out_of_core` | forensic |
+| `gmx_adl_arb` | `out_of_core` | forensic |
+| `epoch_transition` | — | core |
+| `oracle_amm` | — | expansion |
+| `funding:balancer_v2_vault` | — | core |
+| `funding:aave_v3` | — | core |
+| `funding:aave_v2` | — | core |
+| `funding:univ3_flash` | — | core |
+| `funding:lfj_lb_flash` | — | core |
+| `funding:v2_flash_swap` | — | core |
+| `funding:morpho_blue` | — | core |
+| `funding:flash_loan` | — | core |
+| `claim_and_sell` | — | core (explorer-only) |
+| `airdrop` | — | core (explorer-only) |
+| `forwarded_profit` | — | core (explorer-only) * |
+
+\* ن/A روی Avalanche (chain-gated)؛ دلیل و رفتار parity در جدول زیر.
+`oracle_amm` تگ live-only expansion است و در `explorer_tags.json` نیست.
+
+**N/A روی Avalanche (chain-gated؛ هرگز silent-drop نشدن) — مجموع کامل
+`NA_TAGS` در `core/tests/live_tag_parity.rs`:**
+
+| تگ | دلیل (از `types/tags.rs`) | رفتار parity |
+|---|---|---|
+| `fot_arb` | راجیستری ایستا (`data/fot_tokens.json`) فقط Ethereum است؛ روی AVAX فقط از اندازه‌گیری دینامیک پرایس می‌آید | از مقایسه parity خارج (`NA_TAGS`) |
+| `rebase_arb` | فقط راجیستری ایستا می‌تواند emit کند؛ Avalanche rebase entry ندارد | از مقایسه parity خارج (`NA_TAGS`) |
+| `forwarded_profit` | مفهوم realized-only؛ عمدتاً از live detection خارج شده | از مقایسه parity خارج (`NA_TAGS`) |
+
+> **هیچ NA-tag پنهانی:** سه تگ بالا مجموع کاملی است که `live_tag_parity`
+> skipped می‌کند. هر تگ chain-gated جدید قبل از emit باید هم در این جدول و هم در
+> `NA_TAGS` ثبت شود تا از silent-drop و NA-tag پنهانی جلوگیری شود.
+>
+> تگ‌های `flash_loan_liq`، `buycollateral`، `keeper`، `automation`، `lb_bin_jit`
+> sub-labelهای دیگر MEV kinds (غیر-ArbAtomic) هستند و خارج از جدول scope/disposition
+> ArbAtomic این بخش می‌باشند.
+
 ### 3.4 حسابداری سود (C-05, M-03)
 
 ```
