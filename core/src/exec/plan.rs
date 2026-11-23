@@ -62,6 +62,8 @@ pub enum PlanError {
     /// Venue has no executor leg for this route: no router configured,
     /// or V4/Pancake/Metric/Fluid (explicitly unsupported in this build).
     VenueUnsupported,
+    /// A-07/A-08/A-09: forensic row outside core atomic arb (GMX/sAVAX/Pendle).
+    OutOfCore,
 }
 
 impl std::fmt::Display for PlanError {
@@ -73,6 +75,7 @@ impl std::fmt::Display for PlanError {
             Self::ZeroAmount => "zero borrow",
             Self::PathUnavailable => "path unavailable",
             Self::VenueUnsupported => "venue unsupported",
+            Self::OutOfCore => "out of core scope",
         })
     }
 }
@@ -122,6 +125,11 @@ pub fn plan_from_opportunity(
     min_profit: U256,
     deadline: u64,
 ) -> Result<ExecPlan, PlanError> {
+    // A-07/A-08/A-09: the ledger skips these first; keep the guard here too so
+    // a direct exec caller cannot build calldata for an out-of-core row.
+    if opp.has_tag(crate::types::tags::OUT_OF_CORE) {
+        return Err(PlanError::OutOfCore);
+    }
     if !matches!(
         opp.strategy,
         Strategy::TwoHopArb | Strategy::MultiHopArb | Strategy::Backrun
@@ -643,6 +651,17 @@ mod tests {
         assert_eq!(plan.borrow_token, t0);
         assert_eq!(plan.min_profit, U256::from(1u64));
         assert_eq!(plan.deadline, 12);
+    }
+
+    /// A-07/A-08/A-09: a direct exec caller must not build calldata for an
+    /// out-of-core forensic row, even if the ledger would have skipped it.
+    #[test]
+    fn out_of_core_is_rejected_before_any_plan_build() {
+        let mut opp = MevOpportunity::new(1, 0, Strategy::TwoHopArb, Address::ZERO, 0);
+        opp.input_amount = U256::from(1u64);
+        opp.add_tag(crate::types::tags::OUT_OF_CORE);
+        let err = plan(&opp, &PoolManager::new()).unwrap_err();
+        assert_eq!(err, PlanError::OutOfCore);
     }
 
     #[test]

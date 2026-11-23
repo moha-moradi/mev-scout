@@ -15,6 +15,14 @@ use crate::types::{MevOpportunity, Strategy};
 /// Hard safety cap so a pathological block cannot produce a huge session.
 pub const HARD_MAX_FILLS_PER_BLOCK: usize = 32;
 
+/// A-07/A-08/A-09: forensic rows flagged `out_of_core` (GMX/sAVAX/Pendle) are
+/// excluded from core sim/exec/ranking. Detection keeps them with their
+/// mechanism tags; the ledger records a counted `OutOfCore` skip so the
+/// disposition is visible instead of a silent drop.
+fn is_out_of_core(opp: &MevOpportunity) -> bool {
+    opp.has_tag(crate::types::tags::OUT_OF_CORE)
+}
+
 /// Ledger knobs (from `[paper]` config + CLI).
 #[derive(Debug, Clone, Copy)]
 pub struct LedgerPolicy {
@@ -174,6 +182,17 @@ impl LedgerPolicy {
                 } else {
                     Some(opp.tx_index)
                 };
+
+                if is_out_of_core(opp) {
+                    skips.push(PaperSkip {
+                        block_number: block,
+                        tx_index,
+                        canonical_id: cid,
+                        strategy,
+                        reason: FillSkipReason::OutOfCore,
+                    });
+                    continue;
+                }
 
                 if !is_native_eligible(opp.strategy) {
                     skips.push(PaperSkip {
@@ -382,6 +401,17 @@ impl LedgerPolicy {
                 } else {
                     Some(opp.tx_index)
                 };
+
+                if is_out_of_core(opp) {
+                    skips.push(PaperSkip {
+                        block_number: block,
+                        tx_index,
+                        canonical_id: cid,
+                        strategy,
+                        reason: FillSkipReason::OutOfCore,
+                    });
+                    continue;
+                }
 
                 if !is_native_eligible(opp.strategy) {
                     skips.push(PaperSkip {
@@ -600,6 +630,16 @@ impl LedgerPolicy {
                     Some(opp.tx_index)
                 };
 
+                if is_out_of_core(opp) {
+                    skips.push(exec_skip(
+                        block,
+                        tx_index,
+                        &cid,
+                        &strategy,
+                        FillSkipReason::OutOfCore,
+                    ));
+                    continue;
+                }
                 if !crate::paper::sim::SimPolicy::is_simulatable(opp.strategy) {
                     skips.push(exec_skip(
                         block,
@@ -983,6 +1023,25 @@ mod tests {
         assert_eq!(r1.fills.len(), r2.fills.len());
         assert_eq!(r1.net_profit_wei, r2.net_profit_wei);
         assert_eq!(r1.fills[0].net_wei, r2.fills[0].net_wei);
+    }
+
+    /// A-07/A-08/A-09: out-of-core rows are kept for evidence but never filled.
+    #[test]
+    fn out_of_core_rows_are_counted_skips_not_fills() {
+        let policy = LedgerPolicy {
+            starting_gas_wei: 10_000_000,
+            reserve_wei: 0,
+            max_fills_per_block: 32,
+        };
+        let a = address!("0x0000000000000000000000000000000000000001");
+        let b = address!("0x0000000000000000000000000000000000000002");
+        let mut o = opp(1, 0, Strategy::TwoHopArb, a, b, 5_000, 100);
+        o.add_tag(crate::types::tags::OUT_OF_CORE);
+
+        let r = policy.apply(&[o]);
+        assert!(r.fills.is_empty(), "out-of-core must not become a fill");
+        assert_eq!(r.skips.len(), 1);
+        assert_eq!(r.skips[0].reason, FillSkipReason::OutOfCore);
     }
 
     #[test]

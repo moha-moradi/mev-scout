@@ -184,17 +184,18 @@ The dashboard reads `paper_sessions` read-only and recomputes aggregate rates fr
 
 ## 5. Taxonomy axes and canonical identity
 
-Tags are a persisted dashboard contract: **legacy string values are never renamed or deleted**. New attribution is added as namespaced tags over seven axes, and `types/tags.rs::TAG_AXIS_REGISTRY` / `axis_of_tag` are the single source of truth (unit-tested for uniqueness):
+Tags are a persisted dashboard contract: **legacy string values are never renamed or deleted**. New attribution is added as namespaced tags over eight axes, and `types/tags.rs::TAG_AXIS_REGISTRY` / `axis_of_tag` are the single source of truth (unit-tested for uniqueness):
 
 | Axis | Examples |
 |---|---|
 | `family` | `backrun` (an `ArbAtomic` + tag, not a new `MevKind`) |
 | `mechanism` | `curve_imbalance`, `rate_provider_staleness`, `fot_arb`, `savax_rate_arb` |
-| `venue` | `pharaoh_dlmm`, `lfj_v2`, `pangolin_v2`, `sushiv2` |
+| `venue` | `venue:pharaoh_dlmm`, `venue:lfj_v2`, `venue:pangolin_v2`, `venue:sushiv2` — emitted only from an explicit registry `dex_name`, never inferred from a generic fork `dex_type` |
 | `funding` | `flash_arb` (legacy alias) + `funding:balancer_v2_vault`, `funding:aave_v3`, `funding:univ3_flash`, `funding:lfj_lb_flash`, `funding:v2_flash_swap` |
 | `execution` | `execution:single_tx` |
-| `optimizer` | `optimizer:split_route` — an amount/route **optimization mode**, never a venue or a route-shape family |
+| `optimizer` | `optimizer:amount_optimal_L`, `optimizer:candidate_L_sweep`, `optimizer:split_route` — amount/route **optimization modes**, never a venue or a route-shape family |
 | `routing` | `routing:paraswap_velora` — router provenance, not a pool |
+| `scope` | `out_of_core` — disposition marker for GMX/sAVAX/Pendle rows kept for forensic evidence but excluded from core sim/exec/ranking |
 
 The decoder (`explorer/decode/flash_loan.rs::flash_loan_funding_tag`) stamps the funding axis from the observed loan protocol; live detection stamps the same axis from `ArbTagPolicy.funding_source` (derived from `FlashLoanProvider::funding_source()`). The shared `types/tags.rs::canonical_funding_source` maps both config providers and decoded protocols (and the `funding:*` tag names used by older rows) to one value: `per-opportunity funding_source` and the realized `MevEvent.details.funding_source` therefore carry the same canonical string (`balancer_v2_vault`, `aave_v3`, …). The realized classifier writes it in `classify/arb.rs` from the decoded flash-loan log; `details.underlying_pools_hash` comes from the receipt's non-aggregator swap pools and `details.router_version` from the aggregator event topic (`decode/aggregator.rs::aggregator_router_version`).
 

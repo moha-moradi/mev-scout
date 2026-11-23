@@ -280,6 +280,11 @@ pub struct LiveArgs {
     /// deadline and victim tx index. Overrides [live].pending_backrun.
     #[arg(long = "pending-backrun", help_heading = "Live")]
     pub pending_backrun: bool,
+
+    /// Enable the candidate-L amount sweep (requires `--sim state`).
+    /// Overrides [paper].optimizer_sweep.
+    #[arg(long = "optimizer-sweep", help_heading = "Ledger")]
+    pub optimizer_sweep: bool,
 }
 
 impl Default for LiveArgs {
@@ -299,6 +304,7 @@ impl Default for LiveArgs {
             max_quote_age_ms: None,
             require_risk_clear: false,
             pending_backrun: false,
+            optimizer_sweep: false,
         }
     }
 }

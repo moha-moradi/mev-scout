@@ -7037,8 +7037,13 @@ tag (`funding:balancer_v2_vault` / `funding:aave_v3` / `funding:univ3_flash` /
 re-implemented: live synthesizes the candidate route as `SwapFact`s and calls
 `explorer::strategy_tags::arb_strategy_tags`, so the two halves cannot drift.
 The full axis registry (`types/tags.rs::TAG_AXIS_REGISTRY`) also defines
+`optimizer:amount_optimal_L`, `optimizer:candidate_L_sweep`,
 `optimizer:split_route`, `routing:paraswap_velora` and `execution:single_tx`;
-these are additive attribution, never new `MevKind`s.
+these are additive attribution, never new `MevKind`s. The `scope` axis holds
+`out_of_core`: GMX (two-transaction request + keeper), sAVAX rate-arb and
+Pendle PT/YT rows keep their forensic mechanism tags but are excluded from core
+sim/exec/ranking (a counted `out_of_core` ledger skip, and an `OutOfCore` exec
+planner rejection), so the disposition is explicit rather than a silent drop.
 
 Documented N/A (explicit, never a silent drop):
 

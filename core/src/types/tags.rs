@@ -23,6 +23,10 @@ pub const ORACLE_AMM: &str = "oracle_amm";
 pub const SAVAX_RATE_ARB: &str = "savax_rate_arb";
 pub const EPOCH_TRANSITION: &str = "epoch_transition";
 pub const GMX_ADL_ARB: &str = "gmx_adl_arb";
+/// A-07/A-08/A-09: a row kept for forensic evidence but excluded from core
+/// sim/exec/ranking. The mechanism tag stays — this is a disposition, not a
+/// replacement for `gmx_adl_arb` / `savax_rate_arb` / Pendle evidence.
+pub const OUT_OF_CORE: &str = "out_of_core";
 
 /// Risk flag (not an attribution tag): the flash-funding vault is also a pool
 /// in the arbitrage route, so the callback re-enters the funding contract.
@@ -43,6 +47,9 @@ pub enum TagAxis {
     Execution,
     Optimizer,
     Routing,
+    /// Scope/disposition: kept for forensic evidence but excluded from core
+    /// sim/exec/ranking (plan §1.1). `out_of_core` is the only member.
+    Scope,
 }
 
 impl TagAxis {
@@ -55,6 +62,7 @@ impl TagAxis {
             Self::Execution => "execution",
             Self::Optimizer => "optimizer",
             Self::Routing => "routing",
+            Self::Scope => "scope",
         }
     }
 }
@@ -68,6 +76,14 @@ pub const FUNDING_V2_FLASH_SWAP: &str = "funding:v2_flash_swap";
 pub const FUNDING_MORPHO_BLUE: &str = "funding:morpho_blue";
 /// Fallback for a flash provider with no dedicated tag yet.
 pub const FUNDING_FLASH_LOAN: &str = "funding:flash_loan";
+
+/// Venue identity from the pool registry's human-readable `dex_name` (C-04).
+/// Only venues with a canonical Avalanche deployment are emitted; a generic
+/// `dex_type` (e.g. UniswapV2 fork) never becomes a false venue claim.
+pub const VENUE_PANGOLIN_V2: &str = "venue:pangolin_v2";
+pub const VENUE_SUSHI_V2: &str = "venue:sushiv2";
+pub const VENUE_PHARAOH_DLMM: &str = "venue:pharaoh_dlmm";
+pub const VENUE_LFJ_V2: &str = "venue:lfj_v2";
 
 /// Canonical per-opportunity funding source for a config provider or a
 /// decoded event protocol (WP5 / M-10). This is the *value* stored on
@@ -129,6 +145,7 @@ pub const TAG_AXIS_REGISTRY: &[(&str, TagAxis)] = &[
     (SAVAX_RATE_ARB, TagAxis::Mechanism),
     (EPOCH_TRANSITION, TagAxis::Mechanism),
     (GMX_ADL_ARB, TagAxis::Mechanism),
+    (OUT_OF_CORE, TagAxis::Scope),
     (FUNDING_BALANCER_V2, TagAxis::Funding),
     (FUNDING_AAVE_V3, TagAxis::Funding),
     (FUNDING_AAVE_V2, TagAxis::Funding),
@@ -137,6 +154,10 @@ pub const TAG_AXIS_REGISTRY: &[(&str, TagAxis)] = &[
     (FUNDING_V2_FLASH_SWAP, TagAxis::Funding),
     (FUNDING_MORPHO_BLUE, TagAxis::Funding),
     (FUNDING_FLASH_LOAN, TagAxis::Funding),
+    (VENUE_PANGOLIN_V2, TagAxis::Venue),
+    (VENUE_SUSHI_V2, TagAxis::Venue),
+    (VENUE_PHARAOH_DLMM, TagAxis::Venue),
+    (VENUE_LFJ_V2, TagAxis::Venue),
     (OPTIMIZER_SPLIT_ROUTE, TagAxis::Optimizer),
     (OPTIMIZER_CANDIDATE_L_SWEEP, TagAxis::Optimizer),
     (OPTIMIZER_AMOUNT_OPTIMAL_L, TagAxis::Optimizer),
@@ -165,6 +186,7 @@ pub const LIVE_ARB_TAGS: &[&str] = &[
     SAVAX_RATE_ARB,
     EPOCH_TRANSITION,
     GMX_ADL_ARB,
+    OUT_OF_CORE,
     FUNDING_BALANCER_V2,
     FUNDING_AAVE_V3,
     FUNDING_AAVE_V2,
@@ -173,6 +195,10 @@ pub const LIVE_ARB_TAGS: &[&str] = &[
     FUNDING_V2_FLASH_SWAP,
     FUNDING_MORPHO_BLUE,
     FUNDING_FLASH_LOAN,
+    VENUE_PANGOLIN_V2,
+    VENUE_SUSHI_V2,
+    VENUE_PHARAOH_DLMM,
+    VENUE_LFJ_V2,
     OPTIMIZER_SPLIT_ROUTE,
     OPTIMIZER_CANDIDATE_L_SWEEP,
     OPTIMIZER_AMOUNT_OPTIMAL_L,
@@ -202,6 +228,11 @@ mod tests {
         assert_eq!(axis_of_tag(OPTIMIZER_AMOUNT_OPTIMAL_L), Some(TagAxis::Optimizer));
         assert_eq!(axis_of_tag(ORACLE_AMM), Some(TagAxis::Mechanism));
         assert_eq!(axis_of_tag(FUNDING_AAVE_V3), Some(TagAxis::Funding));
+        assert_eq!(axis_of_tag(OUT_OF_CORE), Some(TagAxis::Scope));
+        assert_eq!(axis_of_tag(VENUE_PANGOLIN_V2), Some(TagAxis::Venue));
+        assert_eq!(axis_of_tag(VENUE_SUSHI_V2), Some(TagAxis::Venue));
+        assert_eq!(axis_of_tag(VENUE_PHARAOH_DLMM), Some(TagAxis::Venue));
+        assert_eq!(axis_of_tag(VENUE_LFJ_V2), Some(TagAxis::Venue));
     }
 
     #[test]

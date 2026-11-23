@@ -456,6 +456,7 @@ async fn live_tag_parity_frozen_avax_window() -> anyhow::Result<()> {
         gas_model: validation.gas_model,
         priority_fee_gwei: config.gas.priority_fee_gwei,
         flash_loan_provider: validation.flash_loan_provider,
+        flash_loan_fee_bps_override: None,
         winning_bid_premium: config.gas.winning_bid_premium,
         percentile_gas_price: None,
         calibration: Default::default(),

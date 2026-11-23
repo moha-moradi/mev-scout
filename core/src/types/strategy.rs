@@ -261,6 +261,10 @@ pub struct GasConfig {
     pub gas_model: GasModel,
     pub priority_fee_gwei: f64,
     pub flash_loan_provider: FlashLoanProvider,
+    /// Live-resolved flash premium in bps. `None` keeps the provider's
+    /// documented fallback (A-03). Set from on-chain state at session start so
+    /// detector profit math and `SimPolicy` charge the same fee.
+    pub flash_loan_fee_bps_override: Option<u128>,
     pub winning_bid_premium: f64,
     /// Pre-computed N-th percentile effective gas price from the historical
     /// gas price distribution. When set, `GasModel::Distribution(p)`
@@ -276,6 +280,19 @@ pub struct GasConfig {
 }
 
 impl GasConfig {
+    /// Attach a runtime-resolved flash premium (A-03). Values above 100% are
+    /// rejected so a malformed on-chain response cannot silently inflate costs.
+    pub fn with_flash_loan_fee_bps(mut self, bps: Option<u128>) -> Self {
+        self.flash_loan_fee_bps_override = bps.filter(|v| *v <= 10_000);
+        self
+    }
+
+    /// Effective premium: live override when present, provider fallback otherwise.
+    pub fn effective_flash_loan_fee_bps(&self) -> u128 {
+        self.flash_loan_fee_bps_override
+            .unwrap_or_else(|| self.flash_loan_provider.fee_rate_bps())
+    }
+
     /// Compute the effective priority fee in wei, optionally inflated by
     /// the PGA winning bid premium.
     fn effective_priority_fee_wei(&self) -> u128 {
@@ -327,7 +344,7 @@ impl GasConfig {
     /// Compute the flash loan fee for a given principal amount.
     /// fee = input_amount * fee_rate_bps / 10000
     pub fn flash_loan_fee(&self, input_amount: u128) -> u128 {
-        let bps = self.flash_loan_provider.fee_rate_bps();
+        let bps = self.effective_flash_loan_fee_bps();
         if bps == 0 {
             return 0;
         }
@@ -342,6 +359,7 @@ impl Default for GasConfig {
             gas_model: GasModel::default(),
             priority_fee_gwei: 0.0,
             flash_loan_provider: FlashLoanProvider::Auto,
+            flash_loan_fee_bps_override: None,
             winning_bid_premium: 0.0,
             percentile_gas_price: None,
             calibration: super::gas::GasCalibrationSnapshot::default(),
@@ -380,5 +398,32 @@ impl OutputFormat {
             OutputFormat::Csv => "csv",
             OutputFormat::Json => "json",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A-03: the runtime premium wins, but an impossible on-chain value must
+    /// never replace the documented fallback.
+    #[test]
+    fn gas_config_flash_fee_uses_runtime_override_with_fallback() {
+        let base = GasConfig::default().with_flash_loan_fee_bps(None);
+        assert_eq!(base.effective_flash_loan_fee_bps(), 0);
+        assert_eq!(base.flash_loan_fee(10_000), 0);
+
+        let aave = GasConfig {
+            flash_loan_provider: FlashLoanProvider::Aave,
+            ..GasConfig::default()
+        };
+        assert_eq!(aave.flash_loan_fee(10_000), 9);
+        let live = aave.with_flash_loan_fee_bps(Some(12));
+        assert_eq!(live.flash_loan_fee(10_000), 12);
+        assert_eq!(
+            live.with_flash_loan_fee_bps(Some(20_000))
+                .effective_flash_loan_fee_bps(),
+            9
+        );
     }
 }

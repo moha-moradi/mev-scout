@@ -163,6 +163,7 @@ pub async fn cmd_live(
         max_quote_age_ms: args.max_quote_age_ms,
         require_risk_clear: args.require_risk_clear,
         pending_backrun: args.pending_backrun,
+        optimizer_sweep: args.optimizer_sweep,
         ..Default::default()
     };
 

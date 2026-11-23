@@ -201,6 +201,14 @@ pub struct PaperConfig {
     /// Attach to a loopback Anvil instead of spawning one.
     #[serde(default)]
     pub anvil_url: String,
+    /// A-04: enable the candidate-L sweep before ledger admission (default off).
+    /// Requires `[paper].sim = "state"` to have any effect.
+    #[serde(default)]
+    pub optimizer_sweep: bool,
+    /// Split-route optimizer mode. Kept off until split allocation is
+    /// representable in `MevOpportunity` and the exec planner.
+    #[serde(default)]
+    pub optimizer_split_route: bool,
 }
 
 fn default_paper_sim() -> String {
@@ -281,6 +289,15 @@ impl PaperConfig {
             max_candidates_per_block: self.sim_max_candidates_per_block.max(1),
         })
     }
+
+    /// A-04: candidate-L sweep policy. Split mode is only honoured when the
+    /// sweep itself is enabled, so a stray flag cannot change behaviour.
+    pub fn amount_sweep(&self) -> crate::paper::optimizer::AmountSweep {
+        crate::paper::optimizer::AmountSweep::new(
+            self.optimizer_sweep,
+            self.optimizer_sweep && self.optimizer_split_route,
+        )
+    }
 }
 
 impl Default for PaperConfig {
@@ -296,6 +313,8 @@ impl Default for PaperConfig {
             exec_key: String::new(),
             anvil_bin: default_anvil_bin(),
             anvil_url: String::new(),
+            optimizer_sweep: false,
+            optimizer_split_route: false,
         }
     }
 }
@@ -1344,7 +1363,7 @@ db_path = "./cache/explorer-solo.sqlite"
 
 #[cfg(test)]
 mod env_expansion_tests {
-    use super::Config;
+    use super::{Config, PaperConfig};
 
     #[test]
     fn expands_set_env_vars_in_rpc_urls() {
@@ -1399,5 +1418,27 @@ rpc_urls = ["https://broken.example/${NO_CLOSING"]
             &[],
         );
         assert_eq!(cfg.rpc.rpc_urls[0], "https://broken.example/${NO_CLOSING");
+    }
+
+    /// A-04: defaults must be byte-identical to pre-optimizer behaviour.
+    #[test]
+    fn optimizer_sweep_defaults_off_and_split_implies_sweep() {
+        let paper = PaperConfig::default();
+        let sweep = paper.amount_sweep();
+        assert!(!sweep.enabled);
+        assert!(!sweep.split_route);
+
+        let enabled = PaperConfig {
+            optimizer_sweep: true,
+            ..PaperConfig::default()
+        };
+        assert!(enabled.amount_sweep().enabled);
+
+        let split_only = PaperConfig {
+            optimizer_split_route: true,
+            ..PaperConfig::default()
+        };
+        assert!(!split_only.amount_sweep().enabled);
+        assert!(!split_only.amount_sweep().split_route);
     }
 }

@@ -148,9 +148,9 @@ fn evaluate_split(
     let base = u128_of(opp.input_amount)?;
     let original_states = candidate_state(opp, seeds, Some(pm))?;
 
-    let (alt_pool, replaces_first) = match pm.find_pair_pool(token_in, middle) {
+    let (alt_pool, replaces_first) = match pm.find_pair_pool(&token_in, &middle) {
         Some(addr) if addr != original[0] && pm.get(&addr).is_some() => (addr, true),
-        _ => match pm.find_pair_pool(middle, token_out) {
+        _ => match pm.find_pair_pool(&middle, &token_out) {
             Some(addr) if addr != original[1] && pm.get(&addr).is_some() => (addr, false),
             _ => return None,
         },
@@ -353,5 +353,26 @@ mod tests {
         let sweep = AmountSweep::new(false, true);
         assert!(sweep.enabled);
         assert!(sweep.split_route);
+    }
+
+    /// A-04: the optimizer is inert unless explicitly enabled and seeded.
+    #[test]
+    fn optimize_returns_none_without_a_live_seeded_sweep() {
+        let mut opp = MevOpportunity::new(1, 0, crate::types::Strategy::TwoHopArb, Address::ZERO, 1);
+        opp.input_amount = U256::from(1_000u128);
+        let seeds = SimSeeds::new();
+        let policy = SimPolicy {
+            mode: super::super::SimMode::StateSim,
+            ..SimPolicy::default()
+        };
+
+        assert!(optimize(&opp, &seeds, &policy, &AmountSweep::default(), None).is_none());
+
+        let enabled = AmountSweep::new(true, false);
+        // No canonical seed was recorded for this opportunity.
+        assert!(optimize(&opp, &seeds, &policy, &enabled, None).is_none());
+
+        opp.input_amount = U256::ZERO;
+        assert!(optimize(&opp, &seeds, &policy, &enabled, None).is_none());
     }
 }

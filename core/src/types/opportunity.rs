@@ -2,6 +2,7 @@
 //!
 //! These types are the serialization boundary between the core backtest engine,
 //! the CLI output layer, and the API serialization layer.
+use crate::explorer::profit::{compute_net_profit, ProfitCosts};
 use crate::types::strategy::Strategy;
 use alloy::primitives::{keccak256, Address, B256, U256};
 use serde::{Deserialize, Serialize};
@@ -403,10 +404,18 @@ impl MevOpportunity {
         if let Some(v) = self.net_profit_wei {
             return v;
         }
-        let gas = U256::from(self.gas_cost_wei);
-        let revert = U256::from(self.revert_gas_cost_wei.unwrap_or(0));
-        self.expected_profit
-            .saturating_sub(gas.saturating_add(revert))
+        // C-05: one canonical formula for every unsigned net-profit figure.
+        // `expected_profit` is the full-route simulated residual, which already
+        // has the flash premium netted (`paper::sim`), so the flash term is
+        // deliberately zero here — subtracting it again would double-count.
+        compute_net_profit(
+            self.expected_profit,
+            ProfitCosts {
+                gas_wei: U256::from(self.gas_cost_wei),
+                flashloan_fee_wei: U256::ZERO,
+                revert_gas_wei: U256::from(self.revert_gas_cost_wei.unwrap_or(0)),
+            },
+        )
     }
 
     /// Add an attribution tag once (order preserved).
@@ -459,6 +468,7 @@ mod tests {
         let old: MevOpportunity = serde_json::from_str(legacy).expect("legacy row");
         assert!(old.funding_source.is_none());
         assert!(old.risk_flags.is_empty());
+        assert!(old.optimal_amount.is_none());
         assert_eq!(old.resolved_net_profit_wei(), U256::from(7));
 
         let mut opp = MevOpportunity::new(2, 1, Strategy::TwoHopArb, Address::ZERO, 2);
@@ -472,6 +482,7 @@ mod tests {
         opp.risk_flags.push("quote_drift".into());
         opp.quote_expires_at = Some(1234);
         opp.net_profit_wei = Some(U256::from(85));
+        opp.optimal_amount = Some(U256::from(123));
         opp.builder_bid = Some(serde_json::Value::Null);
         let json = serde_json::to_string(&opp).expect("serialize");
         let back: MevOpportunity = serde_json::from_str(&json).expect("deserialize");
@@ -480,12 +491,33 @@ mod tests {
         assert_eq!(back.risk_flags, vec!["quote_drift"]);
         assert_eq!(back.quote_expires_at, Some(1234));
         assert_eq!(back.net_profit_wei, Some(U256::from(85)));
+        assert_eq!(back.optimal_amount, Some(U256::from(123)));
         assert_eq!(back.resolved_net_profit_wei(), U256::from(85));
         // Without an explicit net field the derived value subtracts gas +
         // revert gas exactly once (100 - 10 - 3 = 87).
         let mut derived = back;
         derived.net_profit_wei = None;
         assert_eq!(derived.resolved_net_profit_wei(), U256::from(87));
+    }
+
+    /// C-05: the persisted/derived net figure and the plan's canonical formula
+    /// must be the same function. A flash premium is never subtracted twice.
+    #[test]
+    fn resolved_net_profit_uses_canonical_formula() {
+        let mut opp = MevOpportunity::new(1, 0, Strategy::TwoHopArb, Address::ZERO, 1);
+        opp.expected_profit = U256::from(100);
+        opp.gas_cost_wei = 10;
+        opp.revert_gas_cost_wei = Some(3);
+        let expected = compute_net_profit(
+            opp.expected_profit,
+            ProfitCosts {
+                gas_wei: U256::from(10),
+                flashloan_fee_wei: U256::ZERO,
+                revert_gas_wei: U256::from(3),
+            },
+        );
+        assert_eq!(expected, U256::from(87));
+        assert_eq!(opp.resolved_net_profit_wei(), expected);
     }
 
     /// M-06: routers, underlying pool sets and funding sources that share the

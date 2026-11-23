@@ -14,6 +14,7 @@ fn live_capital_free_flags_parse() {
         "750",
         "--require-risk-clear",
         "--pending-backrun",
+        "--optimizer-sweep",
     ])
     .expect("flags must parse");
     let Command::Live(args) = cli.command_or_default() else {
@@ -23,6 +24,7 @@ fn live_capital_free_flags_parse() {
     assert_eq!(args.max_quote_age_ms, Some(750));
     assert!(args.require_risk_clear);
     assert!(args.pending_backrun);
+    assert!(args.optimizer_sweep);
 }
 
 #[test]
@@ -38,4 +40,5 @@ fn live_flags_default_to_disabled() {
     assert_eq!(args.max_quote_age_ms, None);
     assert!(!args.require_risk_clear);
     assert!(!args.pending_backrun);
+    assert!(!args.optimizer_sweep);
 }

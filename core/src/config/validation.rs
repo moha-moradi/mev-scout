@@ -316,7 +316,36 @@ pub fn validate_and_resolve_for(
 /// Like [`validate_and_resolve`] but skips the block-range check —
 /// live mode auto-detects the chain tip at runtime.
 pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, ConfigError> {
+    validate_live_gate(config)?;
     validate_common(config, true, false)
+}
+
+/// M-07: `[live]` quote-gating values are plain numbers, so malformed or
+/// nonsensical values would otherwise only surface mid-session. Validate them
+/// at config-load time with the same `InvalidValue` contract as other fields.
+fn validate_live_gate(config: &Config) -> std::result::Result<(), ConfigError> {
+    let live = &config.live;
+    if let Some(age) = live.max_quote_age_ms {
+        if age == 0 {
+            return Err(ConfigError::InvalidValue {
+                field: "live.max_quote_age_ms".into(),
+                message: "must be greater than zero when set (0 rejects every quote)".into(),
+            });
+        }
+    }
+    if let Some(raw) = live.pending_backrun_min_wei.as_deref() {
+        let wei = raw.parse::<u128>().map_err(|_| ConfigError::InvalidValue {
+            field: "live.pending_backrun_min_wei".into(),
+            message: format!("expected a wei integer, got '{raw}'"),
+        })?;
+        if wei == 0 {
+            return Err(ConfigError::InvalidValue {
+                field: "live.pending_backrun_min_wei".into(),
+                message: "must be greater than zero when set".into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Shared body of every validating entry point.

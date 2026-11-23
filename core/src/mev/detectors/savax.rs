@@ -218,6 +218,7 @@ mod tests {
             gas_model: GasModel::Fixed,
             priority_fee_gwei: 0.0,
             flash_loan_provider: FlashLoanProvider::Balancer,
+            flash_loan_fee_bps_override: None,
             winning_bid_premium: 0.0,
             percentile_gas_price: None,
             calibration: Default::default(),

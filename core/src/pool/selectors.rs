@@ -48,6 +48,16 @@ selector!(GET_SWAP_FEE_PERCENTAGE, "getSwapFeePercentage()"); // 0x55c67628
 selector!(GET_AMPLIFICATION_PARAMETER, "getAmplificationParameter()"); // 0x6daccffa
 selector!(GET_SCALING_FACTORS, "getScalingFactors()"); // 0x1dd746ea
 selector!(GET_RATE_PROVIDER, "getRateProvider(uint256)"); // 0x48ade7b0
+// A-03: live flash-premium reads. These are distinct from the pool swap fee.
+selector!(AAVE_FLASHLOAN_PREMIUM_TOTAL, "FLASHLOAN_PREMIUM_TOTAL()"); // 0x074b2e43
+selector!(
+    BALANCER_GET_PROTOCOL_FEES_COLLECTOR,
+    "getProtocolFeesCollector()"
+); // 0xd2946c2b
+selector!(
+    BALANCER_GET_FLASH_LOAN_FEE_PERCENTAGE,
+    "getFlashLoanFeePercentage()"
+); // 0xd877845c
 
 // ── Benqi sAVAX (plan P3.16): getPooledAvaxByShares(uint256) ──────────────
 
@@ -129,6 +139,21 @@ mod tests {
             ),
             ("getScalingFactors()", &GET_SCALING_FACTORS, "1dd746ea"),
             ("getRateProvider(uint256)", &GET_RATE_PROVIDER, "48ade7b0"),
+            (
+                "FLASHLOAN_PREMIUM_TOTAL()",
+                &AAVE_FLASHLOAN_PREMIUM_TOTAL,
+                "074b2e43",
+            ),
+            (
+                "getProtocolFeesCollector()",
+                &BALANCER_GET_PROTOCOL_FEES_COLLECTOR,
+                "d2946c2b",
+            ),
+            (
+                "getFlashLoanFeePercentage()",
+                &BALANCER_GET_FLASH_LOAN_FEE_PERCENTAGE,
+                "d877845c",
+            ),
             ("coins(int128)", &CURVE_COINS_I128, "23746eb8"),
             ("coins(uint256)", &CURVE_COINS_U256, "c6610657"),
             ("balances(int128)", &CURVE_BALANCES_I128, "065a80d8"),

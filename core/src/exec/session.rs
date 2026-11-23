@@ -136,6 +136,9 @@ fn run_revm(
             Err(PlanError::VenueUnsupported) => {
                 return ExecAttempt::failed(FillSkipReason::ExecVenueUnsupported);
             }
+            Err(PlanError::OutOfCore) => {
+                return ExecAttempt::failed(FillSkipReason::OutOfCore);
+            }
             Err(e) => {
                 tracing::debug!("exec build failed: {e}");
                 return ExecAttempt::failed(FillSkipReason::ExecBuildFailed);
@@ -225,6 +228,9 @@ fn run_anvil(
             }
             Err(PlanError::VenueUnsupported) => {
                 return ExecAttempt::failed(FillSkipReason::ExecVenueUnsupported);
+            }
+            Err(PlanError::OutOfCore) => {
+                return ExecAttempt::failed(FillSkipReason::OutOfCore);
             }
             Err(e) => {
                 tracing::debug!("exec build failed: {e}");

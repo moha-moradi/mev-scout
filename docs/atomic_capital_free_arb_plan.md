@@ -3,7 +3,7 @@
 > **تاریخ مبنا:** 2026-11-21  
 > **منابع پلن:** (۱) **نتایج** تاکسونومی ۱۳استراتژی مدل دیگری طبق خلاصهای که از گفتگو در اختیارم بود (نه متن کامل لیست ۱۳گانه — رجوع شود به §2.4)، (۲) ۸ تصحیح باقیمانده و تمام تصمیمات حذف/Expansion همان گفتگو، (۳) بررسی من از کد واقعی ماژولهای `core/src/explorer/**`, `core/src/jobs/live.rs`, `core/src/types/opportunity.rs`, `core/src/explorer/store/**` و مستندات `docs/`، (۴) بازبینی دوم با متن کامل `live.rs` (رجوع شود به §1.3).  
 > **هدف:** تبدیل تمام مواردی که «گفته شد ولی در کد جا نیفتاد» به کاربستههای قابلاجرا، با تعیین فایل مقصد، معیار پذیرش و ترتیب وابستگی.  
-> **وضعیت:** پلن است؛ تا تأیید تو هیچ کدی تغییر نکرده است. عمق بررسی کد: **ساختاری/هدفمند** (فایلها و توابع کلیدی خوانده شدند)، نه audit خطبهخط تمام submoduleها.
+> **وضعیت:** پیادهسازی مرحلهای آغاز و بخش عمدهٔ آن انجام شد (به تاریخ 2026-11-23). عمق بررسی کد: **ساختاری/هدفمند** (فایلها و توابع کلیدی خوانده شدند)، نه audit خطبهخط تمام submoduleها. جزئیات پیشرفت در §0.1.
 
 ---
 
@@ -20,6 +20,19 @@
 | لایه funding | Balancer V2، Aave V3، Uniswap V3، LFJ LB، flash swapهای V2-compatible و احتمالاً forkهای V3. **Flash Loan لایه funding است، نه خانواده آرب.** |
 | Aggregator | 1inch / KyberSwap / OpenOcean / ParaSwap(Velora) = **Routing Layer**، نه Pool source. Odos حذف شد. |
 | PBS | Avalanche C-Chain به طور پیشفرض MEV-Boost/PBS ندارد → `priority_fee`، نه `BuilderTip`؛ `builder_bid: Option<Null>`. |
+
+### 0.1 وضعیت پیادهسازی (2026-11-23)
+
+| Section | موارد اعمالشده | وضعیت |
+|---|---|---|
+| C-05 / M-03 / M-06 / M-07 | فرمولcanonical `compute_net_profit`، نرخ AVAX هم-block + `manipulation_risk`، canonical-ID بعد از tag stamping، quote context (nonce/balance/allowance) و gate readonly | ✅ |
+| A-03 / A-04 / C-03 | premium لحظهای Aave/Balancer با fallback، sweep کاندید-L (پیشفرض خاموش) با تگ optimizer، Split-Route تحت محور optimizer | ✅ |
+| A-07 / A-08 / A-09 | تگ `out_of_core` (محور Scope)، GMX/sAVAX/Pendle با تگ forensic حفظ و از sim/exec/ranking خارج (skip شمارششده) | ✅ |
+| C-07 / C-08 / M-09 | re-quote pending + `quote_expires_at` + تست پذیرش، متریکهای quote/competition در `paper_sessions` و خروجی session | ✅ |
+| C-01/C-02/C-04/C-06/M-01/M-02/M-04/M-05/M-08/M-10 | پیشتر در کد پیاده یا اسنادشان اصلاح شدهبود | ✅ (پیشین) |
+| §2.4 جدول ۱۳استراتژی | نیاز به متن اصلی لیست دارد | ⏸ منتظر ورودی کاربر |
+
+> **توجه:** Split-Route بهصورت پیشفرض خاموش است تا زمانی که تخصیص کسری دومین مسیر در `MevOpportunity` و exec planner قابل نمایش/اجرا شود. تگ `optimizer:split_route` فقط محور attribution است.
 
 ---
 
@@ -162,6 +175,7 @@
 | `execution` | `single_tx`, `full_revert`, `priority_fee_bid`, `builder_bid_null` |
 | `optimizer` | `split_route`, `amount_optimal_L`, `candidate_L_sweep` |
 | `routing` | `aggregator_1inch`, `aggregator_kyber`, `aggregator_openocean`, `aggregator_paraswap_velora` |
+| `scope` | `out_of_core` — GMX/sAVAX/Pendle: forensic حفظ، ولی خارج از sim/exec/ranking |
 
 > **MevKind جدید اضافه نکن.** Backrun همان `ArbAtomic` + `backrun` tag باقی میماند.
 

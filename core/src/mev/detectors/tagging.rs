@@ -114,6 +114,25 @@ fn route_tokens(opp: &MevOpportunity, pools: &[Address], pm: &PoolManager) -> Op
     Some(tokens)
 }
 
+/// Honest venue identity from the registry's `dex_name` (C-04). A generic
+/// `dex_type` such as `UniswapV2` covers many forks, so only an explicit,
+/// recognised DEX name is promoted to a venue tag — a missing/unknown name
+/// stays untagged rather than making a false venue claim.
+fn venue_tag_for_dex_name(name: &str) -> Option<&'static str> {
+    let n = name.to_ascii_lowercase();
+    if n.contains("pharaoh") && n.contains("dlmm") {
+        Some(tags::VENUE_PHARAOH_DLMM)
+    } else if n.contains("lfj") || n.contains("liquidity book") || n.contains("trader joe") {
+        Some(tags::VENUE_LFJ_V2)
+    } else if n.contains("pangolin") {
+        Some(tags::VENUE_PANGOLIN_V2)
+    } else if n.contains("sushi") {
+        Some(tags::VENUE_SUSHI_V2)
+    } else {
+        None
+    }
+}
+
 fn amm_for(pool: &PoolState) -> Amm {
     use crate::dex_type::DexType;
     let dex = pool.info().dex_type;
@@ -317,9 +336,43 @@ pub fn stamp_route_tags(
             opp.add_tag(tag);
         }
 
+        // C-04: stamp honest venue identity from the registry `dex_name` when
+        // it names a canonical Avalanche venue. Generic fork types stay
+        // untagged rather than being mislabelled as a specific venue.
+        for swap in &swaps {
+            if let Some(name) = pm.get(&swap.pool).and_then(|p| p.info().dex_name.as_deref()) {
+                if let Some(tag) = venue_tag_for_dex_name(name) {
+                    opp.add_tag(tag);
+                }
+            }
+        }
+
+        // Evidence accumulate across tag families; start from any details a
+        // detector already attached so stamping never destroys provenance.
+        let mut details = serde_json::Map::new();
+
+        // A-07/A-08/A-09: two-transaction mechanisms (GMX request + keeper)
+        // and yield/rate legs (sAVAX, Pendle PT/YT) are outside core atomic
+        // arb. Keep the forensic mechanism tag AND add the disposition tag;
+        // core sim/exec/ranking gate on this tag (paper/ledger.rs). Evidence
+        // records *why* the row was excluded rather than silently dropping it.
+        let mut out_of_core_reasons = Vec::new();
+        if opp.has_tag(tags::GMX_ADL_ARB) {
+            out_of_core_reasons.push("gmx_two_tx");
+        }
+        if opp.has_tag(tags::SAVAX_RATE_ARB) {
+            out_of_core_reasons.push("savax_rate");
+        }
+        if swaps.iter().any(|s| s.amm == Amm::Pendle) {
+            out_of_core_reasons.push("pendle_yield");
+        }
+        if !out_of_core_reasons.is_empty() {
+            opp.add_tag(tags::OUT_OF_CORE);
+            details.insert("out_of_core".into(), serde_json::json!(out_of_core_reasons));
+        }
+
         // Keep the block-signal evidence next to the tags (read-only provenance;
         // tag conditions themselves stay in the explorer helpers above).
-        let mut details = serde_json::Map::new();
         let evidence = route_evidence(&swaps, pm);
         if !evidence.is_empty() {
             details.insert("route_evidence".into(), serde_json::json!(evidence));
@@ -353,7 +406,14 @@ pub fn stamp_route_tags(
             details.insert("fot_tax_bps".into(), serde_json::json!(fot_bps));
         }
         if !details.is_empty() {
-            opp.details = Some(serde_json::Value::Object(details));
+            // Merge, never replace: a detector may already have stamped route
+            // or funding evidence into `details` before tagging ran.
+            let merged = opp.details.get_or_insert_with(|| serde_json::json!({}));
+            if let Some(obj) = merged.as_object_mut() {
+                for (k, v) in details {
+                    obj.insert(k, v);
+                }
+            }
         }
     }
 
@@ -535,6 +595,77 @@ mod tests {
         stamp_route_tags(&mut opp, &policy, &facts, &pm);
         assert!(opp.has_tag(tags::EPOCH_TRANSITION));
         assert!(opp.has_tag(tags::GMX_ADL_ARB));
+    }
+
+    /// A-07: a GMX signal keeps its forensic tag and adds the disposition tag,
+    /// with the reason recorded. Pre-existing detector details are preserved.
+    #[test]
+    fn out_of_core_keeps_forensic_tag_and_merges_details() {
+        let pm = manager();
+        let mut policy = policy();
+        policy.gmx_market_tokens = vec![WAVAX];
+        let facts = BlockTagFacts {
+            gmx_signal_tx: Some(0),
+            ..Default::default()
+        };
+        let mut opp = route(&pm, vec![USDC, TOKA, WAVAX]);
+        opp.details = Some(serde_json::json!({ "detector_evidence": 42 }));
+
+        stamp_route_tags(&mut opp, &policy, &facts, &pm);
+
+        assert!(opp.has_tag(tags::GMX_ADL_ARB));
+        assert!(opp.has_tag(tags::OUT_OF_CORE));
+        let d = opp.details.as_ref().expect("details");
+        assert_eq!(d["detector_evidence"], 42, "existing evidence must survive");
+        assert_eq!(d["out_of_core"][0], "gmx_two_tx");
+    }
+
+    /// C-04: venue tags come only from an explicit, recognised `dex_name`.
+    #[test]
+    fn venue_tag_mapping_is_explicit_and_conservative() {
+        assert_eq!(
+            venue_tag_for_dex_name("Pangolin"),
+            Some(tags::VENUE_PANGOLIN_V2)
+        );
+        assert_eq!(
+            venue_tag_for_dex_name("pangolin-v2"),
+            Some(tags::VENUE_PANGOLIN_V2)
+        );
+        assert_eq!(
+            venue_tag_for_dex_name("SushiSwap"),
+            Some(tags::VENUE_SUSHI_V2)
+        );
+        assert_eq!(
+            venue_tag_for_dex_name("Pharaoh DLMM"),
+            Some(tags::VENUE_PHARAOH_DLMM)
+        );
+        assert_eq!(venue_tag_for_dex_name("LFJ"), Some(tags::VENUE_LFJ_V2));
+        assert_eq!(venue_tag_for_dex_name("QuickSwap"), None);
+        assert_eq!(venue_tag_for_dex_name(""), None);
+    }
+
+    #[test]
+    fn venue_tag_is_stamped_from_named_pool() {
+        let mut named = v2_pool(POOL_A, USDC, TOKA);
+        if let PoolState::UniswapV2(s) = &mut named {
+            s.info.dex_name = Some("SushiSwap".into());
+        }
+        let mut pm = PoolManager::new();
+        pm.add_pool(named);
+        pm.add_pool(v2_pool(POOL_B, TOKA, WAVAX));
+
+        let mut opp = route(&pm, vec![USDC, TOKA, WAVAX]);
+        stamp_route_tags(&mut opp, &policy(), &BlockTagFacts::default(), &pm);
+        assert!(opp.has_tag(tags::VENUE_SUSHI_V2));
+    }
+
+    /// A regular core route must not be flagged out-of-core.
+    #[test]
+    fn core_route_is_not_tagged_out_of_core() {
+        let pm = manager();
+        let mut opp = route(&pm, vec![USDC, TOKA, WAVAX]);
+        stamp_route_tags(&mut opp, &policy(), &BlockTagFacts::default(), &pm);
+        assert!(!opp.has_tag(tags::OUT_OF_CORE));
     }
 
     /// Venue state used by the tags (Curve A/balances, Balancer rate cache) is

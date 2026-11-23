@@ -334,6 +334,36 @@ impl BlockDetectors {
     }
 }
 
+/// C-07: turn a materially large pending swap into an explicit re-quote anchor.
+///
+/// Extracted from `BacktestRunner::stamp_pending_requote` so the
+/// trigger → opportunity contract (`detection_path=pending` +
+/// `quote_expires_at`) is testable without constructing a full runner. A
+/// pending block has no mined timestamp, so the quote's wall-clock age uses
+/// `now_ms`; the freshness gate can then reject it if inclusion slips.
+fn apply_pending_requote(
+    opps: &mut [MevOpportunity],
+    txs: &[TxData],
+    enabled: bool,
+    min_wei: U256,
+    ttl_ms: u64,
+    now_ms: u64,
+) {
+    if !enabled || opps.is_empty() {
+        return;
+    }
+    let Some(victim) = find_large_pending_swap(txs, min_wei) else {
+        return;
+    };
+    let deadline = now_ms.saturating_add(ttl_ms);
+    for opp in opps.iter_mut() {
+        opp.detection_path = Some(DetectionPath::Pending);
+        opp.victim_tx_index = Some(victim);
+        opp.quote_expires_at = Some(deadline);
+        opp.timestamp = now_ms / 1000;
+    }
+}
+
 /// Record observed gasUsed into calibration buckets by dex type and pools touched.
 fn record_gas_observation(
     pm: &PoolManager,
@@ -677,6 +707,10 @@ impl BacktestRunner {
         }
 
         for opp in opps.iter_mut() {
+            // M-06: stamping supplies funding_source, router_version and the
+            // virtual sAVAX route — all three are canonical-ID inputs. Compute
+            // the ID only afterwards or sim rows and realized rows disagree.
+            stamp_route_tags(opp, &self.tag_policy, facts, &self.pool_manager);
             if opp.strategy != Strategy::Backrun {
                 opp.canonical_id = if let Some(route) = &opp.savax_route {
                     Some(crate::types::compute_savax_canonical_id(
@@ -705,7 +739,6 @@ impl BacktestRunner {
             if opp.tx_hash.is_none() {
                 opp.tx_hash = txs.get(opp.tx_index).map(|t| t.hash);
             }
-            stamp_route_tags(opp, &self.tag_policy, facts, &self.pool_manager);
         }
 
         if self.persistence_scoring {
@@ -735,22 +768,14 @@ impl BacktestRunner {
         opps: &mut [MevOpportunity],
         capture: &mempool::PendingBlockCapture,
     ) {
-        if !self.pending_backrun || opps.is_empty() {
-            return;
-        }
-        let Some(victim) = find_large_pending_swap(&capture.txs, self.pending_swap_min_wei) else {
-            return;
-        };
-        let now_ms = crate::utils::epoch_millis();
-        let deadline = now_ms.saturating_add(self.pending_quote_ttl_ms);
-        for opp in opps.iter_mut() {
-            opp.detection_path = Some(DetectionPath::Pending);
-            opp.victim_tx_index = Some(victim);
-            opp.quote_expires_at = Some(deadline);
-            // Pending state has no mined block timestamp: use wall-clock time
-            // so the age-based freshness gate measures real quote age.
-            opp.timestamp = now_ms / 1000;
-        }
+        apply_pending_requote(
+            opps,
+            &capture.txs,
+            self.pending_backrun,
+            self.pending_swap_min_wei,
+            self.pending_quote_ttl_ms,
+            crate::utils::epoch_millis(),
+        );
     }
 
     fn stamp_and_record_pending_seeds(&self, opps: &mut [MevOpportunity]) {
@@ -1956,5 +1981,83 @@ mod persistence_tests {
         assert!(map
             .values()
             .all(|i| i.last_block == 100 && i.blocks_seen == 1));
+    }
+}
+
+/// C-07 end-to-end acceptance: a large pending swap must produce an
+/// opportunity explicitly marked `detection_path=pending` with a concrete
+/// `quote_expires_at` the live freshness gate can enforce.
+#[cfg(test)]
+mod pending_requote_tests {
+    use super::*;
+    use alloy::primitives::{address, b256, Bytes};
+
+    fn pending_tx(value: u128, calldata: bool) -> TxData {
+        TxData {
+            hash: b256!("0x0000000000000000000000000000000000000000000000000000000000000001"),
+            index: 0,
+            tx_type: 2,
+            from: address!("0x0000000000000000000000000000000000000001"),
+            to: Some(address!("0x0000000000000000000000000000000000000002")),
+            input: if calldata {
+                Bytes::from(vec![0x38, 0xed, 0x17, 0x39])
+            } else {
+                Bytes::new()
+            },
+            value: U256::from(value),
+            gas_limit: 100_000,
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: Some(1),
+            gas_price: None,
+            nonce: 0,
+            access_list: vec![],
+            authorization_list: vec![],
+        }
+    }
+
+    fn opp() -> MevOpportunity {
+        MevOpportunity::new(
+            42,
+            0,
+            Strategy::Backrun,
+            address!("0x0000000000000000000000000000000000000003"),
+            0,
+        )
+    }
+
+    /// The acceptance path: large pending swap → pending detection + quote TTL.
+    #[test]
+    fn large_pending_swap_stamps_pending_path_and_quote_deadline() {
+        let now_ms = 1_700_000_000_000u64;
+        let ttl = 4_000u64;
+        let min = U256::from(10u128.pow(18));
+        let txs = vec![pending_tx(5, true), pending_tx(9 * 10u128.pow(18), true)];
+        let mut opps = vec![opp(), opp()];
+
+        apply_pending_requote(&mut opps, &txs, true, min, ttl, now_ms);
+
+        for o in &opps {
+            assert_eq!(o.detection_path, Some(DetectionPath::Pending));
+            assert_eq!(o.victim_tx_index, Some(1));
+            assert_eq!(o.quote_expires_at, Some(now_ms + ttl));
+            assert_eq!(o.timestamp, now_ms / 1000);
+        }
+    }
+
+    /// No large swap → the ordinary path/quote fields are left untouched.
+    #[test]
+    fn no_trigger_or_disabled_gate_leaves_quote_unstamped() {
+        let min = U256::from(10u128.pow(18));
+        let dust = vec![pending_tx(5, true)];
+        let mut a = vec![opp()];
+        apply_pending_requote(&mut a, &dust, true, min, 4_000, 1_000);
+        assert!(a[0].detection_path.is_none());
+        assert!(a[0].quote_expires_at.is_none());
+
+        let large = vec![pending_tx(9 * 10u128.pow(18), true)];
+        let mut b = vec![opp()];
+        apply_pending_requote(&mut b, &large, false, min, 4_000, 1_000);
+        assert!(b[0].detection_path.is_none());
+        assert!(b[0].quote_expires_at.is_none());
     }
 }

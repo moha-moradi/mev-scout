@@ -33,6 +33,9 @@ pub enum FillSkipReason {
     ExecStrategyUnsupported,
     /// Route touches a venue with no executor leg in this build.
     ExecVenueUnsupported,
+    /// A-07/A-08/A-09: forensic row outside core atomic arb (GMX/sAVAX/Pendle).
+    /// Kept for evidence but excluded from sim/exec/ranking.
+    OutOfCore,
 }
 
 impl FillSkipReason {
@@ -52,6 +55,7 @@ impl FillSkipReason {
             Self::ExecBuildFailed => "exec_build_failed",
             Self::ExecStrategyUnsupported => "exec_strategy_unsupported",
             Self::ExecVenueUnsupported => "exec_venue_unsupported",
+            Self::OutOfCore => "out_of_core",
         }
     }
 }

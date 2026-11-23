@@ -180,11 +180,21 @@ mev-scout live --exec anvil --blocks 8        # same path on a local Anvil fork
 | `--max-quote-age-ms <ms>` | Reject quotes older than this before ledger admission; overrides `[live].max_quote_age_ms` |
 | `--require-risk-clear` | Reject any opportunity carrying a risk flag (funding reentrancy, drift, …); overrides `[live].require_risk_clear` |
 | `--pending-backrun` | Re-quote backruns around large pending swaps with `quote_expires_at` and `victim_tx_index`; overrides `[live].pending_backrun` |
+| `--optimizer-sweep` | Enable the candidate-L amount sweep before ledger admission; requires `--sim state`, overrides `[paper].optimizer_sweep` (default off) |
 
 The four `Live` flags feed the quote gate in `split_by_quote_freshness`, which
 runs **before** `update_ledger`: expired, drifted or risk-flagged candidates
 land in `rejected_candidates` instead of the ledger. See also the `quotes:`
 and `competition:` lines in the end-of-session report below.
+
+The flash-loan premium charged by detection and `--sim state` is resolved live
+from Aave V3 `FLASHLOAN_PREMIUM_TOTAL()` / Balancer
+`getProtocolFeesCollector() → getFlashLoanFeePercentage()` at session start,
+falling back to the provider's documented table if the RPC cannot answer.
+Split-route remains flag-gated and inert until split allocation is executable
+end-to-end. Forensic venues outside core atomic arb (GMX, sAVAX, Pendle) are
+tagged `out_of_core`: they stay in the results for evidence but are counted
+skips in the ledger (`out_of_core`) and rejected by the exec planner.
 
 #### Implicit bootstrap
 
@@ -647,7 +657,8 @@ per-block fill selection (pool-conflict aware). Live prints
 pass and persisted once at session end. No mempool racing and **no mainnet
 broadcast**.
 
-WP6 adds a `metrics:` line and five additive `paper_sessions` columns. Rates
+WP6 adds a `metrics:` line and ten additive `paper_sessions` columns (five
+rates, three raw counters, two wei totals). Rates
 are stored as fractions (`0.12` = 12%) and rendered as percentages:
 
 | Metric | Numerator / denominator |

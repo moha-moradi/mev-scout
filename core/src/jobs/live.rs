@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, Bytes, U256};
 use anyhow::Context;
 
 use crate::cache::{RunManifest, SqliteStore};
@@ -17,8 +18,8 @@ use crate::explorer::store::ExplorerStore;
 use crate::fetch::Fetcher;
 use crate::paper::sim::{merge_seeds, SimSeeds};
 use crate::paper::{
-    reconcile_sim_vs_exec, BacktestMetrics, FillSkipReason, LedgerPolicy, LedgerResult, PaperFill,
-    PaperMode, SimMode, SimPolicy, HARD_MAX_FILLS_PER_BLOCK,
+    reconcile_sim_vs_exec, AmountSweep, BacktestMetrics, FillSkipReason, LedgerPolicy, LedgerResult,
+    PaperFill, PaperMode, SimMode, SimPolicy, HARD_MAX_FILLS_PER_BLOCK,
 };
 use crate::pipeline::aggregate::StrategyMetrics;
 use crate::pipeline::{aggregate_fills, BacktestRunner, BlockMode, BlockReplayStats};
@@ -26,8 +27,10 @@ use crate::pool::state::PoolManager;
 use crate::progress::{JobProgress, ProgressEvent};
 use crate::replay::BlockReplayer;
 use crate::resolver::ResolvedRange;
-use crate::rpc::RpcClient;
-use crate::types::{FlashLoanProvider, GasConfig, MevOpportunity, RangeMode, ResultsFile};
+use crate::rpc::{BlockRef, RpcClient};
+use crate::types::{
+    tags, FlashLoanProvider, GasConfig, MevOpportunity, RangeMode, ResultsFile,
+};
 use crate::utils::{epoch_millis, epoch_secs};
 
 use super::rpc::init_rpc;
@@ -65,6 +68,8 @@ pub struct LiveOpts {
     pub require_risk_clear: bool,
     /// Override `[live].pending_backrun`.
     pub pending_backrun: bool,
+    /// A-04: enable the candidate-L amount sweep (paper.sim must be `state`).
+    pub optimizer_sweep: bool,
 }
 
 /// Resolved capital-free live gate policy (CLI overrides applied).
@@ -91,6 +96,18 @@ pub struct LiveGateStats {
     pub funding_source: Option<String>,
 }
 
+/// Relative gap between the block-aligned and session native quotes above
+/// which the quote is flagged as potentially manipulated/stale (M-03).
+pub const MAX_NATIVE_PRICE_DRIFT: f64 = 0.05;
+
+/// M-03: a block-aligned price that disagrees materially with the session's
+/// startup quote makes that quote untrustworthy for USD gas reporting.
+fn native_quote_is_stale(spot: Option<f64>, block_price: f64) -> bool {
+    spot.is_some_and(|spot| {
+        spot > 0.0 && (block_price - spot).abs() / spot > MAX_NATIVE_PRICE_DRIFT
+    })
+}
+
 /// Default re-quote TTL when pending-backrun is enabled (2 Avalanche blocks).
 pub const DEFAULT_PENDING_QUOTE_TTL_MS: u64 = 4_000;
 
@@ -100,6 +117,9 @@ pub const DEFAULT_PENDING_SWAP_MIN_WEI: u128 = 1_000_000_000_000_000_000;
 /// Resolve the live gate policy from `[live]` plus CLI overrides.
 fn resolve_gate_config(config: &Config, opts: &LiveOpts) -> anyhow::Result<LiveGateConfig> {
     let live = &config.live;
+    if opts.max_quote_age_ms == Some(0) || live.max_quote_age_ms == Some(0) {
+        anyhow::bail!("--max-quote-age-ms / [live].max_quote_age_ms must be greater than zero");
+    }
     let min_wei = match live.pending_backrun_min_wei.as_deref() {
         Some(raw) => raw.parse::<u128>().with_context(|| {
             format!("invalid [live].pending_backrun_min_wei '{raw}': expected wei integer")
@@ -228,11 +248,26 @@ fn resolve_ledger_policy(
     Ok(policy)
 }
 
+/// A-04: sweep config plus CLI override. Split mode stays inert because the
+/// opportunity/exec model cannot yet represent a fractional second route.
+fn resolve_amount_sweep(config: &Config, opts: &LiveOpts) -> anyhow::Result<AmountSweep> {
+    let mut sweep = config.paper.amount_sweep();
+    if opts.optimizer_sweep {
+        sweep.enabled = true;
+    }
+    if sweep.split_route {
+        tracing::warn!("optimizer split-route is not executable yet; single-route sweep only");
+        sweep.split_route = false;
+    }
+    Ok(sweep)
+}
+
 /// Resolve sim policy from `[paper]` plus CLI `--sim` override.
 fn resolve_sim_policy(
     config: &Config,
     opts: &LiveOpts,
     provider: FlashLoanProvider,
+    runtime_fee_bps: Option<u128>,
 ) -> anyhow::Result<SimPolicy> {
     let mut policy = config.paper.sim_policy()?;
     if let Some(raw) = opts.sim.as_deref() {
@@ -243,8 +278,8 @@ fn resolve_sim_policy(
     if let Some(n) = opts.sim_max_candidates_per_block {
         policy.max_candidates_per_block = n.max(1);
     }
-    // Fee bps from the effective provider: config or `--funding-provider`.
-    policy.fee_bps = provider.fee_rate_bps();
+    // A-03: on-chain quote when available, documented provider table otherwise.
+    policy.fee_bps = runtime_fee_bps.unwrap_or_else(|| provider.fee_rate_bps());
     Ok(policy)
 }
 
@@ -387,6 +422,10 @@ fn widen_span(span: Option<(u64, u64)>, start: u64, end: u64) -> (u64, u64) {
 struct ResolvedLedger {
     policy: LedgerPolicy,
     sim: SimPolicy,
+    /// Runtime-resolved flash premium (A-03); `None` means provider fallback.
+    flash_fee_bps: Option<u128>,
+    /// A-04: candidate-L sweep policy for this session.
+    sweep: AmountSweep,
     native_usd: Option<f64>,
     /// Gas inputs captured once per session. Basefee/block are filled from the
     /// first scanned block in `LiveContext::new`; the native price is the same
@@ -423,6 +462,8 @@ struct LiveContext<'a> {
     /// re-derives block grouping itself, so no incremental state to thread.
     policy: LedgerPolicy,
     sim: SimPolicy,
+    /// A-04: candidate-L sweep policy; disabled by default.
+    sweep: AmountSweep,
     session_opps: Vec<MevOpportunity>,
     /// Pool snapshots accumulated across passes (keyed by canonical_id).
     session_seeds: SimSeeds,
@@ -431,6 +472,10 @@ struct LiveContext<'a> {
     native_usd: Option<f64>,
     /// Basefee/priority/native price tied to the session's simulation block.
     gas_quote: GasQuote,
+    /// M-07: account state at `gas_quote.sim_block`, cached per pass.
+    account_ctx: Option<(u64, u64, U256)>,
+    /// M-07: ERC-20 allowance lookups keyed by (block, token, spender).
+    allowance_ctx: HashMap<(u64, Address, Address), U256>,
     /// Persisted once at session end — `paper_sessions` keys on a plain
     /// `session_id`, so re-inserting the same id would violate the constraint.
     session_id: String,
@@ -477,21 +522,56 @@ impl<'a> LiveContext<'a> {
         // price. Price lookup failure is non-fatal (P&L stays in wei).
         let mut gas_quote = ledger.gas_quote;
         let quote_block = tip.saturating_sub(1);
-        let basefee = cache
-            .get_block(quote_block)
-            .ok()
-            .flatten()
-            .and_then(|b| b.base_fee_per_gas);
-        let basefee = match basefee {
-            Some(v) => Some(v),
-            None => rpc
-                .get_block(quote_block)
-                .await
-                .ok()
-                .and_then(|(b, _)| b.base_fee_per_gas),
-        };
+        let cached = cache.get_block(quote_block).ok().flatten();
+        let mut basefee = cached.as_ref().and_then(|b| b.base_fee_per_gas);
+        let mut block_ts = cached.as_ref().map(|b| b.timestamp);
+        if basefee.is_none() || block_ts.is_none() {
+            if let Ok((block, _)) = rpc.get_block(quote_block).await {
+                if basefee.is_none() {
+                    basefee = block.base_fee_per_gas;
+                }
+                if block_ts.is_none() {
+                    block_ts = Some(block.timestamp);
+                }
+            }
+        }
         gas_quote.basefee_wei = basefee.unwrap_or(0);
         gas_quote.sim_block = Some(quote_block);
+
+        // M-03: the gas quote must carry the AVAX price at the simulated block,
+        // not the startup/spot value used to convert the ledger wallet. When a
+        // block-aligned quote is unavailable we keep the fallback but mark the
+        // quote as stale — silently substituting spot was the original gap.
+        let wrapped = validation
+            .chain_config
+            .wrapped_native_token
+            .unwrap_or(Address::ZERO);
+        if !wrapped.is_zero() {
+            let block_price = match block_ts {
+                Some(ts) => pricing::fetch_prices_llama(validation.chain_name, ts, &[wrapped])
+                    .await
+                    .ok()
+                    .and_then(|prices| prices.get(&wrapped).copied())
+                    .map(|(price, _)| price)
+                    .filter(|price| price.is_finite() && *price > 0.0),
+                None => None,
+            };
+            match block_price {
+                Some(price) => {
+                    gas_quote.manipulation_risk = native_quote_is_stale(gas_quote.native_usd, price);
+                    gas_quote.native_usd = Some(price);
+                }
+                None => {
+                    gas_quote.manipulation_risk = gas_quote.native_usd.is_some();
+                    if gas_quote.manipulation_risk {
+                        tracing::debug!(
+                            "no native quote at sim block {quote_block}; reporting spot price {:?} as stale",
+                            gas_quote.native_usd
+                        );
+                    }
+                }
+            }
+        }
 
         let pool_addresses: Vec<Address> = cache
             .list_discovered_pools()
@@ -505,6 +585,7 @@ impl<'a> LiveContext<'a> {
             gas_model: validation.gas_model,
             priority_fee_gwei: config.gas.priority_fee_gwei,
             flash_loan_provider: validation.flash_loan_provider,
+            flash_loan_fee_bps_override: ledger.flash_fee_bps,
             winning_bid_premium: config.gas.winning_bid_premium,
             percentile_gas_price: None,
             calibration: Default::default(),
@@ -604,10 +685,13 @@ impl<'a> LiveContext<'a> {
             scanned_span: None,
             policy: ledger.policy,
             sim: ledger.sim,
+            sweep: ledger.sweep,
             session_opps: Vec::new(),
             session_seeds: SimSeeds::new(),
             native_usd: ledger.native_usd,
             gas_quote,
+            account_ctx: None,
+            allowance_ctx: HashMap::new(),
             session_id: format!("paper_live_{}", epoch_secs()),
             replay_blocks: 0,
             log_only_blocks: 0,
@@ -757,6 +841,126 @@ impl<'a> LiveContext<'a> {
         {
             self.scanned_span
                 .expect("persist called before any block was scanned")
+        }
+    }
+
+    /// A-04: apply the candidate-L sweep to gated opportunities before they
+    /// reach persistence and the ledger. `input_amount` is the operative value
+    /// for sim/exec; `optimal_amount` records what the sweep selected. Split
+    /// results are skipped until split allocation is representable end-to-end.
+    fn optimize_opportunities(&self, opps: &mut [MevOpportunity]) {
+        if !self.sweep.enabled || !self.sim.is_state_sim() {
+            return;
+        }
+        let pm = self.runner.pool_manager();
+        for opp in opps.iter_mut() {
+            let Some(result) = crate::paper::optimizer::optimize(
+                opp,
+                &self.session_seeds,
+                &self.sim,
+                &self.sweep,
+                Some(pm),
+            ) else {
+                continue;
+            };
+            if result.split_route || result.alt_route.is_some() {
+                tracing::debug!("skipping non-representable split-route optimization");
+                continue;
+            }
+            if result.amount.is_zero() {
+                continue;
+            }
+            opp.optimal_amount = Some(result.amount);
+            opp.add_tag(tags::OPTIMIZER_AMOUNT_OPTIMAL_L);
+            if result.amount != opp.input_amount {
+                opp.input_amount = result.amount;
+                opp.add_tag(tags::OPTIMIZER_CANDIDATE_L_SWEEP);
+            }
+        }
+    }
+
+    /// M-07: attach the account/allowance half of the quote context.
+    ///
+    /// Best-effort by design: an archive-less RPC or a token without a public
+    /// `allowance` must not abort a live pass. Missing values stay `NULL`, which
+    /// the explorer already treats as "not observed". Both lookups use the same
+    /// `sim_block` as the gas quote so the row is internally consistent.
+    async fn stamp_account_context(&mut self, opps: &mut [MevOpportunity]) {
+        let Some(block) = self.gas_quote.sim_block else {
+            return;
+        };
+        let searcher = self.exec.searcher;
+        if searcher.is_zero() {
+            return;
+        }
+
+        if self
+            .account_ctx
+            .as_ref()
+            .is_none_or(|(cached_block, _, _)| *cached_block != block)
+        {
+            match self.rpc.get_account(searcher, block).await {
+                Ok((nonce, balance, _code)) => {
+                    self.account_ctx = Some((block, nonce, balance));
+                }
+                Err(e) => tracing::debug!("quote account state unavailable at {block}: {e}"),
+            }
+        }
+        let account = self.account_ctx.filter(|(b, _, _)| *b == block);
+
+        let spender = self.exec.vault;
+        let tokens: Vec<Address> = if spender.is_zero() {
+            Vec::new()
+        } else {
+            let mut seen = Vec::new();
+            for token in opps.iter().map(|o| o.token_in).filter(|t| !t.is_zero()) {
+                if !seen.contains(&token) {
+                    seen.push(token);
+                }
+            }
+            seen
+        };
+        for token in tokens {
+            let key = (block, token, spender);
+            if self.allowance_ctx.contains_key(&key) {
+                continue;
+            }
+            let mut data = Vec::with_capacity(68);
+            data.extend_from_slice(&[0xdd, 0x62, 0xed, 0x3e]); // allowance(address,address)
+            data.extend_from_slice(&[0u8; 12]);
+            data.extend_from_slice(searcher.as_slice());
+            data.extend_from_slice(&[0u8; 12]);
+            data.extend_from_slice(spender.as_slice());
+            match self.rpc.call(token, Bytes::from(data), block).await {
+                Ok(ret) if ret.len() >= 32 => {
+                    self.allowance_ctx
+                        .insert(key, U256::from_be_slice(&ret[..32]));
+                }
+                Ok(_) => tracing::debug!("short allowance response for {token} at {block}"),
+                Err(e) => tracing::debug!("allowance({token}) unavailable at {block}: {e}"),
+            }
+        }
+
+        for opp in opps.iter_mut() {
+            if let Some((_, nonce, balance)) = account {
+                if opp.nonce.is_none() {
+                    opp.nonce = Some(nonce);
+                }
+                if opp.balance_wei.is_none() {
+                    opp.balance_wei = Some(balance);
+                }
+            }
+            if !spender.is_zero() && !opp.token_in.is_zero() {
+                if let Some(allowance) = self
+                    .allowance_ctx
+                    .get(&(block, opp.token_in, spender))
+                    .copied()
+                {
+                    if opp.allowance_wei.is_none() {
+                        opp.allowance_wei = Some(allowance);
+                    }
+                }
+            }
         }
     }
 
@@ -1273,14 +1477,50 @@ pub async fn job_live(
         opts.poll_interval_ms
     ));
 
+    // RPC is needed for the runtime flash premium, so set it up before the
+    // policy resolution it feeds. No chain reads have happened yet.
+    let setup = init_rpc(config, validation.chain_name, true).await?;
+    let flash_fee_bps = crate::rpc::funding::resolve_flash_loan_fee_bps(
+        &setup.rpc,
+        validation.flash_loan_provider,
+        &validation.chain_config,
+        BlockRef::Latest,
+    )
+    .await;
+    if flash_fee_bps.is_none()
+        && !matches!(
+            validation.flash_loan_provider,
+            FlashLoanProvider::Uniswap
+                | FlashLoanProvider::Lfj
+                | FlashLoanProvider::V2FlashSwap
+        )
+    {
+        tracing::warn!(
+            "flash premium unavailable for {}; using fallback {} bps",
+            validation.flash_loan_provider,
+            validation.flash_loan_provider.fee_rate_bps()
+        );
+    }
+
     // Resolved once per session: a live loop can run for hours, and re-pricing
     // every pass would both cost RPC calls and make the wallet drift mid-session.
     let native_usd = resolve_native_price(config, &validation, opts.native_usd).await?;
     let policy = resolve_ledger_policy(config, opts, native_usd)?;
-    let sim = resolve_sim_policy(config, opts, validation.flash_loan_provider)?;
+    let sim = resolve_sim_policy(
+        config,
+        opts,
+        validation.flash_loan_provider,
+        flash_fee_bps,
+    )?;
+    let sweep = resolve_amount_sweep(config, opts)?;
+    if sweep.enabled && !sim.is_state_sim() {
+        tracing::warn!("optimizer sweep requires --sim state; staying on detector amounts");
+    }
     let ledger = ResolvedLedger {
         policy,
         sim,
+        flash_fee_bps,
+        sweep,
         native_usd,
         gas_quote: GasQuote {
             basefee_wei: 0,
@@ -1295,7 +1535,6 @@ pub async fn job_live(
         progress.log(&format!("exec: {}", exec.mode));
     }
 
-    let setup = init_rpc(config, validation.chain_name, true).await?;
     let mut ctx = LiveContext::new(
         config,
         validation,
@@ -1398,9 +1637,11 @@ async fn run_once(
         true
     };
     let (raw_opps, block_stats) = ctx.run_blocks(&resolved, Some(&detect)).await?;
-    let opps = ctx.apply_gate(raw_opps, tip);
+    let mut opps = ctx.apply_gate(raw_opps, tip);
+    ctx.optimize_opportunities(&mut opps);
     let elapsed = start.elapsed();
     ctx.extend_session(&resolved);
+    ctx.stamp_account_context(&mut opps).await;
     ctx.persist_results(&opps);
     let ledger = ctx.update_ledger(&opps).await?;
     if let Err(e) = ctx.persist_ledger_session(&ledger) {
@@ -1585,7 +1826,8 @@ async fn process_pass(
         }
     };
     let pass_elapsed = pass_start.elapsed();
-    let opps = ctx.apply_gate(raw_opps, current_tip);
+    let mut opps = ctx.apply_gate(raw_opps, current_tip);
+    ctx.optimize_opportunities(&mut opps);
 
     for s in &pass_stats {
         stats.block_stats.push(s.clone());
@@ -1609,6 +1851,7 @@ async fn process_pass(
     }
 
     ctx.extend_session(&resolved);
+    ctx.stamp_account_context(&mut opps).await;
     ctx.persist_results(&opps);
     let ledger = ctx.update_ledger(&opps).await?;
     progress.log(&render_ledger_summary_with_gate(
@@ -1730,6 +1973,15 @@ async fn run_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M-03: the risk flag must follow the price source, not the gas numbers.
+    #[test]
+    fn block_native_quote_detects_material_drift() {
+        assert!(!native_quote_is_stale(None, 42.0));
+        assert!(!native_quote_is_stale(Some(40.0), 40.5));
+        assert!(native_quote_is_stale(Some(40.0), 42.1));
+        assert!(native_quote_is_stale(Some(40.0), 37.9));
+    }
 
     #[test]
     fn scanned_span_does_not_include_a_tip_that_was_only_observed() {
