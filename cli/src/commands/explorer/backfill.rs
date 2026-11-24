@@ -99,10 +99,13 @@ pub async fn cmd_backfill(
         registry.epoch_venue.len()
     ));
     if registry.v2_like.is_empty() {
-        progress.log(
-            "WARNING: empty pool registry — skim detection is disabled and venue tags are missing; \
-             run `mev-scout discover` or pass `--discover-pools`",
-        );
+        let unverified = registry.health.unverified_v2_like;
+        progress.log(&format!(
+            "WARNING: no skim-eligible V2 pools — {unverified} V2-family row(s) lack a verified \
+             factory; skim detection and epoch venue tags are disabled. On-chain discovery over \
+             pool creation blocks is required (`--discover-pools` only scans the index window); \
+             re-index with `--reclassify` afterwards."
+        ));
     }
 
     progress.log(&format!(
