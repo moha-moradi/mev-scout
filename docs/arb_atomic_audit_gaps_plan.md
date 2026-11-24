@@ -1,10 +1,10 @@
 #plan پیشنهادی بستن گپهای ممیزی `MevKind::ArbAtomic`
 
-> **وضعیت:** لایهٔ کد WP-A (G-03، G-04)، موارد code-only P1/P2 (G-02، G-07–G-10)، WP-D (G-12/G-13/G-15) و guard testهای ضمیمهٔ D پیادهسازی شدند و `cargo test --workspace --quiet` سبز است؛ G-05/G-06/G-14 با RPC آرشیو بسته شدند. باقیماندهٔ plan منوط به I-1..I-3 و enrichment `pool_dex` (G-01) است.  
-> **تاریخ:** 2026-11-23 (بازتأیید و پاکسازی مستندات: 2026-11-24)  
+> **وضعیت:** لایهٔ کد WP-A (G-03، G-04)، موارد code-only P1/P2 (G-02، G-07–G-10)، WP-D (G-12/G-13/G-15) و guard testهای ضمیمهٔ D پیادهسازی شدند و `cargo test --workspace --quiet` سبز است؛ G-05/G-06/G-14 با RPC آرشیو بسته شدند. I-1..I-3 با متن اصلی تسک (۲۰۲۶-۱۱-۲۴) بسته و جدولها بازنگاشت شدند. باقیماندهٔ plan منوط به enrichment `pool_dex` (G-01) است.  
+> **تاریخ:** 2026-11-23 (بازتأیید، پاکسازی و بازنگاشت تاکسونومی: 2026-11-24)  
 > **دامنه:** فقط `core/src/explorer/` و فقط تراکنشهای `success=true` با `MevKind::ArbAtomic` محققشده  
 > **ساختار:** دو لایه — `§0..§8` plan/gap registry (وضعیت جاری) و `§9..§13` audit snapshot @ `ef29f73` (صرفاً historical؛ منعکسکنندهٔ وضعیت فعلی نیست).  
-> **قید مهم:** تغییرات فقط در `core/src/explorer/`، `core/data/`، `core/tests/` و docs مربوطهاند؛ نه `MevKind` جدیدی اضافه شد، نه `compute_net_profit`/basis `R`/thresholdهای causal تغییر کرد و نه event دومی ایجاد شد. ورودیهای I-1..I-3 هنوز تأمین نشدهاند؛ ۴ هش real مکانیزمی در G-05 pin شدند (۲۰۲۶-۱۱-۲۴).
+> **قید مهم:** تغییرات فقط در `core/src/explorer/`، `core/data/`، `core/tests/` و docs مربوطهاند؛ نه `MevKind` جدیدی اضافه شد، نه `compute_net_profit`/basis `R`/thresholdهای causal تغییر کرد و نه event دومی ایجاد شد. ورودیهای I-1..I-3 از متن اصلی تسک تأمین شدند (بازنگاشت docs-only، بدون ایجاد فایل جدید)؛ ۴ هش real مکانیزمی در G-05 pin شدند (۲۰۲۶-۱۱-۲۴).
 
 ---
 
@@ -25,30 +25,31 @@
 | G-11 (P3) | عمداً خارج | تا زمانی که مدل/اجرای end-to-end وجود ندارد detector اضافه نمیشود. |
 | G-12 / G-13 / G-15 (P3) | ✅ تمام | WP-D: G-12 flag `underlying_pools_unknown` + ۲ تست (aggregator+DEX متمایز از DEX-only)؛ G-13 یادداشت محدودیت native inflow در `docs/ARCHITECTURE.md` + ۱ negative test در `profit.rs`؛ G-15 جدول تثبیت `explorer tag ↔ live scope tag ↔ disposition` در §3.3.1 با ثبت کامل `NA_TAGS`. |
 | G-14 (P1) | ✅ تمام (holdout مستقل) | پنجرهٔ `101221000..=101221702` (۷۰۳ بلوک، ۲۰۲۶-۱۱-۲۴) ایندکس و با فید mevlive مقایسه شد: **۵۶/۵۹ (۹۴.۹٪)** recall، ۳ miss (همه بلاکها ایندکس و swapها دکد شدهاند)، خطای median ۰.۳۹٪. ردیف جدایی در `docs/benchmarks/mevlive_avax_arb_recall_2026-11-09.md` ثبت شد. |
-| ضمیمه D ( guards ) | ✅ تمام | ۳ تست non-emission در `explorer/scenarios.rs`: `unsupported_axis_tags_are_never_emitted_by_arb_classifier` (AR-19/AR-26/G-15)، `docs_only_mechanisms_never_emit_a_tag` (AR-20/22/23/27/28/29)، `venue_and_funding_only_facts_do_not_claim_mechanisms` (AR-24/AR-25). |
+| ضمیمه D ( guards ) | ✅ تمام | ۳ تست non-emission در `explorer/scenarios.rs`: `unsupported_axis_tags_are_never_emitted_by_arb_classifier` (تاکسونومی رسمی AR-08/AR-20 + G-15)، `docs_only_mechanisms_never_emit_a_tag` (AR-11/AR-14/AR-17 + سه دستهٔ خارج از تاکسونومی)، `venue_and_funding_only_facts_do_not_claim_mechanisms` (AR-21/AR-22). کامنتهای تست از شمارهگذاری قدیمیاند؛ نگاشت در §9 ثبت شد. |
 
-**ورودیهای مسدودکننده:** I-1 (۲۱ شناسهٔ AR)، I-2 (۷ شناسهٔ FUND)، I-3 (متن ۶ سؤال).  
+**ورودیهای مسدودکننده:** فقط G-01 (enrichment `pool_dex` در `jobs/index.rs`)؛ I-1/I-2/I-3 بسته شدند (متن اصلی تسک، ۲۰۲۶-۱۱-۲۴).  
 **تأیید:** `cargo test --workspace --quiet` ← exit 0 (۶۹۸ تست passed، ۲ ignored در lib؛ تمام integration suites سبز).  
-**کامیتها:** `238ff35` (G-02..G-10)، `73fbd62` (G-06)، `cda3ea0` (WP-D) — پیادهسازیها در سه کامیت جداگانه ثبت شدند، نه یک کامیت.  
+**کامیتها:** `238ff35` (G-02..G-10)، `73fbd62` (G-06)، `cda3ea0` (WP-D)، `72499e5` (G-05/G-14) — پیادهسازیها در کامیتهای جداگانه ثبت شدند، نه یک کامیت.  
 **بازتأیید ۲۰۲۶-۱۱-۲۳:** کد و تستهای G-02..G-10 و `explorer_tags.json` در درخت موجود تأیید شد. بررسی کاشهای محلی (`cache/*.sqlite`) نشان داد هیچ‌یک از ۴ هش pin (بلاک‌های ۱۰۰.۵M) و هیچ تگ Hunt در کاش نیست؛ بنابراین G-05 و G-14 به RPC/archive محدوداند (اجرای live G-06 طبق بهروزرسانی §G-06 با RPC آرشیو Dwellir ثبت شدهاست) و G-01 به enrichment `pool_dex` (فایل `jobs/index.rs` خارج از دامنهٔ فاز) محدود است.
 **بازتأیید WP-D ۲۰۲۶-۱۱-۲۳:** G-12/G-13/G-15 پیاده و تست‌شده — `cargo test --workspace --quiet` ← exit 0؛ `underlying_pools_unknown` (G-12) در `classify/arb.rs`، یادداشت محدودیت + negative test (G-13) در `docs/ARCHITECTURE.md`/`explorer/profit.rs`، و جدول تثبیت scope/disposition + ثبت کامل `NA_TAGS` (G-15) در `docs/atomic_capital_free_arb_plan.md` §3.3.1.
 **بازتأیید ۲۰۲۶-۱۱-۲۴ (پاکسازی):** کامنتهای TEMP در `explorer_corpus.rs` پاکسازی شدند؛ ۳ guard test ضمیمهٔ D در `explorer/scenarios.rs` اضافه شدند؛ شمارش تست به ۶۹۸ passed / ۲ ignored بهروزرسانی شد؛ تضادهای متنی G-06 و کامیت و DoD همساز شدند.
 **بازتأیید G-05 ۲۰۲۶-۱۱-۲۴ (RPC آرشیو Dwellir):** هانت ۶۰۰بلوکه اجرا و ۴ seed.real پیدا شد؛ ۳ ردیف باقیمانده نتیجهٔ منفی صریح گرفتند (جزئیات §G-05). تست گیتد ۴/۴ تأیید شد.
 **بازتأیید G-14 ۲۰۲۶-۱۱-۲۴ (RPC آرشیو Dwellir):** پنجرهٔ holdout مستقل ۷۰۳بلوکه ایندکس و با فید mevlive مقایسه شد؛ ۵۶/۵۹ recall (۹۴.۹٪) — ردیف جداگانه در benchmark اضافه شد (جزئیات §G-14).
+**بسته شدن I-1..I-3 ۲۰۲۶-۱۱-۲۴ (docs-only):** متن اصلی تسک دریافت شد؛ ۲۹+۷ ردیف براساس تاکسونومی رسمی بازنگاشت و §13 براساس Q1..Q6 بازنویسی شد. هیچ فایل جدیدی و هیچ کدی تغییر نکرد.
 
 ---
 
 ## 0. ورودیهای لازم از شما (Blocking)
 
-سه مورد هست که بدون آنها نمیتوان جدول نهایی را دقیق بست. بقیهٔ plan مستقل از اینهاست و قابل اجراست.
+هر سه ورودی روی متن اصلی تسک (`Task: Complete ArbAtomic Coverage Audit — MEV-Scout Explorer`) تأمین و در ۲۰۲۶-۱۱-۲۴ اعمال شدند. متن مذکور در مخزن ذخیره نشد (قید «هیچ فایل جدیدی ایجاد نکن»)؛ مرجع آن همان متن ارسالشده توسط کاربر است.
 
-| # | ورودی | چرا لازم است | فرمت درخواستی |
-|---|-------|--------------|----------------|
-| I-1 | نگاشت ۲۱ شناسهٔ باقیماندهٔ AR | ۸ شناسه تأیید شد (AR-10, 11, 12, 13, 14, 18, 19, 20). بقیه در مخزن و در زمینهٔ فعلی وجود ندارند. `grep` برای `AR-` و `FUND-` نتیجهای نداد و خود `docs/atomic_capital_free_arb_plan.md:126-136` صریحاً میگوید لیست خارجی است. | `AR-01 = ...` تا `AR-29 = ...` |
-| I-2 | نگاشت ۷ شناسهٔ FUND | کد ۷ مسیر funding دارد ولی شمارهٔ آنها در چکلیست مشخص نیست. | `FUND-01 = ...` تا `FUND-07 = ...` |
-| I-3 | متن ۶ سؤال خلاصهٔ مدیریتی | پاسخ فعلی روی ۶ سؤال محتمل نوشته شده، نه متن اصلی. | `Q1 = ...` تا `Q6 = ...` |
+| # | ورودی | وضعیت | محل اعمال |
+|---|---|---|---|
+| I-1 | نگاشت رسمی `AR-01..AR-29` | ✅ بسته — ۲۹ شناسه (Route A: ۱۰، Market B: ۱۳، Behavioral C: ۶) | §9 جدول Coverage Matrix (بازنگاشت ۲۹ ردیف) |
+| I-2 | نگاشت رسمی `FUND-01..FUND-07` | ✅ بسته — Balancer V2 / Aave V3 / Uni V3 Flash / Uni V2 Flash Swap / SushiSwap-V2 fork / LFJ LB / Multiple providers | §9 جدول Funding sources (بازنگاشت ۷ ردیف) |
+| I-3 | متن ۶ سؤال خلاصهٔ مدیریتی | ✅ بسته — متن §۶ تسک مبنای §13 قرار گرفت | §13 ضمیمه E (پاسخ Q1..Q6) |
 
-**معیار بسته شدن I-1..I-3:** صرفاً جایگزینی سلولهای `ID` جدول و section خلاصه؛ نیازی به بازبینی شواهد نیست.
+**تأثیر بازنگاشت:** شمارهگذاری قبلی جدول با تاکسونومی رسمی مطابقت نداشت (مثلاً AR-10 قبلی = Curve Imbalance، اکنون AR-12). چهار ردیف قبلی (GMX ADL، init-price snipe، CEX/cross-chain/spot-perp، statistical/NFT-floor) و دو منبع funding اضافی (Aave V2، Morpho Blue) در لیست رسمی نیستند؛ بهصورت guard-row / canonical source اضافی در §9 حفظ شدند و در شمارش ۲۹+۷ محاسبه نمیشوند. سطوح شواهد و verdictها مجدداً براساس کد و هشهای real بازبینی شدند.
 
 ---
 
@@ -56,9 +57,9 @@
 
 | شاخص | مقدار |
 |---|---|
-| ردیفهای ArbAtomic | 29 (7 Supported / 13 Partial / 9 Unsupported) |
-| ردیفهای funding | 7 (6 Supported-on-code / 1 Partial) |
-| تأییدشده روی tx.real موفق | 7 ردیف generic و رفتاری |
+| ردیفهای ArbAtomic (تاکسونومی رسمی) | 29 (8 Supported / 14 Partial / 7 Unsupported / 0 Unverified — مطابق §13) |
+| ردیفهای funding (تاکسونومی رسمی) | 7 (6 Supported / 1 Partial — مطابق §13) |
+| تأییدشده روی tx.real موفق | ۹ ردیف H شامل shapeهای generic و تگهای رفتاری (G-05 چهار seed + دو backrun ETH + فلش/فاندینگ) |
 | مکانیسمهای فاقد seed.real | 7 ردیف reject catalogue + تمام funding |
 | کامیت پایه | `ef29f73` |
 | درخت کاری | تمیز (پیش از ایجاد همین فایل) |
@@ -263,8 +264,8 @@ cargo test -p mev-scout-core --test live_tag_parity
 
 ## 8. Definition of done
 
-- [ ] I-1..I-3 دریافت و سلولهای ID نهایی شدند.
-- [ ] جدول 29+7 با Evidence Level و Verdict کامل است.
+- [x] I-1..I-3 دریافت و سلولهای ID نهایی شدند (متن اصلی تسک ۲۰۲۶-۱۱-۲۴؛ بازنگاشت docs-only).
+- [x] جدول 29+7 با Evidence Level و Verdict کامل است (تاکسونومی رسمی §9).
 - [x] تمام ۷ ردیف Hunt یا Seeded شدند یا نتیجهٔ منفی صریح ثبت شد (۴ seed + ۳ negative؛ هانت ۲۰۲۶-۱۱-۲۴).
 - [x] ۴ هش کامل section 3 در تست گیتد pin شدند (اجرای live طبق بهروزرسانی §G-06 با RPC آرشیو ثبت شد).
 - [x] `explorer_tags.json` با تگهای emitشده همساز است (`vocabulary_covers_every_emitted_arb_tag`).
@@ -276,7 +277,7 @@ cargo test -p mev-scout-core --test live_tag_parity
 
 > **یادداشت 2026-11-23:** ضمایم A–E اضافه شدند. آیتمهای اجرایی بالا بدون تغییر باقی ماندند و تیک نخوردند.
 
-- [x] ضمیمه A: ماتریس ۲۹+۷ با ID / Strategy / Decoder / Detection / Classification / Subtag / Route / P&L / Evidence / Code / Tests / Verdict همراه با Taxonomy Caveat ثبت شد.
+- [x] ضمیمه A: ماتریس ۲۹+۷ با ID / Strategy / Decoder / Detection / Classification / Subtag / Route / P&L / Evidence / Code / Tests / Verdict ثبت و با تاکسونومی رسمی (I-1/I-2) بازنگاشت شد.
 - [x] ضمیمه B: ریسکهای False Positive / False Negative ثبت شدند.
 - [x] ضمیمه C: جدول Missing Capabilities ثبت شد.
 - [x] ضمیمه D: تستپلن ردیفبهردیف Partial / Unsupported ثبت شد.
@@ -286,59 +287,61 @@ cargo test -p mev-scout-core --test live_tag_parity
 
 ## 9. ضمیمه A — ماتریس پوشش نهایی (Audit Snapshot)
 
-> **تذکر historical:** ضمایم ۹–۱۳ وضعیت کامیت `ef29f73` را ثبت میکنند. برخی یادداشتهای آنها (مثلاً نبود `funding_providers[]`، نبود `pool_shape` یا غیاب تگها در vocabulary) اکنون منسوخاند؛ مرجع وضعیت جاری §§0–8 و خلاصهٔ اجرای بالاست.
+Evidence scope: `MevKind::ArbAtomic`, successful realized transactions only, at commit `ef29f73` and refreshed with G-05/G-06/G-14 evidence through 2026-11-24. No code changed for the taxonomy remap.
 
-Evidence scope: `MevKind::ArbAtomic`, successful realized transactions only, at commit `ef29f73`. No code was changed.
+Evidence levels: **H** = code + targeted tests + full real successful tx hash; **M** = code + targeted tests (or a pinned real mechanism hash), no dedicated full golden; **L** = code heuristic or decoder only; **N** = no implementation evidence.
 
-Evidence levels: **H** = code + targeted tests + full real successful tx hash in repo/docs cache; **M** = code + targeted tests, no full ArbAtomic real hash; **L** = code heuristic or decoder only; **N** = no implementation evidence / unverified mapping.
-
-> **Taxonomy caveat:** the repository has no authoritative `AR-01..AR-29` or `FUND-01..FUND-07` registry. Strategy names below are the nearest code-evidenced mechanisms; rows marked `Unverified` cannot be considered contractually identified until the external taxonomy is supplied.
+> **Taxonomy source (I-1, بستهشده ۲۰۲۶-۱۱-۲۴):** شناسهها از متن اصلی تسک گرفتهاند: A = Route-Based (AR-01..10)، B = Market-Based (AR-11..23)، C = Behavioral/Execution Subtags (AR-24..29). شمارهگذاری قدیمی سند معتبر نیست؛ نگاشت آن در یادداشت بعد از جدول funding آمده است.
 
 | ID | Strategy | Decoder | Detection | Classification | Subtag / Metadata | Route Accuracy | P&L Accuracy | Evidence Level | Code Location | Test Coverage | Verdict |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| AR-01 | Two-pool / spatial atomic arb | V2/V3/V4/Curve/Balancer/Solidly/LB/Pendle/Fluid/Metric swap topics + transfer attachment | Closed directed walk ≥2 edges, ≥2 pools, ≤8 edges, attributable flow, positive residual | `ArbAtomic`, `Exact`; `Inferred` only for forwarded profit | `arb_meta.arb_shape=two_pool` | Selected cycle only; unrelated receipt swaps excluded; pools sorted/deduped | Ledger residual `R`; flash fee netted once; other residuals excluded | H | `classify/arb.rs::classify_atomic_arbs`; `profit.rs::closed_cycle_walks`; `classify/legs.rs::resolve_arb_routes` | `scenarios::baseline_atomic_arb`, `explorer_golden`, `explorer_corpus` AVAX/Polygon | Supported |
-| AR-02 | Triangular atomic arb | Same as AR-01 | Same cycle gate | Same | `arb_meta.arb_shape=triangular` | Same; shape is token/hop heuristic, not a formal 3-pool proof | Same | H | `arb.rs::arb_route_meta` L760-826; `profit.rs::closed_cycle_walks` | Cycle tests + real AVAX corpus notes | Supported |
-| AR-03 | Multi-hop atomic arb | Same as AR-01 | Same cycle gate | Same | `arb_meta.arb_shape=multi_hop` | Same; bounded at 8 edges | Same | H | `profit.rs::MAX_CYCLE_EDGES`, `closed_cycle_walks`; `arb.rs::select_route` | `cycle_search_is_depth_bounded`, corpus multi-hop rows | Supported |
-| AR-04 | Cross-DEX arb | Same as AR-01 | Same cycle gate | Same | `is_cross_dex`, `dex_count`, `venues`, `cross_dex_basis` | Protocol identity only when **every** leg has `pool_dex`; otherwise AMM-family fallback | Same residual; classification metadata does not alter P&L | M | `arb.rs::arb_route_meta` L789-824; `classify/mod.rs::BlockContext.pool_dex` L151-154 | `cross_dex_uses_protocol_identity_not_amm_family`, `cross_dex_metadata_declares_amm_family_fallback` | Partial — FP risk when `pool_dex` absent |
-| AR-05 | Same-DEX / different-AMM arb | Same as AR-01 | Same cycle gate | Same | `amm_family_count>1`, `is_cross_dex=false` when protocol identity complete | Correct only with complete `pool_dex`; otherwise family fallback can mislead | Same | M | `arb.rs::arb_route_meta`; `classify/mod.rs::pool_dex` | `same_dex_different_amm_is_not_cross_dex` | Partial — metadata-only, not a distinct detector |
-| AR-06 | Flash-loan-funded arb | Explicit flash topics: Aave V2/V3, Balancer, Uni V3, LFJ, Morpho | Fee/principal netting before residual; `flash_arb` if any flash fact | `ArbAtomic`, `Exact`/`Inferred` | `flash_arb`, `funding:<provider>`, `funding_source` | Funding does not alter route; provider recorded from `flashloans.first()` only | Principal not counted as profit; fee sum only complete for one token and no overflow | M | `decode/flash_loan.rs::decode_flash_loan`; `arb.rs` L73-149, L373-434 | `p0_4_flash_arb`, `split_flash_repay_is_detected`, `multiple_flash_fees_are_summed_when_complete` | Supported (code only; no real ArbAtomic seed) |
-| AR-07 | V2 flash-swap-funded arb | Logless inference from out→callback→in transfer ordering for `Amm::V2\|Solidly` | Same arb gate + inferred flash fact | Same | `flash_arb`, `funding:v2_flash_swap` | Route unaffected; provider = pool address; no V4 flash accounting | Fee embedded in swap amounts; `fee=None`; double-subtract avoided by zero-token fact | M | `decode/flash_loan.rs::infer_v2_flash_swap` L198-263; `classify/mod.rs` L629-636 | `v2_flash_swap_is_inferred_as_funding`, `prefunded_v2_swap_is_not_inferred_as_flash_loan` | Supported (V2/Solidly only) |
-| AR-08 | Long-tail token arb | Same as AR-01 | Same cycle gate | Same | `long_tail` when route touches non-blue-chip token | Uses selected route tokens only | Residual P&L unchanged; token-pricing risk remains | M | `arb.rs::is_long_tail_arb` L832+ | `p1_3_long_tail`; AVAX seed block 97783552 | Supported (behavioral tag only) |
-| AR-09 | Backrun arb (as ArbAtomic tag) | Same as AR-01 + causal price/adjacency facts | Prior market-moving leg, opposite direction, better price within window | Same `ArbAtomic`; no separate kind | `backrun` tag + causal evidence | Anchors on emitted arb route; no route rewrite | Arb P&L owned by arb pass; causality remains `inferred` | H | `classify/causal.rs::classify_backruns`, `annotate_backrun`; `legs.rs` L22-48 | `baseline_backrun`, `core/tests/backrun.rs`, `causal_fp_corpus`, full ETH hashes | Supported |
-| AR-10 | Curve imbalance arb | Curve `TokenExchange` topics | Curve leg + ≥2 distinct AMM families | `ArbAtomic` + mechanism tag | `curve_imbalance` | No reserve/imbalance measurement; only venue-mix gate | Same `R`; no mechanism-specific profit share | L | `strategy_tags.rs::arb_strategy_tags` L32-37 | `p3_5_curve_imbalance` | Partial — label only |
-| AR-11 | Balancer rate-provider staleness | Balancer swap + `TokenRateCacheUpdated` | Balancer leg + cross-venue + no same-pool cache refresh | Same | `rate_provider_staleness` | Pool-scoped refresh check only; no rate divergence test | Same `R` | L | `strategy_tags.rs` L39-54; `decode/signals.rs` | `p3_2_balancer_staleness` | Partial — inferred label |
-| AR-12 | Fee-on-transfer token arb | FoT registry lookup on route tokens | Route token has registered/measured FoT flag | Same | `fot_arb` | Route uses nominal amounts; transfer tax visible only in `route_delivery.net` amounts | Same `R`; tax not decomposed | L | `strategy_tags.rs` L56-74; `pool/state/pool_types.rs` | `p3_12_fot_rebase_arb` | Partial |
-| AR-13 | Rebase token arb | Rebase registry lookup on route tokens | Route token has rebase registry flag | Same | `rebase_arb` | No balance-drift verification at classify time | Same `R` | L | `strategy_tags.rs` L56-77 | `p3_12_fot_rebase_arb` | Partial |
-| AR-14 | sAVAX rate arb | sAVAX address + `getPooledAvaxByShares` rate fact | sAVAX↔wrapped-native route with ≥5 bps implied-rate divergence | Same | `savax_rate_arb`, `tag_modes.savax_rate_arb=exact` | Only direct sAVAX/WAVAX leg drives divergence | Same `R`; divergence amount not attributed | L | `strategy_tags.rs` L79-95, `savax_pool_diverges` L128-161; `arb.rs` L459-461 | `p3_16_savax_rate_arb` | Partial |
-| AR-15 | Epoch-transition arb | `NotifyReward` facts + epoch-venue registry | ≥2 epoch-pool legs + reward token on route | Same | `epoch_transition` | Requires both legs on configured epoch venues | Same `R` | L | `strategy_tags.rs` L97-116; `decode/signals.rs::decode_epoch_reward` | `p3_15_epoch_transition` | Partial |
-| AR-16 | GMX ADL-adjacent arb | GMX `EventEmitter` ADL/liquidation/impact + market-token registry | ADL in same/prior tx and route touches configured market token | Same | `gmx_adl_arb` | Route hit checked against configured GMX tokens | Same `R` | L | `arb.rs` L47-59, L201-205; `strategy_tags.rs` L118-121 | `p3_7_gmx_adl` | Partial |
-| AR-17 | Claim-and-sell behavior inside ArbAtomic | Zero-from `Transfer` + same-tx sell swap | Existing ArbAtomic is retagged; no second P&L event | Still `ArbAtomic` when cycle exists | `claim_and_sell`, `airdrop`, `claimed_token` | Route unchanged; claim tag is same-tx only | No duplicate profit; if no arb, emitted as `Utility` outside scope | L | `arb.rs::classify_claim_and_sell` L628-688; `strategy_tags.rs::claim_and_sell_token` | `claim_and_sell_tags_the_existing_arb_instead_of_double_counting`, `p3_13_claim_and_sell` | Partial by scope exception |
-| AR-18 | Aggregator/router-mediated arb | 1inch/ParaSwap/0x/legacy router topics | Aggregator edges excluded from cycle closure; dedup vs DEX edges | No dedicated detector; generic arb only if real DEX leg cycle exists | `router_version`; no underlying-pool reconstruction | `underlying_pools_hash` uses selected DEX pools only; router internals opaque | Same `R`; aggregator-only cycle intentionally rejected | L | `decode/aggregator.rs`; `legs.rs::is_cycle_edge` L104-109; `arb.rs` L435-458 | `aggregator_dup_edge_removed_when_dex_pair_covers`, `aggregator_only_cycle_produces_no_arb` | Unsupported — FN risk for genuine aggregator-mixed cycles |
-| AR-19 | Split-route arb | No route-split decoder | No detection | No classification | `optimizer:split_route` exists as tag vocabulary only | `route_json` cannot express fractional/second route | No split-specific P&L | N | `types/tags.rs::OPTIMIZER_SPLIT_ROUTE`; `docs/arb_atomic_audit_gaps_plan.md` G-11 | None | Unsupported / Unverified |
-| AR-20 | Stablecoin depeg arb | No depeg decoder or peg reference | No detector | No classification | No tag | No depeg route evidence mechanism | Would inherit generic `R` only if a cycle exists | N | Docs only: `docs/mev_strategies.md` §5.1 | None | Unsupported / Unverified |
-| AR-21 | Wrapped-token peg arb | Wrapped-native mint/burn delta filtering | Generic cycle may include wrapped token | Generic `ArbAtomic` only | `wrapped_native_marker`; no mechanism tag | Wrap noise can be filtered; no peg-gap reconstruction | Same `R`; wrap residue policy documented | L | `profit.rs` wrap-noise tests; `types.rs::wrapped_native` | `wrap_noise_filtered`, `wrap_then_spend_without_native_flow_keeps_the_mint` | Partial — generic-only |
-| AR-22 | Bridged-token arb | No bridge/peg decoder | No detector | No classification | No tag | No canonical/bridged asset mapping | No bridged-specific P&L | N | Docs only | None | Unsupported / Unverified |
-| AR-23 | LST depeg arb | No LST fair-value decoder | No detector | No classification | No tag; sAVAX tag is separate and narrow | No LST peg/reference route attribution | No mechanism-specific attribution | N | Docs only §4.5 | None | Unsupported / Unverified |
-| AR-24 | Pendle PT/YT yield arb | `Pendle` swap topic decoded into `Amm::Pendle` | Generic cycle may use Pendle leg | Generic `ArbAtomic` only | No Pendle mechanism tag | Tokens resolved via transfer proximity; PT/YT semantics not modeled | Same `R`; implied vs realized yield not computed | L | `decode/swap.rs::decode_pendle`; `types.rs::Amm::Pendle` | No dedicated decoder test in `decode/tests.rs` | Partial — venue decoded, strategy unsupported |
-| AR-25 | Vault-token / share-price arb | Balancer Vault flash decoder only | No share-price detector | Generic `ArbAtomic` only | `funding:balancer_v2_vault` / vault funding metadata | Vault used as funding, not as priced share venue | Fee netting only; no NAV/share-price attribution | L | `types/tags.rs::canonical_funding_source`; `arb.rs` funding metadata | Dashboard funding panel test only | Partial — funding semantics only |
-| AR-26 | Oracle/rate-provider AMM arb | Oracle update decoder exists for other passes | No atomic-arb detector | No classification | `ORACLE_AMM` vocabulary only; never emitted by core atomic arb | No oracle-vs-AMM route reconstruction | No oracle-specific attribution | N | `types/tags.rs::TAG_AXIS_REGISTRY` | None | Unsupported / Unverified |
-| AR-27 | Init-price snipe arb | No pool-creation/first-swap classifier in Explorer arb pass | No detector | No classification | No tag | No initialization sequencing evidence | No mechanism P&L | N | Docs only §1.1 | None | Unsupported / Unverified |
-| AR-28 | External-market arb: CEX–DEX / cross-chain / spot–perp | No CEX, bridge-finality, or perp venue decoder | No detector | No classification | No tag | Not representable in one-chain closed-cycle model | Not attributable | N | Out of scope by design | None | Unsupported / out of scope |
-| AR-29 | Statistical / pairs / NFT-floor arb | No statistical or floor-price input | No detector | No classification | No tag | No fair-value reference in route | No mechanism P&L | N | Docs only | None | Unsupported / out of scope |
+| AR-01 | Two-Pool Same-DEX | V2/V3/V4/Curve/Balancer/Solidly/LB/Pendle/Fluid/Metric swap topics + transfer attachment | Closed directed walk ≥2 edges, ≥2 pools, ≤8 edges, positive residual | `ArbAtomic`; `two_pool` shape only — protocol identity is metadata, not a separate detector | `arb_meta.arb_shape=two_pool`, `pool_shape`, `venues`, `dex_count` | Selected cycle only; Same-DEX requires `pool_dex` on **every** leg (G-01) | Ledger residual `R`; flash fee netted once | H (shape) / M (identity) | `classify/arb.rs::classify_atomic_arbs`; `profit.rs::closed_cycle_walks`; `classify/legs.rs::resolve_arb_routes` | `baseline_atomic_arb`, `explorer_golden`, `explorer_corpus` | Partial — shape real, Same-DEX unproven without G-01 |
+| AR-02 | Two-Pool Cross-DEX | Same as AR-01 | Same cycle gate | `is_cross_dex` from protocol identity; AMM-family fallback | `is_cross_dex`, `cross_dex_basis`, `venues` | Uni V2 + Sushi must be cross-DEX; Uni V2 + Uni V3 must not — only with complete `pool_dex` | `R` unchanged | M | `arb.rs::arb_route_meta`; `classify/mod.rs::pool_dex` | `cross_dex_uses_protocol_identity_not_amm_family`, fallback test | Partial — FP/FN when `pool_dex` absent |
+| AR-03 | Triangular | Same as AR-01 | Closed walk with 3 unique tokens (token-count heuristic) | `arb_shape=triangular` | `arb_shape`, `pool_shape` | Token-count heuristic, not a formal 3-pool proof | `R` | H | `arb.rs::arb_route_meta` L760-826; `profit.rs::closed_cycle_walks` | Cycle tests + real AVAX corpus notes | Supported (shape-level) |
+| AR-04 | Triangular Cross-DEX | Same as AR-01 | AR-03 gate + cross-DEX gate | No combined classifier; two metadata axes only | `arb_shape=triangular` + `is_cross_dex` | Both heuristics compose without joint validation | `R` | M | `arb.rs::arb_route_meta` L789-824 | Cross-DEX + cycle tests | Partial — metadata composition only |
+| AR-05 | Multi-Hop | Same as AR-01 | Closed walk >2 edges, capped at 8 | `arb_shape=multi_hop` | `hop_count`, `pool_shape` | Bounded at 8 edges / 64 candidates; one route per tx | `R` | H | `profit.rs::MAX_CYCLE_EDGES`, `closed_cycle_walks`; `arb.rs::select_route` | `cycle_search_is_depth_bounded`, corpus multi-hop rows | Supported (shape-level) |
+| AR-06 | Multi-Hop Cross-DEX | Same as AR-01 | AR-05 gate + cross-DEX gate | No dedicated class | Same as AR-04 + `hop_count` | Same protocol-identity caveat as AR-02 | `R` | M | `arb.rs::arb_route_meta`; `classify/mod.rs::pool_dex` | Cross-DEX tests on multi-hop fixtures | Partial — metadata composition only |
+| AR-07 | Combined Multi-Hop | Multiple profitable cycles decoded | G-10 records rejected routes; one event emitted | No combined representation | `details.rejected_routes` | Only one route selected; extra cycles are not merged | `R` for selected cycle; other residuals audited, not summed | L | `arb.rs::select_route`; `profit.rs::closed_cycle_walks` | `other_residuals_usd_is_audited_but_not_summed` | Unsupported |
+| AR-08 | Split-Route | No route-split decoder | No detection | No classification | `OPTIMIZER_SPLIT_ROUTE` vocabulary only | `route_json` cannot express parallel branches | No split-specific P&L | N | `types/tags.rs`; G-11 | Non-emission guard (old AR-19 test comment) | Unsupported / Unverified |
+| AR-09 | Aggregator-Based | `decode/aggregator.rs`, router topics | Aggregator edges excluded from cycle closure; G-12 `underlying_pools_unknown` | No dedicated detector | `router_version`, `underlying_pools_unknown` | Underlying pools opaque; router-only cycles rejected | `R` for DEX legs only | L | `decode/aggregator.rs`; `legs.rs::is_cycle_edge`; `arb.rs` L435-458 | `aggregator_only_cycle_produces_no_arb`, G-12 tests | Unsupported — FN for genuine mixed cycles |
+| AR-10 | Long-Tail | Same as AR-01 | Route touches a non-blue-chip token | Behavioral tag | `long_tail` | Selected route tokens only | `R`; token-pricing risk remains | H (G-05 seed `0x306e1885…` blk 95681751) | `arb.rs::is_long_tail_arb` | `p1_3_long_tail`, gated G-05 test | Supported (tag-level) |
+| AR-11 | Stablecoin Depeg | No peg reference / depeg decoder | No detector | No classification | No tag | No depeg route evidence | Generic `R` only if a cycle exists | N | Docs only: `docs/mev_strategies.md` §5.1 | Non-emission guard (old AR-20 test comment) | Unsupported / Unverified |
+| AR-12 | Curve Imbalance | Curve `TokenExchange` topics | Curve leg + ≥2 distinct AMM families | Mechanism tag only | `curve_imbalance` | No reserve/imbalance magnitude measurement | `R`; no mechanism-specific share | M (G-05 seed `0xc1532675…` blk 95681823) | `strategy_tags.rs::arb_strategy_tags` | `p3_5_curve_imbalance`, gated G-05 | Partial — label only |
+| AR-13 | Balancer Rate Provider | Balancer swap + `TokenRateCacheUpdated` | Balancer leg + cross-venue + no same-pool cache refresh | Mechanism tag only | `rate_provider_staleness` | Pool-scoped refresh check; no rate divergence test | `R` | M (G-05 seed `0x7e3d68f8…` blk 95682026) | `strategy_tags.rs` L39-54; `decode/signals.rs` | `p3_2_balancer_staleness`, gated G-05 | Partial — inferred label |
+| AR-14 | LST Arb | No LST fair-value decoder | No detector | No classification | No tag; sAVAX is separate and narrow | No LST peg/reference route | No mechanism attribution | N | Docs only §4.5 | Non-emission guard (old AR-23 test comment) | Unsupported / Unverified |
+| AR-15 | sAVAX Rate Arb | sAVAX address + `getPooledAvaxByShares` | sAVAX↔wrapped-native with ≥5 bps implied divergence | Exact mechanism tag | `savax_rate_arb`, `tag_modes.savax_rate_arb=exact` | Only direct sAVAX/WAVAX leg drives divergence | `R`; divergence amount not attributed | M (G-05 seed `0xb77e1291…` blk 95682059) | `strategy_tags.rs` L79-95; `arb.rs` L459-461 | `p3_16_savax_rate_arb`, gated G-05 | Partial — exact tag, no profit split |
+| AR-16 | Wrapped Token Arb | Wrapped-native mint/burn delta filtering | Generic cycle may include wrapped token | Generic `ArbAtomic` only | `wrapped_native_marker` | Wrap noise filtered; no peg-gap reconstruction | `R`; wrap residue policy documented | L | `profit.rs` wrap-noise tests; `types.rs::wrapped_native` | `wrap_noise_filtered`, `wrap_then_spend_without_native_flow_keeps_the_mint` | Partial — generic-only |
+| AR-17 | Bridged Token Arb | No bridge/peg decoder | No detector | No classification | No tag | No canonical/bridged asset map | No bridged-specific P&L | N | Docs only | Non-emission guard (old AR-22 test comment) | Unsupported / Unverified |
+| AR-18 | Fee-on-Transfer Arb | FoT registry lookup on route tokens | Route token carries FoT flag | Mechanism tag | `fot_arb` | Nominal swap amounts; tax visible in `route_delivery.net` | `R`; tax not decomposed | L + explicit 0-hit G-05 | `strategy_tags.rs` L56-74; `pool/state/pool_types.rs` | `p3_12_fot_rebase_arb` | Partial |
+| AR-19 | Rebase Token Arb | Rebase registry lookup on route tokens | Route token carries rebase flag | Mechanism tag | `rebase_arb` | No balance-drift verification at classify time | `R` | L + explicit 0-hit G-05 | `strategy_tags.rs` L56-77 | `p3_12_fot_rebase_arb` | Partial |
+| AR-20 | Oracle-AMM Arb | Oracle update decoder exists for other passes | No atomic-arb detector | No classification | `ORACLE_AMM` vocabulary only; never emitted | No oracle-vs-AMM route reconstruction | No oracle attribution | N | `types/tags.rs::TAG_AXIS_REGISTRY` | Non-emission guard (old AR-26 test comment) | Unsupported / Unverified |
+| AR-21 | Pendle PT/YT Arb | `decode_pendle` → `Amm::Pendle` | Generic cycle may use a Pendle leg | Generic `ArbAtomic` only | No Pendle mechanism tag | PT/YT semantics not modeled | `R`; no yield-spread split | L | `decode/swap.rs::decode_pendle`; `types.rs::Amm::Pendle` | Non-emission guard (old AR-24 test comment) | Partial — venue decoded only |
+| AR-22 | Vault Share Arb | Balancer Vault flash decoder | No share-price detector | Generic `ArbAtomic` only | `funding:balancer_v2_vault` | Vault is funding, not a priced share venue | Fee netting only; no NAV/share-price attribution | L | `types/tags.rs::canonical_funding_source`; `arb.rs` | Non-emission guard (old AR-25 test comment) | Partial — funding semantics only |
+| AR-23 | Epoch Transition Arb | `NotifyReward` facts + epoch-venue registry | ≥2 epoch-pool legs + reward token on route | Mechanism tag | `epoch_transition` | Requires both legs on configured epoch venues | `R` | L + explicit 0-hit G-05 | `strategy_tags.rs` L97-116; `decode/signals.rs` | `p3_15_epoch_transition` | Partial — label only |
+| AR-24 | Flash Loan Arb | Explicit flash topics: Aave V2/V3, Balancer, Uni V3, LFJ, Morpho | Fee/principal netting before residual; `flash_arb` | `ArbAtomic`, Exact/Inferred | `flash_arb`, `funding:*`, `funding_providers[]` | Funding does not alter route | Principal excluded; fee netted once | H (G-05 seed `0x306e1885…` blk 95681751) | `decode/flash_loan.rs::decode_flash_loan`; `arb.rs` L73-149, L373-452 | `p0_4_flash_arb`, `split_flash_repay_is_detected`, gated G-05 | Supported |
+| AR-25 | Flash Swap Arb | Logless inference from out→callback→in transfer ordering (`Amm::V2\|Solidly`) | Inferred flash fact on same cycle | `ArbAtomic`, Inferred | `flash_arb`, `funding:v2_flash_swap` | Provider = pool address; no V4 flash accounting | Fee implicit in swap amounts; no double subtraction | H (same G-05 seed carries `funding:v2_flash_swap`) | `decode/flash_loan.rs::infer_v2_flash_swap`; `classify/mod.rs` L629-636 | `v2_flash_swap_is_inferred_as_funding`, prefunded negative | Supported (V2/Solidly only) |
+| AR-26 | Backrun Arb | Same as AR-01 + causal price/adjacency facts | Prior market-moving leg, opposite direction, better price | Same `ArbAtomic`; tag only | `backrun` + causal evidence | Anchors on emitted route; no route rewrite | `R` owned by arb pass; causality `inferred` | H | `classify/causal.rs::classify_backruns`; `legs.rs` L22-48 | `baseline_backrun`, `core/tests/backrun.rs`, full ETH hashes | Supported |
+| AR-27 | Forwarded Profit | Transfer attached to same tx | Non-swap third-party payee; funder-fed only | `ArbAtomic`, `Inferred` | `forwarded_profit` | Route unchanged; payee is not a route leg | Residual attributed as Inferred, not double-counted | M | `arb.rs` L230, L404 | `forwarded_profit_in_priority_token_is_inferred`, G-09 negative | Supported as subtag — attribution Inferred, not Exact |
+| AR-28 | Claim & Sell + ArbAtomic | Zero-from `Transfer` + same-tx sell swap | Existing ArbAtomic is retagged | Still `ArbAtomic` when cycle exists | `claim_and_sell`, `airdrop`, `claimed_token` | Route unchanged; claim is same-tx only | No duplicate profit; standalone claim → Utility (outside scope) | L | `arb.rs::classify_claim_and_sell`; `strategy_tags.rs` | `claim_and_sell_tags_the_existing_arb_instead_of_double_counting` | Partial by scope exception |
+| AR-29 | Multi-Funding Arb | All seven provider decoders | ≥2 flash facts in one tx | `ArbAtomic` + one tag per provider | `funding_providers[]`, `funding:*` per provider | Route independent of provider count | Fees summed once per provider; no double netting | M (code+test; no real hash) | `arb.rs` L378-452 | `multiple_flash_providers_are_all_persisted_and_tagged` | Supported (code/test-level) |
 
-### Funding sources
+### Funding sources (I-2, بستهشده ۲۰۲۶-۱۱-۲۴)
 
-The repository canonicalises seven sources in `types/tags.rs::canonical_funding_source`; the external `FUND-01..07` labels were not found, so rows use that canonical order.
+منابع رسمی متن تسک `FUND-01..07`اند؛ ترتیب قبلی سند (Aave V2 و Morpho Blue را شامل میشد) معتبر نیست.
 
-| ID | Strategy | Decoder | Detection | Classification | Subtag / Metadata | Route Accuracy | P&L Accuracy | Evidence Level | Code Location | Test Coverage | Verdict |
+| ID | Funding Source | Decoder | Detection | Classification | Subtag / Metadata | Route Accuracy | P&L Accuracy | Evidence Level | Code Location | Test Coverage | Verdict |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| FUND-01 | Balancer V2 Vault | `decode_balancer_flash` via `decode_flash_loan` | `flashloans` fact → fee/principal netting | `funding_source=balancer_v2_vault` | `funding:balancer_v2_vault`, `flash_arb` | Route independent of provider | Fee netted only when transfer pattern permits; first provider only | M | `decode/flash_loan.rs` L95-110; `types/tags.rs` L96-121 | Canonical source test; no explorer decoder unit test | Supported (code only) |
-| FUND-02 | Aave V3 | Explicit `FlashLoan` topic decoder | Same | `funding_source=aave_v3` | `funding:aave_v3` | Same | Premium decoded and netted | M | `decode/flash_loan.rs` L55-73 | `aave_flash_loans_decode`; real AVAX flash+liq hash is out-of-scope liquidation | Supported (code only) |
-| FUND-03 | Aave V2 | Explicit topic decoder | Same | `funding_source=aave_v2` | `funding:aave_v2` | Same | Premium decoded | M | `decode/flash_loan.rs` L75-93 | `aave_flash_loans_decode` | Supported (code only) |
-| FUND-04 | Uniswap V3 Flash | Explicit `Flash` topic decoder | Same; zero token requires transfer-based netting | `funding_source=univ3_flash` | `funding:univ3_flash` | Same | `token=ZERO` skips principal netting; fee may be recorded even when amount leg is zero | L | `decode/flash_loan.rs` L25-53 | Topic-family test; canonical mapping test | Supported (code only, weak) |
-| FUND-05 | LFJ / Trader Joe LB Flash | 2.0 and 2.1/2.2 topic decoders | Same | `funding_source=lfj_lb_flash` | `funding:lfj_lb_flash` | Same | 2.1/2.2 chooses one packed leg on ties | M | `decode/flash_loan.rs` L132-184 | `lfj_lb_flash_loan_decodes`, `lfj_lb_v20_flash_loan_decodes` | Supported (code only) |
-| FUND-06 | V2 flash swap | Transfer-order inference | Same | `funding_source=v2_flash_swap` | `funding:v2_flash_swap` | Provider = pool; no callback trace | Fee implicit in swap amounts; no explicit in-kind fee value | M | `decode/flash_loan.rs::infer_v2_flash_swap` | `v2_flash_swap_is_inferred_as_funding`, prefunded negative | Partial — inferred, V2/Solidly only |
-| FUND-07 | Morpho Blue | Explicit `FlashLoan` topic decoder | Same | `funding_source=morpho_blue` | `funding:morpho_blue` | Same | Zero premium recorded | L | `decode/flash_loan.rs` L112-130 | No explorer decoder test found | Supported (code only, weak) |
+| FUND-01 | Balancer V2 Flash Loan | `decode_balancer_flash` via `decode_flash_loan` | `flashloans` fact → fee/principal netting | `funding_source=balancer_v2_vault` | `funding:balancer_v2_vault`, `flash_arb` | Route independent | Fee netted only when transfer pattern permits | M | `decode/flash_loan.rs` L95-110; `types/tags.rs` L96-121 | Canonical source test | Supported (code only) |
+| FUND-02 | Aave V3 Flash Loan | Explicit `FlashLoan` topic decoder | Same | `funding_source=aave_v3` | `funding:aave_v3` | Same | Premium decoded and netted | M | `decode/flash_loan.rs` L55-73 | `aave_flash_loans_decode` | Supported (code only) |
+| FUND-03 | Uniswap V3 Flash | Explicit `Flash` topic decoder | Same; zero-token needs transfer-based netting | `funding_source=univ3_flash` | `funding:univ3_flash` | Same | `token=ZERO` skips principal netting; fee may be recorded with zero amount leg | L | `decode/flash_loan.rs` L25-53 | Topic-family + canonical mapping tests | Supported (code only, weak) |
+| FUND-04 | Uniswap V2 Flash Swap | Transfer-order inference (`infer_v2_flash_swap`) | Inferred funding fact | `funding_source=v2_flash_swap` | `funding:v2_flash_swap`, `flash_arb` | Provider = pool; no callback trace | Fee embedded in swap amounts; no explicit in-kind fee | H (G-05 seed `0x306e1885…` blk 95681751) | `decode/flash_loan.rs::infer_v2_flash_swap` L198-263 | `v2_flash_swap_is_inferred_as_funding`, prefunded negative | Supported (real seed) |
+| FUND-05 | SushiSwap / V2 Fork Flash Swap | Same V2 inference; protocol identity only as pool address / venue tag | No Sushi-specific funding key | Generic `funding_source=v2_flash_swap` | `funding:v2_flash_swap`, `venue:sushiv2` | Provider is the pool, not the fork protocol | Same generic V2 fee treatment | M | `types/strategy.rs::FlashLoanProvider::V2FlashSwap`; `mev/detectors/tagging.rs::venue_tag_for_dex_name` | Venue-tag tests; no funding-specific golden | Partial — generic V2 key, no fork-specific identity |
+| FUND-06 | LFJ Liquidity Book Flash | 2.0 and 2.1/2.2 topic decoders | Same | `funding_source=lfj_lb_flash` | `funding:lfj_lb_flash` | Same | 2.1/2.2 picks one packed leg on ties | M | `decode/flash_loan.rs` L132-184 | `lfj_lb_flash_loan_decodes`, `lfj_lb_v20_flash_loan_decodes` | Supported (code only) |
+| FUND-07 | Multiple Flash Loan Providers | All provider decoders + `funding_providers[]` | ≥2 providers in one tx | `funding_source` stays first (backward compatible) | One `funding:*` per provider | Route independent | Per-provider fee sum; no double netting | M (code+test; no real hash) | `arb.rs` L378-452 | `multiple_flash_providers_are_all_persisted_and_tagged` | Supported (code/test-level) |
+
+> **خارج از لیست رسمی (شمارش نمیشوند):** Aave V2 و Morpho Blue در `canonical_funding_source` وجود دارند ولی در `FUND-01..07` نیامدهاند؛ GMX ADL (ردیف قدیمی AR-16)، init-price snipe (AR-27 قدیم)، CEX/cross-chain/spot-perp (AR-28 قدیم) و statistical/pairs/NFT-floor (AR-29 قدیم) guard-case باقی میمانند (G-05 سه مورد نخست را منفی صریح ثبت کرد).
+>
+> **نگاشت شمارهگذاری قدیمی → رسمی:** AR-02→03، AR-03→05، AR-04→02/06، AR-05→01 (same-DEX/different-AMM اکنون جنبهٔ AR-01/02 است)، AR-06→24، AR-07→25، AR-08→10، AR-09→26، AR-10→12، AR-11→13، AR-12→18، AR-13→19، AR-14→15، AR-15→23، AR-16→خارج، AR-17→28، AR-18→09، AR-19→08، AR-20→11، AR-21→16، AR-22→17، AR-23→14، AR-24→21، AR-25→22، AR-26→20، AR-27/28/29→خارج. کامنتهای سه guard test در `scenarios.rs` هنوز از شمارههای قدیمی استفاده میکنند (docs-only ماندن بازنگاشت).
 
 ---
 
@@ -413,66 +416,59 @@ All other hashes found in docs with `…` are truncated and must not be presente
 
 | IDs | Required test | Real-sample status |
 |---|---|---|
-| AR-04, AR-05 | Fixture matrix: complete `pool_dex`, partial `pool_dex`, empty `pool_dex`; assert `venues`, `dex_count`, `is_cross_dex`, `cross_dex_basis`; add real-hash golden asserting protocol basis where registry is populated | 4 full AVAX hashes above available |
-| AR-06 | Two flash providers with distinct protocols; assert both in `funding_providers[]`, one event, correct fee sum, no double netting | No full real successful flash-funded ArbAtomic hash found in repo; `scenario_targets.rs` status is `Hunt` |
-| AR-07 | Negative tests: prefunded V2 swap, V4 unlock/callback, Balancer/LB flash swap should not be mislabeled as `v2_flash_swap`; positive decoder golden retained | No full real ArbAtomic V2-flash-swap hash found |
-| AR-10 | Curve + DEX fixture plus imbalance-magnitude negative (Curve leg without imbalance); assert tag only when evidence exists | No real Curve-imbalance seed; `P3.5=Hunt` |
-| AR-11 | Same-pool refresh clears tag; other-pool refresh does not; add rate-divergence negative | No real seed; `P3.2=Hunt` |
-| AR-12 | Measured/static FoT fixture plus non-FoT negative; assert net transfer tax visible in `route[].amount_*_net` | No real seed; `P3.12=Hunt` |
-| AR-13 | Rebase token positive plus registry-absent negative; assert no tag when registry unknown | No real seed; `P3.12=Hunt` |
-| AR-14 | Both sAVAX directions, below-threshold divergence, no-rate negative; assert `tag_modes` | No real seed; `P3.16=Hunt` |
-| AR-15 | Reward token on/off route, one vs two epoch pools, timestamp-only negative | No real seed; `P3.15=Hunt` |
-| AR-16 | ADL same/prior/later tx and market-token on/off route | No real seed; `P3.7=Hunt` |
-| AR-17 | Same-tx claim-and-sell + closed arb must emit one ArbAtomic with `claim_and_sell`; must not emit second Utility | Real Utility hash exists above; no real ArbAtomic+claim combined hash found |
-| AR-18 | Aggregator+DEX mixed route: assert when cycle is rejected, why; add metadata flag `underlying_pools_unknown`; assert selected route excludes router internals | Code comment cites KyberSwap false-arb regression but no full hash; no real sample found |
-| AR-19 | Guard test: split-route opportunity input must not create `ArbAtomic` until route representation exists; assert docs/tag only | No real sample found |
-| AR-20 | Stablecoin depeg hunt over known depeg window; negative assertion if no decoder/reference exists | No full real depeg ArbAtomic hash found |
-| AR-21 | Wrapped-native mint/burn fixtures: wrap noise filtered; beneficiary unwrap not invented; assert no standalone mechanism tag | Generic real hashes may exercise wrapping, but no peg-specific real sample found |
-| AR-22 | Bridged asset negative: no bridge identity → no bridged-arb claim | No real sample found |
-| AR-23 | LST depeg negative: no fair-value reference → no LST-depeg claim | No real sample found |
-| AR-24 | Pendle decoder golden with token direction and a negative asserting no yield-spread claim without PT/YT fair-value evidence | No full real Pendle ArbAtomic hash found |
-| AR-25 | Vault-as-funding vs vault-as-venue separation; assert no share-price claim from funding metadata alone | No real sample found |
-| AR-26 | `ORACLE_AMM` remains vocabulary-only; assert core detector never emits it | No real sample found |
-| AR-27 | Init-price snipe guard: pool creation + first swap without closed cycle emits no ArbAtomic | No real sample found |
-| AR-28 | Out-of-scope guard: CEX/cross-chain/spot-perp inputs cannot produce single-chain ArbAtomic | No real sample found |
-| AR-29 | Out-of-scope guard: statistical/pairs/NFT-floor references cannot produce ArbAtomic without closed DEX cycle | No real sample found |
-| FUND-01..07 | Per-provider decoder golden, funding tag, canonical `funding_source`, fee netting, multi-provider array, and first-provider backward compatibility | No real successful ArbAtomic hash found per provider; only out-of-scope Aave V3 liquidation context above |
+| AR-01, AR-02 | Fixture matrix: complete `pool_dex`, partial `pool_dex`, empty `pool_dex`; assert `venues`, `dex_count`, `is_cross_dex`, `cross_dex_basis` | 4 full AVAX hashes above available; protocol-identity golden blocked by G-01 |
+| AR-04, AR-06 | Triangular/multi-hop cross-DEX composition: assert `arb_shape` and `is_cross_dex` are independently derived | No dedicated real hash |
+| AR-07 | Multi-cycle tx: assert one event, `rejected_routes` recorded, extra residuals audited but not summed | `other_residuals_usd_is_audited_but_not_summed` exists |
+| AR-08 | Guard: split-route opportunity input must not create `ArbAtomic` until parallel-branch representation exists | No real sample |
+| AR-09 | Aggregator+DEX mixed route: assert why a cycle is rejected; `underlying_pools_unknown`; router internals excluded from selected route | KyberSwap regression noted; no full hash |
+| AR-11 | Stablecoin depeg hunt + negative assertion when no peg reference exists | No full real depeg ArbAtomic hash |
+| AR-12 | Curve + DEX fixture plus imbalance-magnitude negative (Curve leg without imbalance) | G-05 real seed pinned `0xc1532675…` |
+| AR-13 | Same-pool refresh clears tag; other-pool refresh does not; rate-divergence negative | G-05 real seed pinned `0x7e3d68f8…` |
+| AR-14 | LST depeg negative: no fair-value reference → no LST-depeg claim | No real sample |
+| AR-15 | Both sAVAX directions, below-threshold divergence, no-rate negative; assert `tag_modes` | G-05 real seed pinned `0xb77e1291…` |
+| AR-16 | Wrapped-native mint/burn fixtures: wrap noise filtered; beneficiary unwrap not invented | Generic real hashes may exercise wrapping; no peg-specific sample |
+| AR-17 | Bridged asset negative: no bridge identity → no bridged-arb claim | No real sample |
+| AR-18, AR-19 | FoT/rebase positive + non-FoT/non-rebase negative; assert net transfer tax in `route[].amount_*_net` | G-05 explicit 0-hit negatives in 600-block hunt |
+| AR-20 | `ORACLE_AMM` remains vocabulary-only; assert core detector never emits it | Guard test exists |
+| AR-21 | Pendle decoder golden with token direction + negative asserting no yield-spread claim | No full real Pendle ArbAtomic hash |
+| AR-22 | Vault-as-funding vs vault-as-venue separation; no NAV/share-price claim from funding alone | Guard test exists |
+| AR-23 | Reward token on/off route, one vs two epoch pools, timestamp-only negative | G-05 explicit 0-hit negative |
+| AR-24, AR-25 | Flash loan/swap: fee netting once, prefunded V2 negative, V4 unlock/callback negative | G-05 real seed `0x306e1885…` carries both `flash_arb` and `funding:v2_flash_swap` |
+| AR-26 | Backrun causality positive + unrelated price-move negative | Full ETH hashes pinned in §3 |
+| AR-27 | Forwarded-profit positive + funder-fed/unrelated-payee negatives | G-09 negative fixture exists; G-05 seed carries tag |
+| AR-28 | Same-tx claim-and-sell + closed arb: one `ArbAtomic`, no second Utility | Real Utility hash exists; no combined real hash |
+| AR-29 | Two providers with distinct protocols: both in `funding_providers[]`, one event, correct fee sum | `multiple_flash_providers_are_all_persisted_and_tagged` exists; no real hash |
+| FUND-01..07 | Per-provider decoder golden, funding tag, canonical `funding_source`, fee netting, multi-provider array, first-provider backward compatibility | FUND-04 has a real G-05 seed; others code/test-level only |
 
-**وضعیت اجرای تستپلن (۲۰۲۶-۱۱-۲۴):** موارد AR-06 و AR-18 توسط تستهای موجود (`multiple_flash_providers_are_all_persisted_and_tagged`, `realized_arb_carries_canonical_provenance_in_details`) پوشش داده شدند. guard testهای غیاب emission برای AR-19، AR-20، AR-22، AR-23، AR-24، AR-25، AR-26، AR-27، AR-28، AR-29 در `core/src/explorer/scenarios.rs` اضافه شدند (`unsupported_axis_tags_are_never_emitted_by_arb_classifier`, `docs_only_mechanisms_never_emit_a_tag`, `venue_and_funding_only_facts_do_not_claim_mechanisms`). سایر ردیفها منوط به seed.real/RPCاند.
-
----
-
-## 13. ضمیمه E — خلاصه ۶ سؤاله مدیریتی
-
-1. **Counts among the 29 arbitrage rows:** **7 Supported**, **13 Partial**, **9 Unsupported**. No row is fully verified as a mechanism-specific arbitrage type on a real successful transaction; support is strongest for generic route shapes and behavioral tags.
-
-2. **Counts among the 7 funding sources:** **6 Supported on code**, **1 Partial** (`v2_flash_swap` inference). **0** have a pinned real successful `ArbAtomic` transaction in the repository; coverage is code/test-level only.
-
-3. **Generic-only `ArbAtomic` cases:** **7 rows** — AR-01, AR-02, AR-03, AR-04, AR-05, AR-08, AR-09. They are confirmed only as generic route shapes or behavioral tags on real transactions, not as mechanism-verified subclasses.
-
-4. **Five critical defects:**
-   - **D1:** No authoritative AR/FUND taxonomy registry; 21 AR labels and all FUND labels are unverifiable from the repository.
-   - **D2:** Cross-DEX detection falls back to AMM family when `pool_dex` is incomplete, creating protocol-identity false positives.
-   - **D3:** Multi-provider flash funding is collapsed to `flashloans.first()`.
-   - **D4:** Emitted tags (`forwarded_profit`, `funding:*`) are missing from `core/data/explorer_tags.json`.
-   - **D5:** No mechanism-level P&L attribution or full real-hash golden set for the specialist tags; all rows reuse the same residual `R`.
-
-5. **Minimum changes required:**
-   - Freeze the AR/FUND taxonomy mapping in a versioned registry without adding new `MevKind`s.
-   - Populate `pool_dex` for every route pool and fail closed to `unknown` instead of AMM-family cross-DEX.
-   - Add `funding_providers[]` while keeping `funding_source` as the backward-compatible first entry.
-   - Sync `explorer_tags.json` with every emitted tag and enforce it in tests.
-   - Add `profit_cause` metadata and explicit route-shape fields (`pool_count`, `unique_tokens`, `hop_count`) without changing canonical net profit.
-   - Pin the four full AVAX hashes and two ETH backrun hashes as gated golden tests; record explicit negative hunt results where no real seed exists.
-
-6. **Repair order:**
-   - **1 — Contract:** taxonomy mapping, tag vocabulary, and guardrails.
-   - **2 — Identity:** complete `pool_dex`, fail-closed cross-DEX, route-shape disambiguation.
-   - **3 — Funding:** multi-provider array and per-provider fee completeness.
-   - **4 — Evidence:** real-hash golden tests and documented hunt results for all Partial/Hunt rows.
-   - **5 — Attribution:** mechanism `profit_cause` metadata and multi-residual reporting, with canonical `net_profit_usd` unchanged.
-   - **6 — Scope:** explicit no-emission guards for Unsupported/out-of-scope categories.
+**وضعیت اجرای تستپلن (۲۰۲۶-۱۱-۲۴، بازنگاشت I-1/I-2):** AR-24/AR-25 توسط تستهای flash و G-05، AR-29 توسط `multiple_flash_providers_are_all_persisted_and_tagged`، AR-09 توسط `realized_arb_carries_canonical_provenance_in_details` پوشش داده شدند. guard testهای غیاب emission برای AR-08، AR-11، AR-14، AR-17، AR-20، AR-21، AR-22 (و سه دستهٔ خارج از تاکسونومی) در `core/src/explorer/scenarios.rs` وجود دارند. سایر ردیفها منوط به seed.real/RPCاند.
 
 ---
 
-**پایان سند.** ضمایم A–E عکس وضعیت در کامیت `ef29f73`اند و وضعیت جاری را منعکس نمیکنند (بخش باقیماندهٔ I-1..I-3 و G-01 است). لایهٔ کد WP-A/WP-C/WP-D و guard testهای ضمیمهٔ D در کامیتهای `238ff35`, `73fbd62`, `cda3ea0` پیاده و تست شدند؛ G-05 و G-14 با RPC آرشیو Dwellir در ۲۰۲۶-۱۱-۲۴ بسته شدند. `cargo test --workspace --quiet` سبز است (۶۹۸ passed / ۲ ignored در lib؛ تست گیتد G-05 جداگانه ۴/۴ اجرا شد). منتظر ورودیهای I-1..I-3 و enrichment `pool_dex` (G-01) هستیم.
+## 13. ضمیمه E — خلاصه ۶ سؤاله مدیریتی (متن اصلی §۶ تسک)
+
+**Q1 — from 29 arbitrage types, how many are Supported / Partial / Unsupported / Unverified?**
+**Supported: 8** (AR-03, AR-05, AR-10, AR-24, AR-25, AR-26, AR-27, AR-29) · **Partial: 14** (AR-01, AR-02, AR-04, AR-06, AR-12, AR-13, AR-15, AR-16, AR-18, AR-19, AR-21, AR-22, AR-23, AR-28) · **Unsupported: 7** (AR-07, AR-08, AR-09, AR-11, AR-14, AR-17, AR-20) · **Unverified: 0** (ردیفهای فاقد پیادهسازی Unsupported ثبت شدند، نه Unverified). هیچ ردیف مکانیزمی (غیر از تگهای رفتاری دقیق sAVAX/flash/backrun) با اثبات اقتصادی کامل روی tx.real تأیید نشده است.
+
+**Q2 — from 7 funding sources, how many are really identified?**
+**6 Supported** (FUND-01 Balancer V2, FUND-02 Aave V3, FUND-03 Uni V3 Flash, FUND-04 Uni V2 Flash Swap, FUND-06 LFJ LB, FUND-07 Multiple providers) و **1 Partial** (FUND-05 Sushi/V2 fork — فقط کلید عمومی `v2_flash_swap`، بدون هویت funding اختصاصی). FUND-04 تنها منبعی است که هش real موفق G-05 دارد؛ بقیه code/test-levelاند. Aave V2 و Morpho Blue canonical sourceاند ولی در لیست رسمی ۷تایی نیستند.
+
+**Q3 — which capabilities only record a generic `ArbAtomic` without identifying the real subtype?**
+**9 rows:** AR-01, AR-02, AR-04, AR-06 (route/cross-DEX تنها metadata)، AR-03 و AR-05 (شکل hop-محور، نه اثبات تعداد pool)، AR-16 (wrapped)، AR-21 (Pendle فقط venue)، AR-22 (Vault فقط funding). AR-07/AR-08/AR-09 اساساً subtypeای emit نمیکنند؛ AR-12/13/15/18/19/23 تگ مکانیزمی میدهند ولی سهم P&L مکانیزم را جدا نمیکنند.
+
+**Q4 — five critical defects with the largest impact on Explorer output correctness?**
+1. **D1 — G-01 / `pool_dex`:** با کش ناقص، `cross_dex_basis="amm_family"` جای protocol identity مینشیند → Same-DEX/Cross-DEX FP و FN (Uni V2+Sushi در مقابل Uni V2+Uni V3).
+2. **D2 — route representation:** `arb_shape` مبتنی بر token-count/hop است، نه pool-count؛ combined multi-hop، split-route و aggregatorِ دارای pool زیرین قابل بازسازی نیستند و یک tx فقط یک event میدهد.
+3. **D3 — funding identity:** `funding_source` هنوز first provider است؛ `funding_providers[]` اضافه شد ولی Sushi/Fork و V4 flash accounting هویت جداگانه ندارند.
+4. **D4 — mechanism evidence:** تگهای Curve/Balancer/FoT/Rebase/Epoch/Pendle/Vault بدون اندازهٔ عدمتعادل، divergence، balance-drift یا fair-value صادر میشوند و هیچ `profit_cause` مکانیزمی بر `net_profit_usd` اثر نمیکند.
+5. **D5 — real-sample coverage:** چند ردیف (split, depeg, LST, bridged, aggregator-mixed, multi-funding, claim+arb) فاقد tx.real موفق pinشدهاند؛ سه negative صریح G-05 تنها جایگزین مستندشدهاند.
+
+**Q5 — minimum changes required for reliable coverage?**
+تثبیت نگاشت رسمی ۲۹+۷ (انجام شد، docs-only)؛ پر کردن `pool_dex` و fail-closed به `unknown` (G-01)؛ مدل route با `pool_count` و شاخههای موازی + مقایسهٔ cycleها بهجای first-cycle؛ نگهداری `funding_providers[]` با هویت provider اختصاصی؛ آستانهٔ شواهد مکانیزم قبل از emission تگ + `profit_cause` صرفاً metadata؛ golden test برای هشهای real باقیمانده و negativeهای مستند.
+
+**Q6 — suggested repair order?**
+**1 — Contract:** taxonomy/tag vocabulary و guardrails (تکمیل شد). **2 — Identity:** `pool_dex` کامل و cross-DEX fail-closed (G-01). **3 — Route:** shapeها، multi-cycle و parallel-branch/aggregator reconstruction. **4 — Evidence:** آستانههای مکانیزم و جداسازی تگ از اثبات اقتصادی. **5 — Attribution:** `profit_cause` و multi-residual، بدون تغییر `net_profit_usd`. **6 — Samples:** pin کردن هشهای real باقیمانده و ثبت negative huntها.
+
+---
+
+**پایان سند.** ضمایم A–E عکس وضعیت در کامیت `ef29f73`اند، ولی ماتریس A و خلاصهٔ E در ۲۰۲۶-۱۱-۲۴ با تاکسونومی رسمی متن تسک بازنگاشت شدند (I-1..I-3 بسته؛ هرگونه شمارهٔ AR/FUND قدیمی در کامنتها یا اسناد قدیمی معتبر نیست). لایهٔ کد WP-A/WP-C/WP-D و guard testهای ضمیمهٔ D در کامیتهای `238ff35`, `73fbd62`, `cda3ea0`, `72499e5` پیاده و تست شدند؛ G-05 و G-14 با RPC آرشیو Dwellir بسته شدند. `cargo test --workspace --quiet` سبز است (۶۹۸ passed / ۲ ignored در lib؛ تست گیتد G-05 جداگانه ۴/۴ اجرا شد). بازنگاشت تاکسونومی docs-only بود و کدی تغییر نکرد. باقیماندهٔ plan فقط enrichment `pool_dex` (G-01) است.
+
