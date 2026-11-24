@@ -1057,3 +1057,165 @@ fn p3_16_savax_rate_arb() {
     let ev = build(USDC, true);
     assert!(!has_tag(std::slice::from_ref(&ev), "savax_rate_arb"));
 }
+
+// ── Appendix D non-emission guards for unsupported mechanisms ────────────
+//
+// The audit snapshot (§9–§11) leaves several categories Unsupported /
+// Unverified because they have no decoder, no fair-value reference or no
+// representable route. These tests pin that boundary: a generic closed cycle
+// with adjacent oracle/funding/venue facts must never grow a tag that claims
+// one of those mechanisms. They are deterministic (no RPC, no cache).
+
+/// Appendix D AR-19 / AR-26 / G-15: optimizer, oracle-vocabulary and scope
+/// tags are never emitted by the realized arb classifier, even when the tx
+/// carries an oracle update next to an otherwise valid cycle.
+#[test]
+fn unsupported_axis_tags_are_never_emitted_by_arb_classifier() {
+    let feed = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let mut t = tx(
+        0,
+        ATK,
+        true,
+        vec![
+            swap(POOL_A, USDC, TOKA, 100, 200),
+            swap(POOL_B, TOKA, USDC, 200, 110),
+        ],
+        vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+            transfer(2, TOKA, ATK, POOL_B, 200),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ],
+    );
+    t.oracle_updates = vec![OracleUpdateFact {
+        tx_index: 0,
+        log_index: 4,
+        feed,
+        answer: 100,
+    }];
+    let mut input = block(vec![t]);
+    input.ctx.chainlink_feeds = std::sync::Arc::new(HashMap::from([(feed, USDC)]));
+
+    let events = classify_block(&input);
+    let ev = events
+        .iter()
+        .find(|e| e.kind == MevKind::ArbAtomic)
+        .expect("generic cycle must still emit ArbAtomic");
+    let tags = ev.details["tags"]
+        .as_array()
+        .expect("tags")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>();
+    for forbidden in ["oracle_amm", "optimizer:split_route", "out_of_core"] {
+        assert!(!tags.contains(&forbidden), "must never emit {forbidden}");
+    }
+    assert_eq!(pnl_basis(ev), Some("R"));
+}
+
+/// Appendix D AR-20 / AR-22 / AR-23 / AR-27 / AR-28 / AR-29: docs-only
+/// categories have no decoder input path. An oracle poke and unrelated
+/// transfers beside a generic cycle must not turn it into a depeg / bridged /
+/// LST / init-price / external-market / statistical claim.
+#[test]
+fn docs_only_mechanisms_never_emit_a_tag() {
+    let mut t = tx(
+        0,
+        ATK,
+        true,
+        vec![
+            swap(POOL_A, USDC, TOKA, 100, 200),
+            swap(POOL_B, TOKA, USDC, 200, 110),
+        ],
+        vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+            transfer(2, TOKA, ATK, POOL_B, 200),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ],
+    );
+    t.oracle_updates = vec![OracleUpdateFact {
+        tx_index: 0,
+        log_index: 4,
+        feed: address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        answer: 100,
+    }];
+    let input = block(vec![t]);
+    let events = classify_block(&input);
+    let ev = events
+        .iter()
+        .find(|e| e.kind == MevKind::ArbAtomic)
+        .expect("generic cycle must still emit ArbAtomic");
+    let tags = ev.details["tags"]
+        .as_array()
+        .expect("tags")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>();
+    for forbidden in [
+        "depeg",
+        "stablecoin_depeg",
+        "bridged_arb",
+        "lst_depeg",
+        "init_price_snipe",
+        "cex_dex_arb",
+        "spot_perp_arb",
+        "statistical_arb",
+        "nft_floor_arb",
+        "oracle_amm",
+    ] {
+        assert!(
+            !tags.contains(&forbidden),
+            "docs-only mechanism leaked: {forbidden}"
+        );
+    }
+    assert_eq!(pnl_basis(ev), Some("R"));
+}
+
+/// Appendix D AR-24 / AR-25: a venue-only Pendle leg is decoded and can close
+/// a generic cycle, but it must not claim a PT/YT yield spread; likewise a
+/// Balancer-vault funding tag must not imply NAV/share-price attribution.
+#[test]
+fn venue_and_funding_only_facts_do_not_claim_mechanisms() {
+    let mut pendle_leg = swap(POOL_A, USDC, TOKA, 100, 200);
+    pendle_leg.amm = Amm::Pendle;
+    let t = tx(
+        0,
+        ATK,
+        true,
+        vec![pendle_leg, swap(POOL_B, TOKA, USDC, 200, 110)],
+        vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+            transfer(2, TOKA, ATK, POOL_B, 200),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ],
+    );
+    let input = block(vec![t]);
+    let events = classify_block(&input);
+    let ev = events
+        .iter()
+        .find(|e| e.kind == MevKind::ArbAtomic)
+        .expect("Pendle leg must still close a generic cycle");
+    assert!(ev.details["route"]
+        .as_array()
+        .is_some_and(|route| route.iter().any(|leg| leg["amm"] == "pendle")));
+    let tags = ev.details["tags"]
+        .as_array()
+        .expect("tags")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect::<Vec<_>>();
+    for forbidden in [
+        "pendle_yield_arb",
+        "yield_spread_arb",
+        "share_price_arb",
+        "nav_arb",
+    ] {
+        assert!(
+            !tags.contains(&forbidden),
+            "venue/funding-only claim leaked: {forbidden}"
+        );
+    }
+    assert_eq!(pnl_basis(ev), Some("R"));
+}

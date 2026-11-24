@@ -24,20 +24,20 @@ rewritten or removed.
 | bsc.aave | liquidation | A | verified | bsc | 127706714 | 127706714 | corpus `bsc-aave-127706714`; protocol=aave_v3 (no V2 on BSC); searcher `0xec40d8aa…1118` |
 | bsc.venus | liquidation | A | verified | bsc | 102639252 | 102639252 | corpus `bsc-venus-102639252`; protocol=venus (vUSDT emitter); searcher `0x6898c2c1…e052` |
 | P0.3 | buycollateral | C | coverage_unknown | ethereum | | | no seed yet; live-eligible. Base token is inferred from the buyer→Comet payment transfer so PnL is no longer NULL. |
-| P0.4 | flash_arb | A | coverage_unknown | avalanche | | | flash co-hit not observed yet; rare, not a deletion signal. |
+| P0.4 | flash_arb | A | verified | avalanche | 95681751 | 95681751 | G-05 2026-11-24 hunt: 45 hits in 95681722..=95682322; pinned `0x306e1885ab69f61210ae5942723c680585cd3d2b47e14271dd02afa87d5dea4e` (tags `flash_arb` + `funding:v2_flash_swap` + `forwarded_profit`). |
 | P1.1 | interest_accrued | D | sparse_cross_chain | ethereum | 26214788 | 26214788 | Morpho liq flag; reserve rate must be non-zero. |
 | P1.3 | long_tail | A | verified | avalanche | 97783552 | 97783552 | Seeded |
 | P1.4 | oracle_poke_block | D | coverage_unknown | - | | | not observed yet; live-eligible (oracle-latency liq). Poke must precede the liquidation in tx/log order. |
 | P1.5 | keeper | A | coverage_unknown | - | | | 0 hits / 120k; live-eligible, rare, not a deletion signal. |
 | P2.3 | flash_providers | D | coverage_unknown | - | | | needs multi-provider flash liq (rare). |
 | P3.1 | lb_bin_jit | B | coverage_unknown | avalanche | | | no address-bound seed yet; live-eligible. Bin accounting remains explicitly unavailable (PnL NULL, never zero). |
-| P3.2 | rate_provider_staleness | B | coverage_unknown | - | | | rare; not a deletion signal. |
-| P3.5 | curve_imbalance | B | coverage_unknown | - | | | rare; not a deletion signal. |
-| P3.7 | gmx_adl_arb | B | coverage_unknown | avalanche | | | ADL/liquidation/impact event must appear in the same or a prior tx and the route must touch a configured GMX index token (WAVAX/USDC/WBTC.e/WETH.e). |
-| P3.12 | fot_arb|rebase_arb | B | coverage_unknown | - | | | rare; not a deletion signal. |
+| P3.2 | rate_provider_staleness | B | verified | avalanche | 95682026 | 95682026 | G-05 2026-11-24 hunt: 2 hits in 95681722..=95682322; pinned `0x7e3d68f8d3b73b11420b7ae5a3158658127d8cc7f81ab0dece128566dc5acf1a` (tag `rate_provider_staleness`). |
+| P3.5 | curve_imbalance | B | verified | avalanche | 95681823 | 95681823 | G-05 2026-11-24 hunt: 10 hits in 95681722..=95682322; pinned `0xc15326756e51729ec876c0f837e7d269377a3699f2421114baca043b90712d76` (tag `curve_imbalance`). |
+| P3.7 | gmx_adl_arb | B | coverage_unknown | avalanche | | | G-05 2026-11-24 hunt: **0 hits** in 95681722..=95682322 (1117 arbs scanned) — explicit negative, not a deletion signal. ADL event must still appear in same/prior tx and touch a configured GMX index token. |
+| P3.12 | fot_arb|rebase_arb | B | coverage_unknown | avalanche | | | G-05 2026-11-24 hunt: **0 hits** in 95681722..=95682322 (1117 arbs scanned) — explicit negative; rare, not a deletion signal. |
 | P3.13 | claim_and_sell | B | verified | avalanche | 97781738 | 97781738 | Seeded |
-| P3.15 | epoch_transition | B | coverage_unknown | - | | | requires `NotifyReward` and both cycle legs on registry-matched epoch venues; one touch or a timestamp alone is not a signal. |
-| P3.16 | savax_rate_arb | B | coverage_unknown | avalanche | | | transfer-only blocks had 0 arb; rare, not a deletion signal. |
+| P3.15 | epoch_transition | B | coverage_unknown | avalanche | | | G-05 2026-11-24 hunt: **0 hits** in 95681722..=95682322 (1117 arbs scanned) — explicit negative; `NotifyReward` + both legs still required. |
+| P3.16 | savax_rate_arb | B | verified | avalanche | 95682059 | 95682059 | G-05 2026-11-24 hunt: 1 hit in 95681722..=95682322; pinned `0xb77e129123a1f0b043e30b1df341148144a1e4a6320c37615870100e829d94d3` (tag `savax_rate_arb`, Exact). |
 
 ## Tooling
 

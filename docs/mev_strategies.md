@@ -2995,9 +2995,11 @@ transfers; volume prices the received input when it is unambiguous.
 matching how the checklist describes routes ("triangular 6-hop",
 "two_pool 4-hop"). Pool geometry is separate: `pool_shape`
 (`two_pool`/`three_pool`/`multi_pool`), plus `is_cross_dex`, `hop_count`,
-`pool_count`, `unique_tokens`, `amm_family_count` (formerly `dex_count`, which
-always counted AMM families such as v2/v3, not DEX protocols), and
-`flashloan_funded` (explicit flash loans only). A 3-hop route over 2 pools is
+`pool_count`, `unique_tokens`, `amm_family_count` (explicit count of AMM
+families such as v2/v3), and `flashloan_funded` (explicit flash loans only).
+`dex_count` is retained as a legacy alias: it carries protocol-identity count
+when `cross_dex_basis="protocol"` (i.e. `venues` is present) and falls back to
+the AMM-family count otherwise. A 3-hop route over 2 pools is
 therefore `arb_shape=two_pool`, `pool_shape=two_pool`, `hop_count=3`,
 `pool_count=2`.
 

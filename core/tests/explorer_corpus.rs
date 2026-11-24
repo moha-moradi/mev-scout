@@ -1247,8 +1247,7 @@ async fn pinned_real_arb_hashes_reproduce_route_meta_and_pnl() -> anyhow::Result
             &NoopProgress,
         )
         .await?;
-        // TEMP DEBUG: dump real arb_meta + route for each golden block (assert
-        // commented out for capture). Restore before finalizing.
+        // Full route/meta/PnL assertion for each pinned golden block (live RPC).
         assert_real_arb_golden(&store, case);
     }
     Ok(())
@@ -1256,10 +1255,11 @@ async fn pinned_real_arb_hashes_reproduce_route_meta_and_pnl() -> anyhow::Result
 
 #[tokio::test]
 async fn g05_hunt_dump_avax() -> anyhow::Result<()> {
-    // TEMP: G-05 hunt — ingest the AVAX corpus window (95681722..=95682322) and
-    // dump each arb_tx's tags (details_json["tags"]) so the seven Hunt rows can
-    // be seeded with a real tx or recorded as "0 hits in window". Remove after
-    // the hunt is closed.
+    // G-05 hunt utility — ingest an AVAX window (default 95681722..=95682322,
+    // overridden by G05_FROM/G05_TO) and report each arb_tx's tag frequency so
+    // the seven Hunt rows can be seeded with a real tx or recorded as an
+    // explicit "0 hits in window X" result in the checklist. Operator tool:
+    // requires MEV_SCOUT_E2E=1 and an archive RPC_URL; skips otherwise.
     let Some(rpc_url) = live_rpc_url()? else {
         eprintln!("Skipping: MEV_SCOUT_E2E/RPC_URL not set");
         return Ok(());
@@ -1398,6 +1398,97 @@ async fn g05_hunt_dump_avax() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// G-05 acceptance: the four real hashes pinned from the 2026-11-24 hunt must
+/// still carry the mechanism tag that seeded their checklist row. Only the four
+/// blocks are ingested, so this stays cheap on an archive RPC.
+#[tokio::test]
+#[ignore = "live RPC — set MEV_SCOUT_E2E=1 and RPC_URL (archive for AVAX 95.68M)"]
+async fn g05_seeded_mechanism_hashes_carry_expected_tags() -> anyhow::Result<()> {
+    let Some(rpc_url) = live_rpc_url()? else {
+        eprintln!("Skipping: MEV_SCOUT_E2E/RPC_URL not set");
+        return Ok(());
+    };
+
+    let cases: [(&str, u64, &str, &str); 4] = [
+        (
+            "P0.4",
+            95_681_751,
+            "0x306e1885ab69f61210ae5942723c680585cd3d2b47e14271dd02afa87d5dea4e",
+            "flash_arb",
+        ),
+        (
+            "P3.2",
+            95_682_026,
+            "0x7e3d68f8d3b73b11420b7ae5a3158658127d8cc7f81ab0dece128566dc5acf1a",
+            "rate_provider_staleness",
+        ),
+        (
+            "P3.5",
+            95_681_823,
+            "0xc15326756e51729ec876c0f837e7d269377a3699f2421114baca043b90712d76",
+            "curve_imbalance",
+        ),
+        (
+            "P3.16",
+            95_682_059,
+            "0xb77e129123a1f0b043e30b1df341148144a1e4a6320c37615870100e829d94d3",
+            "savax_rate_arb",
+        ),
+    ];
+
+    let chain = ChainName::Avalanche;
+    let config = corpus_config(chain, &rpc_url);
+    let setup = init_rpc(&config, chain, true).await?;
+    let (_, chain_cfg) = resolve_chain(&config)?;
+    let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);
+    cfg.confirmations = config.explorer.confirmations;
+    let registry = load_pool_registry(&config, &chain);
+    let store = ExplorerStore::open_in_memory()?;
+
+    for (id, block, hash, want_tag) in cases {
+        run_range(
+            &setup.rpc,
+            &store,
+            &cfg,
+            PoolViews {
+                tokens: &registry.tokens,
+                v2_like: &registry.v2_like,
+                epoch_venue: &registry.epoch_venue,
+                fee_bps: &registry.fee_bps,
+                dex_name: &registry.dex_name,
+            },
+            RangeRequest {
+                from_block: block,
+                to_block: block,
+                block_concurrency: 1,
+            },
+            &NoopProgress,
+        )
+        .await?;
+
+        let mut ops = store.ops_for_tx(hash)?;
+        ops.retain(|o| o.kind == "arb_atomic");
+        let op = ops
+            .first()
+            .unwrap_or_else(|| panic!("{id}: no arb_atomic op for {hash}"));
+        assert_eq!(op.block_number, block, "{id}: block mismatch");
+        let details: serde_json::Value =
+            serde_json::from_str(op.details_json.as_deref().unwrap_or("{}"))?;
+        let tags = details["tags"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{id}: tags missing"));
+        assert!(
+            tags.iter().any(|t| t.as_str() == Some(want_tag)),
+            "{id}: expected tag {want_tag}, got {}",
+            tags.iter()
+                .map(|t| t.as_str().unwrap_or("?"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn hunt_window_parses_and_rejects_bad_input() {
     assert_eq!(parse_hunt_window(" 100 ", "200"), Some(vec![(100, 200)]));
@@ -1438,7 +1529,13 @@ fn strategy_scenario_targets_match_avalanche_corpus_seeds() {
         let from = t.seed_from.expect("seeded");
         let to = t.seed_to.expect("seeded");
         let kind = match t.label {
-            "arb_atomic" | "long_tail" | "flash_arb" | "backrun" => "arb_atomic",
+            "arb_atomic"
+            | "long_tail"
+            | "flash_arb"
+            | "backrun"
+            | "rate_provider_staleness"
+            | "curve_imbalance"
+            | "savax_rate_arb" => "arb_atomic",
             "liquidation" | "benqi" | "flash_loan_liq" => "liquidation",
             "claim_and_sell" => "utility",
             other => other,

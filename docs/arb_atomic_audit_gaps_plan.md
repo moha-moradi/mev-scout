@@ -1,10 +1,10 @@
 #plan پیشنهادی بستن گپهای ممیزی `MevKind::ArbAtomic`
 
-> **وضعیت:** لایهٔ کد WP-A (G-03، G-04) و موارد code-only P1/P2 (G-02، G-07–G-10) پیادهسازی شد و `cargo test --workspace --quiet` سبز است؛ بقیه منوط به I-1..I-3 و دسترسی RPC/archive است.  
-> **تاریخ:** 2026-11-23  
+> **وضعیت:** لایهٔ کد WP-A (G-03، G-04)، موارد code-only P1/P2 (G-02، G-07–G-10)، WP-D (G-12/G-13/G-15) و guard testهای ضمیمهٔ D پیادهسازی شدند و `cargo test --workspace --quiet` سبز است؛ G-05/G-06/G-14 با RPC آرشیو بسته شدند. باقیماندهٔ plan منوط به I-1..I-3 و enrichment `pool_dex` (G-01) است.  
+> **تاریخ:** 2026-11-23 (بازتأیید و پاکسازی مستندات: 2026-11-24)  
 > **دامنه:** فقط `core/src/explorer/` و فقط تراکنشهای `success=true` با `MevKind::ArbAtomic` محققشده  
-> **ساختار:** دو لایه — `§0..§8` plan/gap registry و `§9..§13` audit snapshot @ `ef29f73`.  
-> **قید مهم:** تغییرات فقط در `core/src/explorer/`، `core/data/`، `core/tests/` و docs مربوطهاند؛ نه `MevKind` جدیدی اضافه شد، نه `compute_net_profit`/basis `R`/thresholdهای causal تغییر کرد و نه event دومی ایجاد شد. هشهای real و ورودیهای I-1..I-3 هنوز تأمین نشدهاند.
+> **ساختار:** دو لایه — `§0..§8` plan/gap registry (وضعیت جاری) و `§9..§13` audit snapshot @ `ef29f73` (صرفاً historical؛ منعکسکنندهٔ وضعیت فعلی نیست).  
+> **قید مهم:** تغییرات فقط در `core/src/explorer/`، `core/data/`، `core/tests/` و docs مربوطهاند؛ نه `MevKind` جدیدی اضافه شد، نه `compute_net_profit`/basis `R`/thresholdهای causal تغییر کرد و نه event دومی ایجاد شد. ورودیهای I-1..I-3 هنوز تأمین نشدهاند؛ ۴ هش real مکانیزمی در G-05 pin شدند (۲۰۲۶-۱۱-۲۴).
 
 ---
 
@@ -16,21 +16,25 @@
 | G-02 (P1) | ✅ تمام | `arb_shape_basis="token_count"` + فیلد مستقل `pool_shape`؛ ماتریس ۴ حالته؛ مستندات همساز شد. |
 | G-03 (P0) | ✅ تمام | `details.funding_providers[]` + یک تگ بهازای هر provider؛ `funding_source` همان first entry؛ تست double-flash با جمع صحیح fee و بدون کسر مضاعف. |
 | G-04 (P0) | ✅ تمام | `explorer_tags.json` شامل `forwarded_profit` و ۸ تگ `funding:*`؛ تست `vocabulary_covers_every_emitted_arb_tag`. |
-| G-05 (P1) | مسدود | ۷ ردیف Hunt نیاز به RPC/archive دارند. |
-| G-06 (P1) | ✅ تست گیتد اضافه شد | ۴ هش §3 بهعنوان literal در `core/tests/explorer_corpus.rs` pin شدند (`pinned_real_arb_hashes_reproduce_route_meta_and_pnl`)؛ اجرا منوط به `MEV_SCOUT_E2E=1 RPC_URL=...` با endpoint آرشیو است و تاکنون اجرا نشدهاست. |
+| G-05 (P1) | ✅ تمام (هانت live) | ۴ ردیف Seeded با هش 64-hex و ۳ ردیف با نتیجهٔ منفی صریح (۰ hit در پنجرهٔ 95681722..=95682322، ۱۱۱۷ arb اسکنشده). تست گیتد `g05_seeded_mechanism_hashes_carry_expected_tags` تگها را بازتأیید میکند. |
+| G-06 (P1) | ✅ تمام (تست گیتد + اجرای live ثبتشده) | ۴ هش §3 بهعنوان literal در `core/tests/explorer_corpus.rs` pin شدند (`pinned_real_arb_hashes_reproduce_route_meta_and_pnl`)؛ اجرا منوط به `MEV_SCOUT_E2E=1 RPC_URL=...` با endpoint آرشیو است. طبق بهروزرسانی §G-06 با RPC آرشیو Dwellir اجرا و ۴ ردیف بازتولید شد؛ مقادیر hop بهروزرسانی‌شده (۳→۲ و ۴→۳) در جدول §3 و fixture منعکساند. |
 | G-07 (P2) | ✅ تمام | `details.profit_cause` صرفاً metadata؛ صفر تغییر در `net_profit_usd`. |
 | G-08 (P2) | ✅ تمام | تست موجود `other_residuals_usd_is_audited_but_not_summed` سیاست را پوشش میدهد. |
-| G-09 (P2) | ✅ تمام | negative fixture `unrelated_transfer_is_not_a_forwarded_payee`؛ TP موجود حفظ شد. |
+| G-09 (P2) | ✅ تمام (با ریسک باقیمانده) | negative fixture `unrelated_transfer_is_not_a_forwarded_payee`؛ TP موجود حفظ شد. gate اختیاری «payee must be contract or known router» اضافه نشد، چون مسیر logs-only قادر به تشخیص contract از EOA نیست؛ فقط transferهای funder-fed پذیرفته میشوند. |
 | G-10 (P2) | ✅ تمام | `details.rejected_routes` + assert در تست دوچرخه، بدون double P&L. |
 | G-11 (P3) | عمداً خارج | تا زمانی که مدل/اجرای end-to-end وجود ندارد detector اضافه نمیشود. |
 | G-12 / G-13 / G-15 (P3) | ✅ تمام | WP-D: G-12 flag `underlying_pools_unknown` + ۲ تست (aggregator+DEX متمایز از DEX-only)؛ G-13 یادداشت محدودیت native inflow در `docs/ARCHITECTURE.md` + ۱ negative test در `profit.rs`؛ G-15 جدول تثبیت `explorer tag ↔ live scope tag ↔ disposition` در §3.3.1 با ثبت کامل `NA_TAGS`. |
-| G-14 (P1) | مسدود | پنجرهٔ holdout مستقل + RPC لازم است. |
+| G-14 (P1) | ✅ تمام (holdout مستقل) | پنجرهٔ `101221000..=101221702` (۷۰۳ بلوک، ۲۰۲۶-۱۱-۲۴) ایندکس و با فید mevlive مقایسه شد: **۵۶/۵۹ (۹۴.۹٪)** recall، ۳ miss (همه بلاکها ایندکس و swapها دکد شدهاند)، خطای median ۰.۳۹٪. ردیف جدایی در `docs/benchmarks/mevlive_avax_arb_recall_2026-11-09.md` ثبت شد. |
+| ضمیمه D ( guards ) | ✅ تمام | ۳ تست non-emission در `explorer/scenarios.rs`: `unsupported_axis_tags_are_never_emitted_by_arb_classifier` (AR-19/AR-26/G-15)، `docs_only_mechanisms_never_emit_a_tag` (AR-20/22/23/27/28/29)، `venue_and_funding_only_facts_do_not_claim_mechanisms` (AR-24/AR-25). |
 
 **ورودیهای مسدودکننده:** I-1 (۲۱ شناسهٔ AR)، I-2 (۷ شناسهٔ FUND)، I-3 (متن ۶ سؤال).  
-**تأیید:** `cargo test --workspace --quiet` ← exit 0 (۶۹۳ تست passed، ۲ ignored در lib؛ تمام integration suites سبز).  
-**کامیت:** این بهروزرسانی همراه با کد/تستها در یک کامیت ثبت شد.  
-**بازتأیید ۲۰۲۶-۱۱-۲۳:** ادامهٔ اجرای plan از نقطهٔ توقف — `cargo test --workspace --quiet` ← exit 0 (۶۹۳ passed / ۲ ignored)؛ کد و تستهای G-02..G-10 و `explorer_tags.json` در درخت موجود تأیید شد. بررسی کاشهای محلی (`cache/*.sqlite`) نشان داد هیچ‌یک از ۴ هش pin (بلاک‌های ۱۰۰.۵M) و هیچ تگ Hunt در کاش نیست؛ بنابراین G-05، اجرای live G-06 و G-14 همچنان به RPC آرشیو (AVAX) محدود است و G-01 به enrichment `pool_dex` (فایل `jobs/index.rs` خارج از دامنهٔ فاز) محدود است.
+**تأیید:** `cargo test --workspace --quiet` ← exit 0 (۶۹۸ تست passed، ۲ ignored در lib؛ تمام integration suites سبز).  
+**کامیتها:** `238ff35` (G-02..G-10)، `73fbd62` (G-06)، `cda3ea0` (WP-D) — پیادهسازیها در سه کامیت جداگانه ثبت شدند، نه یک کامیت.  
+**بازتأیید ۲۰۲۶-۱۱-۲۳:** کد و تستهای G-02..G-10 و `explorer_tags.json` در درخت موجود تأیید شد. بررسی کاشهای محلی (`cache/*.sqlite`) نشان داد هیچ‌یک از ۴ هش pin (بلاک‌های ۱۰۰.۵M) و هیچ تگ Hunt در کاش نیست؛ بنابراین G-05 و G-14 به RPC/archive محدوداند (اجرای live G-06 طبق بهروزرسانی §G-06 با RPC آرشیو Dwellir ثبت شدهاست) و G-01 به enrichment `pool_dex` (فایل `jobs/index.rs` خارج از دامنهٔ فاز) محدود است.
 **بازتأیید WP-D ۲۰۲۶-۱۱-۲۳:** G-12/G-13/G-15 پیاده و تست‌شده — `cargo test --workspace --quiet` ← exit 0؛ `underlying_pools_unknown` (G-12) در `classify/arb.rs`، یادداشت محدودیت + negative test (G-13) در `docs/ARCHITECTURE.md`/`explorer/profit.rs`، و جدول تثبیت scope/disposition + ثبت کامل `NA_TAGS` (G-15) در `docs/atomic_capital_free_arb_plan.md` §3.3.1.
+**بازتأیید ۲۰۲۶-۱۱-۲۴ (پاکسازی):** کامنتهای TEMP در `explorer_corpus.rs` پاکسازی شدند؛ ۳ guard test ضمیمهٔ D در `explorer/scenarios.rs` اضافه شدند؛ شمارش تست به ۶۹۸ passed / ۲ ignored بهروزرسانی شد؛ تضادهای متنی G-06 و کامیت و DoD همساز شدند.
+**بازتأیید G-05 ۲۰۲۶-۱۱-۲۴ (RPC آرشیو Dwellir):** هانت ۶۰۰بلوکه اجرا و ۴ seed.real پیدا شد؛ ۳ ردیف باقیمانده نتیجهٔ منفی صریح گرفتند (جزئیات §G-05). تست گیتد ۴/۴ تأیید شد.
+**بازتأیید G-14 ۲۰۲۶-۱۱-۲۴ (RPC آرشیو Dwellir):** پنجرهٔ holdout مستقل ۷۰۳بلوکه ایندکس و با فید mevlive مقایسه شد؛ ۵۶/۵۹ recall (۹۴.۹٪) — ردیف جداگانه در benchmark اضافه شد (جزئیات §G-14).
 
 ---
 
@@ -99,6 +103,10 @@
 - **پیشنهاد:** برای هر ردیف یک هش 64-hex موفق pin شود؛ در صورت عدم یافتن، همان نتیجهٔ منفی صریحاً ثبت شود، نه fixture سنتتیک بهعنوان واقعی.
 - **فایلها:** `core/src/explorer/scenario_targets.rs`، `core/tests/explorer_corpus.rs`، `docs/explorer_strategy_checklist.md`.
 - **معیار پذیرش:** هر ردیف یا `Seeded` با block/hash میشود یا یادداشت «hunt performed, 0 hits in window X» دارد.
+- **اجرای 2026-11-24 (RPC آرشیو Dwellir):** هانت `g05_hunt_dump_avax` در پنجرهٔ `95681722..=95682322` (۶۰۰ بلوک، ۱۱۱۷ arb_atomic) اجرا شد. فراوانی تگها: `long_tail` ۹۷۳، `forwarded_profit` ۳۷۰، `flash_arb` ۴۵، `curve_imbalance` ۱۰، `rate_provider_staleness` ۲، `savax_rate_arb` ۱.
+  - **Seeded (4):** `P0.4` ← blk 95681751 / `0x306e1885…` (`flash_arb`)؛ `P3.5` ← blk 95681823 / `0xc1532675…` (`curve_imbalance`)؛ `P3.2` ← blk 95682026 / `0x7e3d68f8…` (`rate_provider_staleness`)؛ `P3.16` ← blk 95682059 / `0xb77e1291…` (`savax_rate_arb`, Exact).
+  - **منفی صریح (3):** `P3.7 gmx_adl_arb`، `P3.12 fot_arb|rebase_arb`، `P3.15 epoch_transition` — هر سه ۰ hit در همان پنجره.
+  - شواهد در `scenario_targets.rs` (فیلد `hunt`)، `docs/explorer_strategy_checklist.md` و تست گیتد `g05_seeded_mechanism_hashes_carry_expected_tags` (`explorer_corpus.rs`) ثبت شدند. این تست گیتد با همان RPC آرشیو Dwellir اجرا و ۴/۴ تگ تأیید شد (blk 95681751/95681823/95682026/95682059).
 
 ### G-06 — golden.real قابل اجرا (P1)
 
@@ -157,6 +165,7 @@
 - **گپ:** 47/47 در `mevlive_avax_arb_recall_2026-11-09.md:3,67` یک derivation window است، not independent holdout.
 - **پیشنهاد:** freeze کردن پنجرهٔ مستقل دوم با همان oracle و ثبت recall جداگانه.
 - **معیار پذیرش:** دو ردیف metric با label متفاوت در همان report.
+- **اجرای 2026-11-24 (RPC آرشیو Dwellir):** پنجرهٔ مستقل `101221000..=101221702` (۷۰۳ بلوک، فید mevlive `2026-11-24T03:05:37Z..03:16:04Z`) ایندکس و مقایسه شد. نتایج: ۵۹ arb از mevlive، ۱۰۱ `arb_atomic` از ما، ۵۶ مطابق (**۹۴.۹٪**)، ۳ miss، ۴۵ our-only. خطای median PnL ۰.۳۹٪ و p90 ۰.۷۱٪؛ مجموع gross مطابقها `$2.6986` در برابر `$2.7063`. سه miss همگی در بلاکهای ایندکسشده با swap دکدشدهاند (گپ classifier، نه RPC). یک عدمتطابق توکن سود (`0xc0ae5e…`) با توافق USD ۰.۳٪. جزئیات و جدول dual-row در `docs/benchmarks/mevlive_avax_arb_recall_2026-11-09.md` §Fresh holdout؛ آرتیفاکتها `results/mevlive_avax_holdout_2026-11-24.json`، `results/compare_g14_holdout.json` و `results/index_g14_holdout.log` (محلی، git-ignored).
 
 ### G-15 — تگ forensic/scope (P3 — تثبیت تصمیم)
 
@@ -256,13 +265,14 @@ cargo test -p mev-scout-core --test live_tag_parity
 
 - [ ] I-1..I-3 دریافت و سلولهای ID نهایی شدند.
 - [ ] جدول 29+7 با Evidence Level و Verdict کامل است.
-- [ ] تمام ۷ ردیف Hunt یا Seeded شدند یا نتیجهٔ منفی صریح ثبت شد.
-- [x] ۴ هش کامل section 3 در تست گیتد pin شدند (اجرای live منوط به RPC آرشیو باقی است).
-- [ ] `explorer_tags.json` با تگهای emitشده همساز است.
-- [ ] `funding_providers[]` و `profit_cause` بدون تغییر net اضافه شدند (در صورت تصویب).
-- [ ] جلسهٔ تصمیم shape (توکنمحور یا استخرمحور) تشکیل و مستند شد.
-- [ ] holdout مستقل از derivation window ثبت شد.
-- [ ] `cargo test --workspace --quiet` سبز.
+- [x] تمام ۷ ردیف Hunt یا Seeded شدند یا نتیجهٔ منفی صریح ثبت شد (۴ seed + ۳ negative؛ هانت ۲۰۲۶-۱۱-۲۴).
+- [x] ۴ هش کامل section 3 در تست گیتد pin شدند (اجرای live طبق بهروزرسانی §G-06 با RPC آرشیو ثبت شد).
+- [x] `explorer_tags.json` با تگهای emitشده همساز است (`vocabulary_covers_every_emitted_arb_tag`).
+- [x] `funding_providers[]` و `profit_cause` بدون تغییر net اضافه شدند.
+- [x] تصمیم shape (توکنمحور + فیلد مستقل استخرمحور) در کد و `docs/mev_strategies.md` مستند شد.
+- [x] holdout مستقل از derivation window ثبت شد (G-14 — پنجرهٔ ۲۰۲۶-۱۱-۲۴، ۵۶/۵۹ = ۹۴.۹٪).
+- [x] `cargo test --workspace --quiet` سبز (۶۹۸ passed / ۲ ignored در lib).
+- [x] guard testهای non-emission ضمیمهٔ D برای دستههای Unsupported اضافه شدند.
 
 > **یادداشت 2026-11-23:** ضمایم A–E اضافه شدند. آیتمهای اجرایی بالا بدون تغییر باقی ماندند و تیک نخوردند.
 
@@ -275,6 +285,8 @@ cargo test -p mev-scout-core --test live_tag_parity
 ---
 
 ## 9. ضمیمه A — ماتریس پوشش نهایی (Audit Snapshot)
+
+> **تذکر historical:** ضمایم ۹–۱۳ وضعیت کامیت `ef29f73` را ثبت میکنند. برخی یادداشتهای آنها (مثلاً نبود `funding_providers[]`، نبود `pool_shape` یا غیاب تگها در vocabulary) اکنون منسوخاند؛ مرجع وضعیت جاری §§0–8 و خلاصهٔ اجرای بالاست.
 
 Evidence scope: `MevKind::ArbAtomic`, successful realized transactions only, at commit `ef29f73`. No code was changed.
 
@@ -426,6 +438,8 @@ All other hashes found in docs with `…` are truncated and must not be presente
 | AR-29 | Out-of-scope guard: statistical/pairs/NFT-floor references cannot produce ArbAtomic without closed DEX cycle | No real sample found |
 | FUND-01..07 | Per-provider decoder golden, funding tag, canonical `funding_source`, fee netting, multi-provider array, and first-provider backward compatibility | No real successful ArbAtomic hash found per provider; only out-of-scope Aave V3 liquidation context above |
 
+**وضعیت اجرای تستپلن (۲۰۲۶-۱۱-۲۴):** موارد AR-06 و AR-18 توسط تستهای موجود (`multiple_flash_providers_are_all_persisted_and_tagged`, `realized_arb_carries_canonical_provenance_in_details`) پوشش داده شدند. guard testهای غیاب emission برای AR-19، AR-20، AR-22، AR-23، AR-24، AR-25، AR-26، AR-27، AR-28، AR-29 در `core/src/explorer/scenarios.rs` اضافه شدند (`unsupported_axis_tags_are_never_emitted_by_arb_classifier`, `docs_only_mechanisms_never_emit_a_tag`, `venue_and_funding_only_facts_do_not_claim_mechanisms`). سایر ردیفها منوط به seed.real/RPCاند.
+
 ---
 
 ## 13. ضمیمه E — خلاصه ۶ سؤاله مدیریتی
@@ -461,4 +475,4 @@ All other hashes found in docs with `…` are truncated and must not be presente
 
 ---
 
-**پایان سند.** لایهٔ plan و ضمایم audit هر دو مستند شدند؛ هیچ کد، تست، کامیت یا PRی ایجاد نشده است. منتظر ورودیهای I-1..I-3 و تصمیم اجرای WPها هستیم.
+**پایان سند.** ضمایم A–E عکس وضعیت در کامیت `ef29f73`اند و وضعیت جاری را منعکس نمیکنند (بخش باقیماندهٔ I-1..I-3 و G-01 است). لایهٔ کد WP-A/WP-C/WP-D و guard testهای ضمیمهٔ D در کامیتهای `238ff35`, `73fbd62`, `cda3ea0` پیاده و تست شدند؛ G-05 و G-14 با RPC آرشیو Dwellir در ۲۰۲۶-۱۱-۲۴ بسته شدند. `cargo test --workspace --quiet` سبز است (۶۹۸ passed / ۲ ignored در lib؛ تست گیتد G-05 جداگانه ۴/۴ اجرا شد). منتظر ورودیهای I-1..I-3 و enrichment `pool_dex` (G-01) هستیم.

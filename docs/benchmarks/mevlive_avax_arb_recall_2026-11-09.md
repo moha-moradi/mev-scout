@@ -1,6 +1,6 @@
 # Benchmark: mevlive vs mev-scout explorer (Avalanche arb recall)
 
-Frozen window for classifier recall work. **Final result: 47/47 mevlive arbs matched (2026-11-10).** Revisit when arb detection improves.
+Frozen window for classifier recall work. **Derivation window: 47/47 mevlive arbs matched (2026-11-10).** An independent holdout (2026-11-24) later measured **56/59 (94.9%)** — see §Fresh holdout; do not quote 100% outside the derivation window. Revisit when arb detection improves.
 
 ## Scope
 
@@ -68,6 +68,70 @@ large gross deltas are not large net deltas.
 
 This is the frozen window used to derive the fixes; 47/47 is a recall floor, not
 independent validation. Re-run on a fresh holdout window before generalizing.
+
+## Fresh holdout (2026-11-24) — independent window
+
+The caveat above is now answered with a second, independently frozen window
+(~2 weeks later, different chain state). The vendor
+feed was fetched from the mevlive API used by the deployed bundle
+(`https://gateway.biglabs.eu/api/avalanche/arbitrages`), not from the stored
+derivation snapshot, and the comparison was written after indexing completed.
+
+| Field | Value |
+|---|---|
+| Chain | Avalanche C-Chain (`43114`) |
+| Block range (inclusive) | `101221000` .. `101221702` (703 blocks) |
+| mevlive `time` span | `2026-11-24T03:05:37Z` .. `2026-11-24T03:16:04Z` |
+| mevlive source | `GET /api/avalanche/arbitrages?sortBy=-created_at&per_page=100&page=1..2`, deduplicated by hash |
+| Our index command | `explorer index --from-block 101221000 --to-block 101221702` (Dwellir archive RPC, config via env key) |
+| Artifacts | `results/mevlive_avax_holdout_2026-11-24.json`, `results/compare_g14_holdout.json`, `results/index_g14_holdout.log` (local, gitignored) |
+
+### Holdout result
+
+| Metric | Derivation (2026-11-09) | Holdout (2026-11-24) |
+|---|---:|---:|
+| mevlive arbitrages | 47 | **59** |
+| Blocks indexed | 3347 / 3347 | **703 / 703** |
+| Our `arb_atomic` | 108 | **101** |
+| Hash overlap (matched) | 47 / 47 (100%) | **56 / 59 (94.9%)** |
+| mevlive missed by us | 0 | **3** |
+| Our-only arbs | 61 | **45** |
+| Profit-token match (matched) | 47 / 47 | **55 / 56** |
+| Priced matches | 46 | **56 / 56** |
+| Median relative PnL error | 0.40% | **0.39%** |
+| p90 relative PnL error | 1.04% | **0.71%** |
+| Matched gross (ours vs mevlive) | $0.5963 vs $0.5432 | **$2.6986 vs $2.7063** |
+
+**Conclusion:** 47/47 on the derivation window does **not** generalize; the
+independent holdout recall is 56/59 (94.9%). PnL accuracy does generalize —
+median error 0.39% and matched totals within 0.3% — so the earlier claim of
+good profit accuracy survives, but the 100% recall claim must not be quoted
+outside the derivation window.
+
+### The 3 holdout misses
+
+| block | mevlive usdProfit | tx_hash | indexed | decoded swaps |
+|---|---:|---|---|---|
+| 101221006 | 0.021502 | `0x8e14349219640d8c6db221a4c7b5df9bdd0a5769effcf1fed6ff8b77812e5b84` | yes | 14 |
+| 101221027 | 0.118432 | `0xddf9bda6fa33f217395c3a29344faa81627f375a7c89b5a7f6dfd1f07c05737b` | yes | 4 |
+| 101221138 | 0.020398 | `0xdfb612dd2adb8a0887da6399481b1b6c91930713829ddff572aa966434835a8a` | yes | 3 |
+
+All three blocks were classified and all three txs have decoded swaps and
+transfers in the local store, so these are classifier/definition gaps, not RPC
+or ingestion gaps. They remain open for a future root-cause pass; this row is a
+holdout measurement, not a new fix.
+
+### Holdout caveats
+
+- One profit-token mismatch among the 56 matches: `0xc0ae5e…` is attributed to
+  AVAX by us and USDC by mevlive, while the USD figures agree within 0.3% — a
+  token-attribution difference, not a PnL discrepancy.
+- The 45 our-only arbs total **$71.77** gross but three rows dominate
+  (`0xa168d83a…` $28.86, `0x44c0c9f5…` $26.26, `0xd5d36d13…` $14.19). They are
+  not independently adjudicated; the first two carry `rate_provider_staleness`.
+- The explorer run used the same 14-token-pair registry as the rest of this
+  work (0 V2-like pools, 0 epoch venues), so venue/skim tags are not exercised
+  here. Arb detection itself is log-driven and does not depend on that cache.
 
 ## Re-validation after A3 step 1 + P6 (2026-11-15)
 
