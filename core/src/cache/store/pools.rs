@@ -77,6 +77,44 @@ impl super::SqliteStore {
         Ok(pools)
     }
 
+    /// Pool → DEX identity from the dashboard's DexScreener cache.
+    ///
+    /// `pool_dex` is created by the dashboard enrich pass, not by the scanner
+    /// schema, so an absent table is a normal "no labels cached yet" state.
+    /// The stable `dex_id` is preferred over the display `dex_name` because
+    /// these labels feed cross-DEX classification, not the UI.
+    pub fn list_pool_dex_names(&self) -> anyhow::Result<Vec<(Address, String)>> {
+        let conn = self.conn();
+        let mut stmt = match conn.prepare("SELECT pool, dex_id, dex_name FROM pool_dex") {
+            Ok(stmt) => stmt,
+            Err(e) => {
+                tracing::debug!("pool_dex labels unavailable: {e}");
+                return Ok(Vec::new());
+            }
+        };
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, Vec<u8>>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows.flatten() {
+            let (pool, dex_id, dex_name) = row;
+            if pool.len() != 20 {
+                continue;
+            }
+            let name = if dex_id.trim().is_empty() {
+                dex_name
+            } else {
+                dex_id
+            };
+            out.push((super::SqliteStore::blob_to_addr(&pool), name));
+        }
+        Ok(out)
+    }
+
     /// Earliest `creation_block` seen per pool factory — the "first-observed-block
     /// cache" used by the panel-discovery start-block guard. Remote-sourced pools
     /// carry `creation_block == 0`, so those are
@@ -291,5 +329,59 @@ mod tests {
             .expect("row exists");
         assert_eq!(got.derivation_version, None);
         assert_eq!(got.dex_type, DexType::Unknown);
+    }
+
+    /// G-01: the dashboard label cache is an optional second identity source.
+    /// It must degrade to an empty list before the enrich pass creates it and
+    /// return the stable `dex_id` (not the display name) once present.
+    #[test]
+    fn pool_dex_names_are_optional_and_use_stable_id() {
+        let store = SqliteStore::open(":memory:").unwrap();
+        assert!(store.list_pool_dex_names().unwrap().is_empty());
+
+        // The same connection used by the store creates the optional table.
+        {
+            let conn = store.conn();
+            conn.execute_batch(
+                "CREATE TABLE pool_dex (
+                     pool BLOB PRIMARY KEY,
+                     dex_id TEXT NOT NULL,
+                     dex_name TEXT NOT NULL,
+                     label TEXT,
+                     url TEXT,
+                     fetched_at INTEGER NOT NULL
+                 );",
+            )
+            .unwrap();
+            let addr = Address::repeat_byte(0x77);
+            conn.execute(
+                "INSERT INTO pool_dex(pool, dex_id, dex_name, fetched_at) VALUES (?1, ?2, ?3, 0)",
+                rusqlite::params![addr.as_slice().to_vec(), "traderjoe", "Trader Joe"],
+            )
+            .unwrap();
+            let addr2 = Address::repeat_byte(0x88);
+            conn.execute(
+                "INSERT INTO pool_dex(pool, dex_id, dex_name, fetched_at) VALUES (?1, ?2, ?3, 0)",
+                rusqlite::params![addr2.as_slice().to_vec(), "", "Pangolin"],
+            )
+            .unwrap();
+        }
+        let labels = store.list_pool_dex_names().unwrap();
+        assert_eq!(labels.len(), 2);
+        assert_eq!(
+            labels
+                .iter()
+                .find(|(a, _)| *a == Address::repeat_byte(0x77))
+                .map(|(_, n)| n.as_str()),
+            Some("traderjoe")
+        );
+        assert_eq!(
+            labels
+                .iter()
+                .find(|(a, _)| *a == Address::repeat_byte(0x88))
+                .map(|(_, n)| n.as_str()),
+            Some("Pangolin"),
+            "empty dex_id falls back to the display name"
+        );
     }
 }

@@ -1077,8 +1077,9 @@ fn assert_real_arb_golden(store: &ExplorerStore, case: &RealArbGolden) {
         assert_eq!(op.confidence, want, "{}: confidence mismatch", case.id);
     }
 
-    let details: serde_json::Value = serde_json::from_str(op.details_json.as_deref().unwrap_or("{}"))
-        .unwrap_or_else(|e| panic!("{}: details_json parse failed: {e}", case.id));
+    let details: serde_json::Value =
+        serde_json::from_str(op.details_json.as_deref().unwrap_or("{}"))
+            .unwrap_or_else(|e| panic!("{}: details_json parse failed: {e}", case.id));
     let meta = &details["arb_meta"];
     assert_eq!(
         meta["arb_shape"].as_str(),
@@ -1250,6 +1251,95 @@ async fn pinned_real_arb_hashes_reproduce_route_meta_and_pnl() -> anyhow::Result
         // Full route/meta/PnL assertion for each pinned golden block (live RPC).
         assert_real_arb_golden(&store, case);
     }
+    Ok(())
+}
+
+/// G-01 acceptance: a real AVAX arb whose pools are named by the dashboard
+/// label cache must report protocol-level cross-DEX identity, not the legacy
+/// AMM-family fallback. The three legs are two V2 forks plus one V3 pool, so
+/// `dex_count` must be 3 even though `amm_family_count` is 2.
+#[tokio::test]
+#[ignore = "live RPC — set MEV_SCOUT_E2E=1 and RPC_URL (archive for AVAX 101.2M)"]
+async fn g01_real_arb_uses_protocol_identity_from_pool_labels() -> anyhow::Result<()> {
+    let Some(rpc_url) = live_rpc_url()? else {
+        eprintln!("Skipping: MEV_SCOUT_E2E/RPC_URL not set");
+        return Ok(());
+    };
+    const BLOCK: u64 = 101_221_003;
+    const TX: &str = "0x843995837743a89ea3390f536b472ecd9adfb41547c95e169eb8aa98c68b82bf";
+
+    let chain = ChainName::Avalanche;
+    let config = corpus_config(chain, &rpc_url);
+    let setup = init_rpc(&config, chain, true).await?;
+    let tip = setup.rpc.get_block_number().await?;
+    anyhow::ensure!(
+        tip >= BLOCK,
+        "RPC tip {tip} is below pinned G-01 block {BLOCK}; an archive endpoint is required"
+    );
+    let (_, chain_cfg) = resolve_chain(&config)?;
+    let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);
+    cfg.confirmations = config.explorer.confirmations;
+    let registry = load_pool_registry(&config, &chain);
+    for (pool, expected) in [
+        (
+            address!("42152bdd72de8d6767fe3b4e17a221d6985e8b25"),
+            "pangolin",
+        ),
+        (
+            address!("78e5e1dbb5f663b21af2b6969e1be2892a91297d"),
+            "traderjoe",
+        ),
+        (
+            address!("fae3f424a0a47706811521e3ee268f00cfb5c45e"),
+            "uniswap",
+        ),
+    ] {
+        assert_eq!(
+            registry.dex_name.get(&pool).map(String::as_str),
+            Some(expected),
+            "G-01 requires pool identity from discovery or the label cache"
+        );
+    }
+    let store = ExplorerStore::open_in_memory()?;
+    run_range(
+        &setup.rpc,
+        &store,
+        &cfg,
+        PoolViews {
+            tokens: &registry.tokens,
+            v2_like: &registry.v2_like,
+            epoch_venue: &registry.epoch_venue,
+            fee_bps: &registry.fee_bps,
+            dex_name: &registry.dex_name,
+        },
+        RangeRequest {
+            from_block: BLOCK,
+            to_block: BLOCK,
+            block_concurrency: 1,
+        },
+        &NoopProgress,
+    )
+    .await?;
+
+    let mut ops = store.ops_for_tx(TX)?;
+    ops.retain(|o| o.kind == "arb_atomic");
+    let op = ops
+        .first()
+        .unwrap_or_else(|| panic!("G-01: no arb_atomic op for {TX}"));
+    let details: serde_json::Value =
+        serde_json::from_str(op.details_json.as_deref().unwrap_or("{}"))?;
+    let meta = &details["arb_meta"];
+    assert_eq!(meta["cross_dex_basis"], "protocol");
+    assert_eq!(meta["is_cross_dex"], true);
+    assert_eq!(meta["dex_count"], 3);
+    assert_eq!(meta["amm_family_count"], 2);
+    let venues: Vec<&str> = meta["venues"]
+        .as_array()
+        .unwrap_or_else(|| panic!("G-01: protocol basis without venues"))
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(venues, ["pangolin", "traderjoe", "uniswap"]);
     Ok(())
 }
 

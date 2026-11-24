@@ -30,6 +30,9 @@ pub struct RegistryHealth {
     /// skim-ineligible (see [`is_skim_eligible`]) but show metadata that never
     /// resolved.
     pub unverified_v2_like: usize,
+    /// Pool identities filled from the dashboard's DexScreener cache when
+    /// on-chain discovery left `dex_name` empty (G-01).
+    pub dex_labels_from_cache: usize,
 }
 
 /// Pool → (token0, token1) plus skim-eligible V2-like and epoch-venue sets.
@@ -89,6 +92,30 @@ fn rederived_dex_type(pool: &PoolInfo) -> Option<DexType> {
     infer_dex_type_strict(Some(name), &[])
 }
 
+/// G-01: fill venue identities missing from on-chain discovery using the
+/// dashboard's DexScreener cache. Discovery rows stay authoritative: an
+/// external label only fills a pool with no name at all, so a cached label can
+/// never overwrite a factory-derived venue. Labels are normalized to stable
+/// lowercase IDs so a display name ("Trader Joe") cannot split one protocol
+/// from a discovery row ("traderjoe").
+fn merge_cached_dex_names(
+    dex_name: &mut HashMap<Address, String>,
+    labels: impl IntoIterator<Item = (Address, String)>,
+) -> usize {
+    let mut added = 0;
+    for (address, label) in labels {
+        let label = label.trim().replace(['_', '-'], "").to_ascii_lowercase();
+        if label.is_empty() {
+            continue;
+        }
+        if let std::collections::hash_map::Entry::Vacant(entry) = dex_name.entry(address) {
+            entry.insert(label);
+            added += 1;
+        }
+    }
+    added
+}
+
 /// Load the pool → (token0, token1) registry and V2-like skim set from the
 /// scanner cache. Best-effort: an absent/locked cache yields empty
 /// maps and ingest degrades to transfer-pairing resolution (no skim).
@@ -107,68 +134,79 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
     // Bounded sample of rows whose skim-eligibility class would change.
     let mut stale: Vec<(Address, DexType, DexType)> = Vec::new();
     match SqliteStore::open(config.effective_db_path(chain)) {
-        Ok(cache) => match cache.list_discovered_pools() {
-            Ok(pools) => {
-                for mut p in pools {
-                    if p.token0.is_zero() || p.token1.is_zero() {
-                        continue;
-                    }
-                    // Rows derived under current rules were already checked.
-                    if p.derivation_version != Some(POOL_DERIVATION_VERSION) {
-                        if let Some(derived) = rederived_dex_type(&p) {
-                            if derived != p.dex_type {
-                                health.stale_derivations += 1;
-                                // Only act when the change removes skim
-                                // exposure. Family-only drift is noise, and
-                                // inferring V2 for a CL/LB row (e.g. a bare
-                                // generic "pharaoh" name on a V3 pool) must
-                                // never make skim more likely.
-                                match (is_v2_like(p.dex_type), is_v2_like(derived)) {
-                                    (true, false) => {
-                                        if stale.len() < 3 {
-                                            stale.push((p.address, p.dex_type, derived));
+        Ok(cache) => {
+            match cache.list_discovered_pools() {
+                Ok(pools) => {
+                    for mut p in pools {
+                        if p.token0.is_zero() || p.token1.is_zero() {
+                            continue;
+                        }
+                        // Rows derived under current rules were already checked.
+                        if p.derivation_version != Some(POOL_DERIVATION_VERSION) {
+                            if let Some(derived) = rederived_dex_type(&p) {
+                                if derived != p.dex_type {
+                                    health.stale_derivations += 1;
+                                    // Only act when the change removes skim
+                                    // exposure. Family-only drift is noise, and
+                                    // inferring V2 for a CL/LB row (e.g. a bare
+                                    // generic "pharaoh" name on a V3 pool) must
+                                    // never make skim more likely.
+                                    match (is_v2_like(p.dex_type), is_v2_like(derived)) {
+                                        (true, false) => {
+                                            if stale.len() < 3 {
+                                                stale.push((p.address, p.dex_type, derived));
+                                            }
+                                            p.dex_type = derived;
+                                            p.derivation_version = Some(POOL_DERIVATION_VERSION);
+                                            match cache.put_discovered_pool(&p) {
+                                                Ok(()) => health.repaired += 1,
+                                                Err(e) => tracing::warn!(
+                                                    pool = %p.address,
+                                                    "failed to persist repaired pool derivation: {e}"
+                                                ),
+                                            }
                                         }
-                                        p.dex_type = derived;
-                                        p.derivation_version = Some(POOL_DERIVATION_VERSION);
-                                        match cache.put_discovered_pool(&p) {
-                                            Ok(()) => health.repaired += 1,
-                                            Err(e) => tracing::warn!(
-                                                pool = %p.address,
-                                                "failed to persist repaired pool derivation: {e}"
-                                            ),
-                                        }
+                                        (false, true) => health.downgrades_refused += 1,
+                                        _ => {}
                                     }
-                                    (false, true) => health.downgrades_refused += 1,
-                                    _ => {}
                                 }
                             }
                         }
-                    }
-                    tokens.insert(p.address, (p.token0, p.token1));
-                    if let Some(name) = p
-                        .dex_name
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|n| !n.is_empty())
-                    {
-                        dex_name.insert(p.address, name.to_ascii_lowercase());
-                    }
-                    if is_skim_eligible(&p) {
-                        v2_like.insert(p.address);
-                    }
-                    if let Some(bps) = jit_fee_bps(p.dex_type, p.fee) {
-                        fee_bps.insert(p.address, bps);
-                    }
-                    if p.factory.is_some_and(is_epoch_venue_factory) {
-                        epoch_venue.insert(p.address);
-                    }
-                    if is_v2_like(p.dex_type) && p.factory.is_none() {
-                        health.unverified_v2_like += 1;
+                        tokens.insert(p.address, (p.token0, p.token1));
+                        if let Some(name) = p
+                            .dex_name
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|n| !n.is_empty())
+                        {
+                            dex_name.insert(p.address, name.to_ascii_lowercase());
+                        }
+                        if is_skim_eligible(&p) {
+                            v2_like.insert(p.address);
+                        }
+                        if let Some(bps) = jit_fee_bps(p.dex_type, p.fee) {
+                            fee_bps.insert(p.address, bps);
+                        }
+                        if p.factory.is_some_and(is_epoch_venue_factory) {
+                            epoch_venue.insert(p.address);
+                        }
+                        if is_v2_like(p.dex_type) && p.factory.is_none() {
+                            health.unverified_v2_like += 1;
+                        }
                     }
                 }
+                Err(e) => tracing::warn!("pool registry load failed: {e}"),
             }
-            Err(e) => tracing::warn!("pool registry load failed: {e}"),
-        },
+            // G-01: discovery alone leaves most historical swap pools unnamed.
+            // The dashboard label cache supplies the missing protocol identity
+            // without ever overwriting a factory-derived name.
+            match cache.list_pool_dex_names() {
+                Ok(labels) => {
+                    health.dex_labels_from_cache = merge_cached_dex_names(&mut dex_name, labels);
+                }
+                Err(e) => tracing::warn!("pool_dex label load failed: {e}"),
+            }
+        }
         Err(e) => tracing::warn!("pool registry open failed: {e}"),
     }
     if health.repaired > 0 {
@@ -205,6 +243,12 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
             version = POOL_DERIVATION_VERSION,
             unverified_v2_like = health.unverified_v2_like,
             "V2-like registry rows without a verified factory (skim-ineligible)"
+        );
+    }
+    if health.dex_labels_from_cache > 0 {
+        tracing::debug!(
+            labels = health.dex_labels_from_cache,
+            "filled missing pool DEX identities from the dashboard label cache"
         );
     }
     PoolRegistry {
@@ -486,6 +530,109 @@ mod tests {
         assert_eq!(second.health.repaired, 0);
         assert_eq!(second.health.stale_derivations, 2);
         assert_eq!(second.health.downgrades_refused, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// G-01 helper contract: cached labels normalize to stable IDs and never
+    /// overwrite a name already derived from on-chain discovery.
+    #[test]
+    fn cached_dex_labels_only_fill_missing_and_normalize() {
+        let mut names = HashMap::from([(Address::repeat_byte(0x01), "uniswap".to_string())]);
+        let labels = [
+            (Address::repeat_byte(0x01), "SushiSwap".to_string()),
+            (Address::repeat_byte(0x02), " Trader-Joe ".to_string()),
+            (Address::repeat_byte(0x03), "   ".to_string()),
+        ];
+        assert_eq!(merge_cached_dex_names(&mut names, labels), 1);
+        assert_eq!(names.len(), 2);
+        assert_eq!(
+            names.get(&Address::repeat_byte(0x01)).map(String::as_str),
+            Some("uniswap"),
+            "discovery identity must win over a cached label"
+        );
+        assert_eq!(
+            names.get(&Address::repeat_byte(0x02)).map(String::as_str),
+            Some("traderjoe")
+        );
+        assert!(!names.contains_key(&Address::repeat_byte(0x03)));
+    }
+
+    /// G-01 end-to-end: a pool discovered without `dex_name` gets its venue
+    /// from the dashboard cache, so realized cross-DEX metadata can use
+    /// protocol identity instead of the AMM-family fallback.
+    #[test]
+    fn registry_fills_missing_dex_name_from_dashboard_cache() {
+        let dir = std::env::temp_dir().join(format!(
+            "mev_scout_g01_labels_{}_{}",
+            std::process::id(),
+            POOL_DERIVATION_VERSION
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("registry.sqlite");
+        let factory = Address::repeat_byte(0xf0);
+        let named = PoolInfo {
+            address: Address::repeat_byte(0x91),
+            token0: Address::repeat_byte(0x11),
+            token1: Address::repeat_byte(0x22),
+            dex_type: DexType::UniswapV2,
+            factory: Some(factory),
+            derivation_version: Some(POOL_DERIVATION_VERSION),
+            dex_name: Some(std::sync::Arc::from("uniswap")),
+            ..Default::default()
+        };
+        let unnamed = PoolInfo {
+            address: Address::repeat_byte(0x92),
+            token0: Address::repeat_byte(0x33),
+            token1: Address::repeat_byte(0x44),
+            dex_type: DexType::UniswapV2,
+            factory: Some(factory),
+            derivation_version: Some(POOL_DERIVATION_VERSION),
+            ..Default::default()
+        };
+        {
+            let store = SqliteStore::open(&db).unwrap();
+            store.put_discovered_pool(&named).unwrap();
+            store.put_discovered_pool(&unnamed).unwrap();
+        }
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE pool_dex (
+                     pool BLOB PRIMARY KEY,
+                     dex_id TEXT NOT NULL,
+                     dex_name TEXT NOT NULL,
+                     label TEXT,
+                     url TEXT,
+                     fetched_at INTEGER NOT NULL
+                 );",
+            )
+            .unwrap();
+            for (pool, id, display) in [
+                (named.address, "sushiswap", "SushiSwap"),
+                (unnamed.address, "traderjoe", "Trader Joe"),
+            ] {
+                conn.execute(
+                    "INSERT INTO pool_dex(pool, dex_id, dex_name, fetched_at) VALUES (?1, ?2, ?3, 0)",
+                    rusqlite::params![pool.as_slice().to_vec(), id, display],
+                )
+                .unwrap();
+            }
+        }
+        let mut config = Config::default();
+        config.output.db_path = db.to_string_lossy().into_owned();
+        let registry = load_pool_registry(&config, &ChainName::Avalanche);
+        assert_eq!(
+            registry.dex_name.get(&named.address).map(String::as_str),
+            Some("uniswap"),
+            "factory-derived identity must not be overwritten"
+        );
+        assert_eq!(
+            registry.dex_name.get(&unnamed.address).map(String::as_str),
+            Some("traderjoe"),
+            "G-01: dashboard cache must fill a missing discovery name"
+        );
+        assert_eq!(registry.health.dex_labels_from_cache, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

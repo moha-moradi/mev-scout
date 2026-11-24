@@ -1,10 +1,10 @@
 #plan پیشنهادی بستن گپهای ممیزی `MevKind::ArbAtomic`
 
-> **وضعیت:** لایهٔ کد WP-A (G-03، G-04)، موارد code-only P1/P2 (G-02، G-07–G-10)، WP-D (G-12/G-13/G-15) و guard testهای ضمیمهٔ D پیادهسازی شدند و `cargo test --workspace --quiet` سبز است؛ G-05/G-06/G-14 با RPC آرشیو بسته شدند. I-1..I-3 با متن اصلی تسک (۲۰۲۶-۱۱-۲۴) بسته و جدولها بازنگاشت شدند. باقیماندهٔ plan منوط به enrichment `pool_dex` (G-01) است.  
+> **وضعیت:** لایهٔ کد WP-A (G-03، G-04)، موارد code-only P1/P2 (G-02، G-07–G-10)، WP-D (G-12/G-13/G-15) و guard testهای ضمیمهٔ D پیادهسازی شدند و `cargo test --workspace --quiet` سبز است؛ G-05/G-06/G-14 با RPC آرشیو بسته شدند. I-1..I-3 با متن اصلی تسک (۲۰۲۶-۱۱-۲۴) بسته و جدولها بازنگاشت شدند؛ G-01 نیز بسته شد (تکمیل هویت DEX از discovery و کش برچسبها، با هش real). تمام آیتمهای plan بستهاند.
 > **تاریخ:** 2026-11-23 (بازتأیید، پاکسازی و بازنگاشت تاکسونومی: 2026-11-24)  
-> **دامنه:** فقط `core/src/explorer/` و فقط تراکنشهای `success=true` با `MevKind::ArbAtomic` محققشده  
+> **دامنه:** طبقهبندی Explorer و فقط تراکنشهای `success=true` با `MevKind::ArbAtomic` محققشده؛ استثنای G-01: خواندن کش `pool_dex` و اصلاح `jobs/index.rs` برای تکمیل هویت استخر (بدون تغییر `MevKind` یا P&L).
 > **ساختار:** دو لایه — `§0..§8` plan/gap registry (وضعیت جاری) و `§9..§13` audit snapshot @ `ef29f73` (صرفاً historical؛ منعکسکنندهٔ وضعیت فعلی نیست).  
-> **قید مهم:** تغییرات فقط در `core/src/explorer/`، `core/data/`، `core/tests/` و docs مربوطهاند؛ نه `MevKind` جدیدی اضافه شد، نه `compute_net_profit`/basis `R`/thresholdهای causal تغییر کرد و نه event دومی ایجاد شد. ورودیهای I-1..I-3 از متن اصلی تسک تأمین شدند (بازنگاشت docs-only، بدون ایجاد فایل جدید)؛ ۴ هش real مکانیزمی در G-05 pin شدند (۲۰۲۶-۱۱-۲۴).
+> **قید مهم:** تغییرات در `core/src/explorer/`، `core/data/`، `core/tests/` و docsاند؛ G-01 علاوه بر آن `core/src/cache/store/pools.rs` و `core/src/jobs/index.rs` را نیز لمس میکند (فقط خواندن کش label و تکمیل نقشهٔ هویت). نه `MevKind` جدیدی اضافه شد، نه `compute_net_profit`/basis `R`/thresholdهای causal تغییر کرد و نه event دومی ایجاد شد. ورودیهای I-1..I-3 از متن اصلی تسک تأمین شدند (بازنگاشت docs-only، بدون ایجاد فایل جدید)؛ ۴ هش real مکانیزمی در G-05 pin شدند (۲۰۲۶-۱۱-۲۴).
 
 ---
 
@@ -12,7 +12,7 @@
 
 | گپ | وضعیت | شواهد / یادداشت |
 |---|---|---|
-| G-01 (P0) | جزئی | کد `cross_dex_basis=protocol` و تست آن از قبل موجود است؛ pin کردن ردیف real مسدود است چون `pool_dex` کش ناقص است و enrichment در `jobs/index.rs` خارج از دامنه است. |
+| G-01 (P0) | ✅ تمام | رجیستری اکنون علاوه بر `pool_info.dex_name`، برچسبهای `pool_dex` (DexScreener) را هم برای لگهای بدون نام discovery میخواند؛ تست واحد + هش real بلاک `101221003` با `cross_dex_basis=protocol`, `dex_count=3`, `venues=[pangolin,traderjoe,uniswap]`. |
 | G-02 (P1) | ✅ تمام | `arb_shape_basis="token_count"` + فیلد مستقل `pool_shape`؛ ماتریس ۴ حالته؛ مستندات همساز شد. |
 | G-03 (P0) | ✅ تمام | `details.funding_providers[]` + یک تگ بهازای هر provider؛ `funding_source` همان first entry؛ تست double-flash با جمع صحیح fee و بدون کسر مضاعف. |
 | G-04 (P0) | ✅ تمام | `explorer_tags.json` شامل `forwarded_profit` و ۸ تگ `funding:*`؛ تست `vocabulary_covers_every_emitted_arb_tag`. |
@@ -27,15 +27,16 @@
 | G-14 (P1) | ✅ تمام (holdout مستقل) | پنجرهٔ `101221000..=101221702` (۷۰۳ بلوک، ۲۰۲۶-۱۱-۲۴) ایندکس و با فید mevlive مقایسه شد: **۵۶/۵۹ (۹۴.۹٪)** recall، ۳ miss (همه بلاکها ایندکس و swapها دکد شدهاند)، خطای median ۰.۳۹٪. ردیف جدایی در `docs/benchmarks/mevlive_avax_arb_recall_2026-11-09.md` ثبت شد. |
 | ضمیمه D ( guards ) | ✅ تمام | ۳ تست non-emission در `explorer/scenarios.rs`: `unsupported_axis_tags_are_never_emitted_by_arb_classifier` (تاکسونومی رسمی AR-08/AR-20 + G-15)، `docs_only_mechanisms_never_emit_a_tag` (AR-11/AR-14/AR-17 + سه دستهٔ خارج از تاکسونومی)، `venue_and_funding_only_facts_do_not_claim_mechanisms` (AR-21/AR-22). کامنتهای تست از شمارهگذاری قدیمیاند؛ نگاشت در §9 ثبت شد. |
 
-**ورودیهای مسدودکننده:** فقط G-01 (enrichment `pool_dex` در `jobs/index.rs`)؛ I-1/I-2/I-3 بسته شدند (متن اصلی تسک، ۲۰۲۶-۱۱-۲۴).  
-**تأیید:** `cargo test --workspace --quiet` ← exit 0 (۶۹۸ تست passed، ۲ ignored در lib؛ تمام integration suites سبز).  
+**ورودیهای مسدودکننده:** هیچ موردی باقی نماند؛ I-1/I-2/I-3 (متن اصلی تسک، ۲۰۲۶-۱۱-۲۴) و G-01 بسته شدند.
+**تأیید:** `cargo test --workspace --quiet` ← exit 0 (۷۰۱ تست passed، ۲ ignored در lib؛ تمام integration suites سبز)؛ تست گیتد G-01 جداگانه ۱/۱ اجرا شد.
 **کامیتها:** `238ff35` (G-02..G-10)، `73fbd62` (G-06)، `cda3ea0` (WP-D)، `72499e5` (G-05/G-14) — پیادهسازیها در کامیتهای جداگانه ثبت شدند، نه یک کامیت.  
-**بازتأیید ۲۰۲۶-۱۱-۲۳:** کد و تستهای G-02..G-10 و `explorer_tags.json` در درخت موجود تأیید شد. بررسی کاشهای محلی (`cache/*.sqlite`) نشان داد هیچ‌یک از ۴ هش pin (بلاک‌های ۱۰۰.۵M) و هیچ تگ Hunt در کاش نیست؛ بنابراین G-05 و G-14 به RPC/archive محدوداند (اجرای live G-06 طبق بهروزرسانی §G-06 با RPC آرشیو Dwellir ثبت شدهاست) و G-01 به enrichment `pool_dex` (فایل `jobs/index.rs` خارج از دامنهٔ فاز) محدود است.
+**بازتأیید ۲۰۲۶-۱۱-۲۳:** کد و تستهای G-02..G-10 و `explorer_tags.json` در درخت موجود تأیید شد. بررسی کاشهای محلی (`cache/*.sqlite`) نشان داد هیچ‌یک از ۴ هش pin (بلاک‌های ۱۰۰.۵M) و هیچ تگ Hunt در کاش نیست؛ بنابراین G-05 و G-14 به RPC/archive محدوداند (اجرای live G-06 طبق بهروزرسانی §G-06 با RPC آرشیو Dwellir ثبت شدهاست) و G-01 با خواندن کش `pool_dex` در `jobs/index.rs` بسته شد (۲۰۲۶-۱۱-۲۴).
 **بازتأیید WP-D ۲۰۲۶-۱۱-۲۳:** G-12/G-13/G-15 پیاده و تست‌شده — `cargo test --workspace --quiet` ← exit 0؛ `underlying_pools_unknown` (G-12) در `classify/arb.rs`، یادداشت محدودیت + negative test (G-13) در `docs/ARCHITECTURE.md`/`explorer/profit.rs`، و جدول تثبیت scope/disposition + ثبت کامل `NA_TAGS` (G-15) در `docs/atomic_capital_free_arb_plan.md` §3.3.1.
 **بازتأیید ۲۰۲۶-۱۱-۲۴ (پاکسازی):** کامنتهای TEMP در `explorer_corpus.rs` پاکسازی شدند؛ ۳ guard test ضمیمهٔ D در `explorer/scenarios.rs` اضافه شدند؛ شمارش تست به ۶۹۸ passed / ۲ ignored بهروزرسانی شد؛ تضادهای متنی G-06 و کامیت و DoD همساز شدند.
 **بازتأیید G-05 ۲۰۲۶-۱۱-۲۴ (RPC آرشیو Dwellir):** هانت ۶۰۰بلوکه اجرا و ۴ seed.real پیدا شد؛ ۳ ردیف باقیمانده نتیجهٔ منفی صریح گرفتند (جزئیات §G-05). تست گیتد ۴/۴ تأیید شد.
 **بازتأیید G-14 ۲۰۲۶-۱۱-۲۴ (RPC آرشیو Dwellir):** پنجرهٔ holdout مستقل ۷۰۳بلوکه ایندکس و با فید mevlive مقایسه شد؛ ۵۶/۵۹ recall (۹۴.۹٪) — ردیف جداگانه در benchmark اضافه شد (جزئیات §G-14).
 **بسته شدن I-1..I-3 ۲۰۲۶-۱۱-۲۴ (docs-only):** متن اصلی تسک دریافت شد؛ ۲۹+۷ ردیف براساس تاکسونومی رسمی بازنگاشت و §13 براساس Q1..Q6 بازنویسی شد. هیچ فایل جدیدی و هیچ کدی تغییر نکرد.
+**بسته شدن G-01 ۲۰۲۶-۱۱-۲۴:** هویت DEX علاوه بر discovery از کش `pool_dex` نیز تکمیل میشود — سه تست واحد/یکپارچه و هش real بلاک `101221003` بازتأیید شدند. تنها تغییر کد خارج از Explorer، خواندن کش label در `jobs/index.rs`/`cache/store/pools.rs` است؛ P&L و MevKind دستنخوردهاند.
 
 ---
 
@@ -70,11 +71,11 @@
 
 ### G-01 — DEX identity ناقص (P0)
 
-- **گپ:** `arb_route_meta` در `classify/arb.rs:760-826` تنها وقتی از هویت پروتکل استفاده میکند که **همهٔ** لگها `pool_dex` داشته باشند؛ در جدیدترین کش محلی ۶۱ ردیف `arb_atomic` فاقد `venues[]`اند و بهطور کامل به `cross_dex_basis="amm_family"` رفتند.
-- **پیشنهاد:** اطمینان از اینکه `pools.dex_name` توسط enrichment پر میشود و سپس pin کردن حداقل یک tx.real با `cross_dex_basis=protocol`.
-- **فایلها:** `core/src/jobs/index.rs:45-48,148-155`، `core/src/explorer/ingest.rs:214-225,274`، `core/src/explorer/classify/arb.rs:792-824`.
-- **معیار پذیرش:** حداقل ۱ ردیف real در golden؛ `venues` غیرتهی است و `dex_count` برابر تعداد DEX واقعی مسیر است.
-- **ریسک عدم اجرا:** FP مداوم در ادعای cross-DEX میان forkهای یک پروتکل.
+- **گپ (بسته شد):** `arb_route_meta` تنها وقتی از هویت پروتکل استفاده میکند که **همهٔ** لگها `pool_dex` داشته باشند؛ در کش قدیمی ۶۱ ردیف `arb_atomic` فاقد `venues[]` و به `cross_dex_basis="amm_family"` سقوط کرده بودند.
+- **اجرا:** `load_pool_registry` اکنون بعد از `pool_info.dex_name`، جدول اختیاری `pool_dex` (DexScreener cache) را هم میخواند و فقط جاهایی که discovery نامی ندارد با `dex_id` نرمالشده پر میکند؛ نام factory-derived هرگز بازنویسی نمیشود. مسیر طبقهبندی و `ingest.rs` بدون تغییر ماند.
+- **فایلها:** `core/src/cache/store/pools.rs` (`list_pool_dex_names`)، `core/src/jobs/index.rs` (`merge_cached_dex_names` + رجیستری)، `core/tests/explorer_corpus.rs` (تست گیتد real).
+- **معیار پذیرش:** تست واحد نگاشت + تست end-to-end رجیستری + هش real `0x84399583…8b82bf` در بلاک `101221003` با `cross_dex_basis="protocol"`, `venues=[pangolin,traderjoe,uniswap]`, `dex_count=3` (در مقابل `amm_family_count=2`).
+- **ریسک باقیمانده:** جایی که هر دو کش فاقد برچسب باشند، رفتار fail-closed قدیمی (`amm_family`) حفظ میشود؛ بههمین دلیل AR-01/AR-02 در ماتریس §9 Partial باقی ماندند. درخصوص FP میان forkهای یک پروتکل، `dex_id` پایدار ذخیرهشده (مانند `uniswap` برای V2+V3) از شکستن یک DEX جلوگیری میکند.
 
 ### G-02 — شکل مسیر heuristic (P1)
 
@@ -272,7 +273,8 @@ cargo test -p mev-scout-core --test live_tag_parity
 - [x] `funding_providers[]` و `profit_cause` بدون تغییر net اضافه شدند.
 - [x] تصمیم shape (توکنمحور + فیلد مستقل استخرمحور) در کد و `docs/mev_strategies.md` مستند شد.
 - [x] holdout مستقل از derivation window ثبت شد (G-14 — پنجرهٔ ۲۰۲۶-۱۱-۲۴، ۵۶/۵۹ = ۹۴.۹٪).
-- [x] `cargo test --workspace --quiet` سبز (۶۹۸ passed / ۲ ignored در lib).
+- [x] هویت DEX از کش `pool_dex` تکمیل و با هش real تأیید شد (G-01 — بلاک `101221003`).
+- [x] `cargo test --workspace --quiet` سبز (۷۰۱ passed / ۲ ignored در lib).
 - [x] guard testهای non-emission ضمیمهٔ D برای دستههای Unsupported اضافه شدند.
 
 > **یادداشت 2026-11-23:** ضمایم A–E اضافه شدند. آیتمهای اجرایی بالا بدون تغییر باقی ماندند و تیک نخوردند.
@@ -295,7 +297,7 @@ Evidence levels: **H** = code + targeted tests + full real successful tx hash; *
 
 | ID | Strategy | Decoder | Detection | Classification | Subtag / Metadata | Route Accuracy | P&L Accuracy | Evidence Level | Code Location | Test Coverage | Verdict |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| AR-01 | Two-Pool Same-DEX | V2/V3/V4/Curve/Balancer/Solidly/LB/Pendle/Fluid/Metric swap topics + transfer attachment | Closed directed walk ≥2 edges, ≥2 pools, ≤8 edges, positive residual | `ArbAtomic`; `two_pool` shape only — protocol identity is metadata, not a separate detector | `arb_meta.arb_shape=two_pool`, `pool_shape`, `venues`, `dex_count` | Selected cycle only; Same-DEX requires `pool_dex` on **every** leg (G-01) | Ledger residual `R`; flash fee netted once | H (shape) / M (identity) | `classify/arb.rs::classify_atomic_arbs`; `profit.rs::closed_cycle_walks`; `classify/legs.rs::resolve_arb_routes` | `baseline_atomic_arb`, `explorer_golden`, `explorer_corpus` | Partial — shape real, Same-DEX unproven without G-01 |
+| AR-01 | Two-Pool Same-DEX | V2/V3/V4/Curve/Balancer/Solidly/LB/Pendle/Fluid/Metric swap topics + transfer attachment | Closed directed walk ≥2 edges, ≥2 pools, ≤8 edges, positive residual | `ArbAtomic`; `two_pool` shape only — protocol identity is metadata, not a separate detector | `arb_meta.arb_shape=two_pool`, `pool_shape`, `venues`, `dex_count` | Selected cycle only; Same-DEX needs `pool_dex` on **every** leg (G-01: discovery + label cache) | Ledger residual `R`; flash fee netted once | H (shape) / M (identity) | `classify/arb.rs::classify_atomic_arbs`; `profit.rs::closed_cycle_walks`; `classify/legs.rs::resolve_arb_routes` | `baseline_atomic_arb`, `explorer_golden`, `explorer_corpus` | Partial — shape real; identity now sourced from two caches, unlabeled legs still fall back |
 | AR-02 | Two-Pool Cross-DEX | Same as AR-01 | Same cycle gate | `is_cross_dex` from protocol identity; AMM-family fallback | `is_cross_dex`, `cross_dex_basis`, `venues` | Uni V2 + Sushi must be cross-DEX; Uni V2 + Uni V3 must not — only with complete `pool_dex` | `R` unchanged | M | `arb.rs::arb_route_meta`; `classify/mod.rs::pool_dex` | `cross_dex_uses_protocol_identity_not_amm_family`, fallback test | Partial — FP/FN when `pool_dex` absent |
 | AR-03 | Triangular | Same as AR-01 | Closed walk with 3 unique tokens (token-count heuristic) | `arb_shape=triangular` | `arb_shape`, `pool_shape` | Token-count heuristic, not a formal 3-pool proof | `R` | H | `arb.rs::arb_route_meta` L760-826; `profit.rs::closed_cycle_walks` | Cycle tests + real AVAX corpus notes | Supported (shape-level) |
 | AR-04 | Triangular Cross-DEX | Same as AR-01 | AR-03 gate + cross-DEX gate | No combined classifier; two metadata axes only | `arb_shape=triangular` + `is_cross_dex` | Both heuristics compose without joint validation | `R` | M | `arb.rs::arb_route_meta` L789-824 | Cross-DEX + cycle tests | Partial — metadata composition only |
@@ -377,7 +379,7 @@ Evidence levels: **H** = code + targeted tests + full real successful tx hash; *
 
 | Capability | Current state | Consequence | Relevant files |
 |---|---|---|---|
-| Complete protocol identity on every route pool | `pool_dex` optional; empty falls back to AMM family | Cross-DEX FP/FN | `classify/mod.rs::BlockContext.pool_dex`, `arb.rs::arb_route_meta` |
+| Complete protocol identity on every route pool | `pool_dex` from discovery + dashboard label cache; unlabeled legs fall back to AMM family (G-01) | Cross-DEX FP/FN only where both caches miss | `classify/mod.rs::BlockContext.pool_dex`, `arb.rs::arb_route_meta`, `jobs/index.rs` |
 | Explicit route geometry model | One ambiguous `arb_shape` string | Shape claims are not reproducible from pool count | `arb.rs::arb_route_meta` |
 | Aggregator underlying-pool reconstruction | Only router edge + `router_version`; selected DEX pools hashed | Split/aggregator routes not accurately represented | `decode/aggregator.rs`, `classify/legs.rs`, `types/opportunity.rs::underlying_pools_hash` |
 | Multi-provider funding model | First flash loan only | Multi-source arb funding invisible | `arb.rs` L373-434, `decode/flash_loan.rs`, `types/tags.rs` |
@@ -416,7 +418,7 @@ All other hashes found in docs with `…` are truncated and must not be presente
 
 | IDs | Required test | Real-sample status |
 |---|---|---|
-| AR-01, AR-02 | Fixture matrix: complete `pool_dex`, partial `pool_dex`, empty `pool_dex`; assert `venues`, `dex_count`, `is_cross_dex`, `cross_dex_basis` | 4 full AVAX hashes above available; protocol-identity golden blocked by G-01 |
+| AR-01, AR-02 | Fixture matrix: complete `pool_dex`, partial `pool_dex`, empty `pool_dex`; assert `venues`, `dex_count`, `is_cross_dex`, `cross_dex_basis` | 4 full AVAX hashes above available; protocol-identity golden added in G-01 (`101221003`) |
 | AR-04, AR-06 | Triangular/multi-hop cross-DEX composition: assert `arb_shape` and `is_cross_dex` are independently derived | No dedicated real hash |
 | AR-07 | Multi-cycle tx: assert one event, `rejected_routes` recorded, extra residuals audited but not summed | `other_residuals_usd_is_audited_but_not_summed` exists |
 | AR-08 | Guard: split-route opportunity input must not create `ArbAtomic` until parallel-branch representation exists | No real sample |
@@ -456,19 +458,19 @@ All other hashes found in docs with `…` are truncated and must not be presente
 **9 rows:** AR-01, AR-02, AR-04, AR-06 (route/cross-DEX تنها metadata)، AR-03 و AR-05 (شکل hop-محور، نه اثبات تعداد pool)، AR-16 (wrapped)، AR-21 (Pendle فقط venue)، AR-22 (Vault فقط funding). AR-07/AR-08/AR-09 اساساً subtypeای emit نمیکنند؛ AR-12/13/15/18/19/23 تگ مکانیزمی میدهند ولی سهم P&L مکانیزم را جدا نمیکنند.
 
 **Q4 — five critical defects with the largest impact on Explorer output correctness?**
-1. **D1 — G-01 / `pool_dex`:** با کش ناقص، `cross_dex_basis="amm_family"` جای protocol identity مینشیند → Same-DEX/Cross-DEX FP و FN (Uni V2+Sushi در مقابل Uni V2+Uni V3).
+1. **D1 — هویت DEX (G-01 بسته، ریسک باقیمانده):** مسیر discovery + کش `pool_dex` اکنون هویت پروتکل را تأمین میکند و هش real آن را تأیید میکند؛ با این حال لگهایی که در هیچکدام از دو کش برچسب ندارند باز هم به `amm_family` سقوط میکنند → Same-DEX/Cross-DEX FP و FN (Uni V2+Sushi در مقابل Uni V2+Uni V3).
 2. **D2 — route representation:** `arb_shape` مبتنی بر token-count/hop است، نه pool-count؛ combined multi-hop، split-route و aggregatorِ دارای pool زیرین قابل بازسازی نیستند و یک tx فقط یک event میدهد.
 3. **D3 — funding identity:** `funding_source` هنوز first provider است؛ `funding_providers[]` اضافه شد ولی Sushi/Fork و V4 flash accounting هویت جداگانه ندارند.
 4. **D4 — mechanism evidence:** تگهای Curve/Balancer/FoT/Rebase/Epoch/Pendle/Vault بدون اندازهٔ عدمتعادل، divergence، balance-drift یا fair-value صادر میشوند و هیچ `profit_cause` مکانیزمی بر `net_profit_usd` اثر نمیکند.
 5. **D5 — real-sample coverage:** چند ردیف (split, depeg, LST, bridged, aggregator-mixed, multi-funding, claim+arb) فاقد tx.real موفق pinشدهاند؛ سه negative صریح G-05 تنها جایگزین مستندشدهاند.
 
 **Q5 — minimum changes required for reliable coverage?**
-تثبیت نگاشت رسمی ۲۹+۷ (انجام شد، docs-only)؛ پر کردن `pool_dex` و fail-closed به `unknown` (G-01)؛ مدل route با `pool_count` و شاخههای موازی + مقایسهٔ cycleها بهجای first-cycle؛ نگهداری `funding_providers[]` با هویت provider اختصاصی؛ آستانهٔ شواهد مکانیزم قبل از emission تگ + `profit_cause` صرفاً metadata؛ golden test برای هشهای real باقیمانده و negativeهای مستند.
+تثبیت نگاشت رسمی ۲۹+۷ (انجام شد، docs-only)؛ پر کردن هویت `pool_dex` از دو کش و حفظ fail-closed (G-01 انجام شد)؛ مدل route با `pool_count` و شاخههای موازی + مقایسهٔ cycleها بهجای first-cycle؛ نگهداری `funding_providers[]` با هویت provider اختصاصی؛ آستانهٔ شواهد مکانیزم قبل از emission تگ + `profit_cause` صرفاً metadata؛ golden test برای هشهای real باقیمانده و negativeهای مستند.
 
 **Q6 — suggested repair order?**
-**1 — Contract:** taxonomy/tag vocabulary و guardrails (تکمیل شد). **2 — Identity:** `pool_dex` کامل و cross-DEX fail-closed (G-01). **3 — Route:** shapeها، multi-cycle و parallel-branch/aggregator reconstruction. **4 — Evidence:** آستانههای مکانیزم و جداسازی تگ از اثبات اقتصادی. **5 — Attribution:** `profit_cause` و multi-residual، بدون تغییر `net_profit_usd`. **6 — Samples:** pin کردن هشهای real باقیمانده و ثبت negative huntها.
+**1 — Contract:** taxonomy/tag vocabulary و guardrails (تکمیل شد). **2 — Identity:** `pool_dex` از discovery + label cache و cross-DEX fail-closed (G-01 تکمیل شد). **3 — Route:** shapeها، multi-cycle و parallel-branch/aggregator reconstruction. **4 — Evidence:** آستانههای مکانیزم و جداسازی تگ از اثبات اقتصادی. **5 — Attribution:** `profit_cause` و multi-residual، بدون تغییر `net_profit_usd`. **6 — Samples:** pin کردن هشهای real باقیمانده و ثبت negative huntها.
 
 ---
 
-**پایان سند.** ضمایم A–E عکس وضعیت در کامیت `ef29f73`اند، ولی ماتریس A و خلاصهٔ E در ۲۰۲۶-۱۱-۲۴ با تاکسونومی رسمی متن تسک بازنگاشت شدند (I-1..I-3 بسته؛ هرگونه شمارهٔ AR/FUND قدیمی در کامنتها یا اسناد قدیمی معتبر نیست). لایهٔ کد WP-A/WP-C/WP-D و guard testهای ضمیمهٔ D در کامیتهای `238ff35`, `73fbd62`, `cda3ea0`, `72499e5` پیاده و تست شدند؛ G-05 و G-14 با RPC آرشیو Dwellir بسته شدند. `cargo test --workspace --quiet` سبز است (۶۹۸ passed / ۲ ignored در lib؛ تست گیتد G-05 جداگانه ۴/۴ اجرا شد). بازنگاشت تاکسونومی docs-only بود و کدی تغییر نکرد. باقیماندهٔ plan فقط enrichment `pool_dex` (G-01) است.
+**پایان سند.** ضمایم A–E عکس وضعیت در کامیت `ef29f73`اند، ولی ماتریس A و خلاصهٔ E در ۲۰۲۶-۱۱-۲۴ با تاکسونومی رسمی متن تسک بازنگاشت شدند (I-1..I-3 بسته؛ هرگونه شمارهٔ AR/FUND قدیمی در کامنتها یا اسناد قدیمی معتبر نیست). لایهٔ کد WP-A/WP-C/WP-D و guard testهای ضمیمهٔ D در کامیتهای `238ff35`, `73fbd62`, `cda3ea0`, `72499e5` پیاده و تست شدند؛ G-05 و G-14 با RPC آرشیو Dwellir بسته شدند. بازنگاشت تاکسونومی (کامیت `1e0751d`) docs-only بود. G-01 در همین مرحله با تکمیل رجیستری از کش `pool_dex` و هش real بلاک `101221003` بسته شد. `cargo test --workspace --quiet` سبز است (۷۰۱ passed / ۲ ignored در lib؛ تستهای گیتد G-05 ۴/۴ و G-01 ۱/۱ اجرا شدند). تمام آیتمهای plan بستهاند.
 
