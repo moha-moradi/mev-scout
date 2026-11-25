@@ -24,6 +24,54 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     }
 }
 
+/// Decode a legacy Curve `PoolAdded(address indexed pool, uint256)` log.
+pub(super) fn decode_curve_pool_added(
+    log: &alloy::rpc::types::Log,
+) -> Option<(Address, DiscoveredPool)> {
+    let topics = log.topics();
+    if topics.len() < 2 {
+        return None;
+    }
+    let pool_addr = topic_address(topics[1]);
+    let creation_block = log.block_number.unwrap_or(0);
+    Some((
+        pool_addr,
+        DiscoveredPool::new(
+            pool_addr,
+            Address::ZERO,
+            Address::ZERO,
+            0,
+            DexType::Curve,
+            creation_block,
+        )
+        .with_factory(Some(log.address())),
+    ))
+}
+
+/// Decode a CurveStableswapFactoryNG `PoolDeployed(address pool)` log.
+pub(super) fn decode_curve_pool_deployed(
+    log: &alloy::rpc::types::Log,
+) -> Option<(Address, DiscoveredPool)> {
+    let data = log.data();
+    if data.data.len() < 32 {
+        return None;
+    }
+    let pool_addr = abi_word_address(&data.data, 0);
+    let creation_block = log.block_number.unwrap_or(0);
+    Some((
+        pool_addr,
+        DiscoveredPool::new(
+            pool_addr,
+            Address::ZERO,
+            Address::ZERO,
+            0,
+            DexType::Curve,
+            creation_block,
+        )
+        .with_factory(Some(log.address())),
+    ))
+}
+
 pub(crate) async fn scan_curve_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
     let ScanContext {
         rpc,
@@ -45,9 +93,12 @@ pub(crate) async fn scan_curve_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
     if authorities.is_empty() {
         return out;
     }
-    for (topic, pool_indexed) in [
-        (&CURVE_POOL_ADDED_TOPIC as &LazyLock<B256>, true),
-        (&CURVE_POOL_DEPLOYED_TOPIC, false),
+    for (topic, decode) in [
+        (
+            &CURVE_POOL_ADDED_TOPIC as &LazyLock<B256>,
+            decode_curve_pool_added as fn(&alloy::rpc::types::Log) -> Option<(Address, DiscoveredPool)>,
+        ),
+        (&CURVE_POOL_DEPLOYED_TOPIC, decode_curve_pool_deployed),
     ] {
         let filter = Filter::new()
             .address(authorities.clone())
@@ -60,37 +111,15 @@ pub(crate) async fn scan_curve_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                     if let Some(bn) = log.block_number {
                         out.active_blocks.insert(bn);
                     }
-                    let topics = log.topics();
-                    let pool_addr = if pool_indexed {
-                        if topics.len() < 2 {
-                            continue;
-                        }
-                        topic_address(topics[1])
-                    } else {
-                        let data = log.data();
-                        if data.data.len() < 32 {
-                            continue;
-                        }
-                        abi_word_address(&data.data, 0)
-                    };
-                    let creation_block = log.block_number.unwrap_or(0);
-                    out.pool_hits.entry(pool_addr).or_insert(PoolHit {
-                        dex_type: DexType::Curve,
-                        pool_id: None,
-                        tokens: None,
-                        first_seen_block: creation_block,
-                    });
-                    out.factory_pools.entry(pool_addr).or_insert(
-                        DiscoveredPool::new(
-                            pool_addr,
-                            Address::ZERO,
-                            Address::ZERO,
-                            0,
-                            DexType::Curve,
-                            creation_block,
-                        )
-                        .with_factory(Some(log.address())),
-                    );
+                    if let Some((addr, pool)) = decode(log) {
+                        out.pool_hits.entry(addr).or_insert(PoolHit {
+                            dex_type: DexType::Curve,
+                            pool_id: None,
+                            tokens: None,
+                            first_seen_block: pool.creation_block,
+                        });
+                        out.factory_pools.entry(addr).or_insert(pool);
+                    }
                 }
             }
             Err(e) => {

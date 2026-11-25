@@ -17,6 +17,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use alloy::primitives::{keccak256, Address, Bytes, B256, U256};
+use futures::{stream, StreamExt};
 use alloy::rpc::types::Filter;
 use serde::{Deserialize, Serialize};
 
@@ -779,6 +780,104 @@ async fn scan_factory_creation_events_pinned(
         }
     }
     out
+}
+
+/// Decode a factory-creation log that came from a receipt scan.
+///
+/// The `getLogs` scanners filter by address in the RPC request; receipt scans
+/// see *every* log in the block, so the same address gating is applied locally
+/// here. Keeping the gating in one place means a log decoded from receipts is
+/// identical to one decoded from `getLogs`.
+pub(super) fn decode_factory_creation_log(
+    log: &alloy::rpc::types::Log,
+    config: &DiscoveryConfig<'_>,
+) -> Option<(Address, DiscoveredPool)> {
+    let topics = log.topics();
+    let topic0 = *topics.first()?;
+    let emitter = log.address();
+    let is_authority = |addrs: Option<&[Address]>| addrs.is_some_and(|a| a.contains(&emitter));
+
+    if topic0 == *V2_PAIR_CREATED_TOPIC && is_authority(config.v2_factories) {
+        return v2::decode_v2_pair_created(log, config.v2_fee_override.unwrap_or(30));
+    }
+    if topic0 == *V3_POOL_CREATED_TOPIC && is_authority(config.v3_factories) {
+        return v3::decode_v3_pool_created(log);
+    }
+    if topic0 == *ALGEBRA_POOL_CREATED_TOPIC && is_authority(config.v3_factories) {
+        return v3::decode_algebra_pool_created(log);
+    }
+    if topic0 == *SLIPSTREAM_POOL_CREATED_TOPIC && is_authority(config.v3_factories) {
+        return v3::decode_slipstream_pool_created(log);
+    }
+    if topic0 == *BALANCER_POOL_REGISTERED_TOPIC && config.balancer_vault == Some(emitter) {
+        return balancer::decode_balancer_pool_registered(log, emitter);
+    }
+    if topic0 == *CURVE_POOL_ADDED_TOPIC
+        && (is_authority(config.curve_factories) || config.curve_registry == Some(emitter))
+    {
+        return curve::decode_curve_pool_added(log);
+    }
+    if topic0 == *CURVE_POOL_DEPLOYED_TOPIC
+        && (is_authority(config.curve_factories) || config.curve_registry == Some(emitter))
+    {
+        return curve::decode_curve_pool_deployed(log);
+    }
+    if topic0 == *SOLIDLY_PAIR_CREATED_TOPIC && is_authority(config.solidly_factories) {
+        let fee = config
+            .solidly_fee_bps
+            .or(config.v2_fee_override)
+            .unwrap_or(30);
+        return solidly::decode_solidly_pair_created(log, fee);
+    }
+    if topic0 == *CAMELOT_PAIR_CREATED_TOPIC && is_authority(config.camelot_factories) {
+        return camelot::decode_camelot_pair_created(log);
+    }
+    if topic0 == *LB_PAIR_CREATED_TOPIC && is_authority(config.trader_joe_factories) {
+        return trader_joe::decode_lb_pair_created(log, emitter);
+    }
+    if topic0 == *PENDLE_NEW_MARKET_TOPIC && config.pendle_factory == Some(emitter) {
+        return pendle::decode_pendle_new_market(log, emitter);
+    }
+    if topic0 == *V4_INITIALIZE_TOPIC && config.v4_pool_manager == Some(emitter) {
+        return v4::decode_v4_initialize(log, emitter);
+    }
+    if topic0 == *INF_CL_INITIALIZE_TOPIC && config.infinity_cl_pool_manager == Some(emitter) {
+        return infinity::decode_infinity_initialize(log, emitter);
+    }
+    if topic0 == *METRIC_POOL_CREATED_TOPIC && config.metric_factory == Some(emitter) {
+        return metric::decode_metric_pool_created(log);
+    }
+    if topic0 == *FLUID_DEX_DEPLOYED_TOPIC && config.fluid_factory == Some(emitter) {
+        return fluid::decode_fluid_dex_deployed(log);
+    }
+    None
+}
+
+/// Fold one receipt-derived log into a batch result: DEX activity hits are
+/// classified exactly as in `getLogs` discovery, and factory creation logs are
+/// decoded with the same per-DEX decoders.
+fn absorb_receipt_log(
+    log: &alloy::rpc::types::Log,
+    config: &DiscoveryConfig<'_>,
+    into: &mut ScanBatchResult,
+) {
+    process_discovery_log(log, &mut into.active_blocks, &mut into.pool_hits);
+    if let Some((addr, pool)) = decode_factory_creation_log(log, config) {
+        // These three scanners also recorded activity hits in the existing
+        // `getLogs` path; mirror that so metadata fetch behaves identically.
+        if matches!(
+            pool.dex_type,
+            DexType::Balancer | DexType::Curve | DexType::TraderJoeLB
+        ) {
+            into.pool_hits.entry(addr).or_insert(PoolHit {
+                dex_type: pool.dex_type,
+                pool_id: pool.pool_id,
+                tokens: None,
+                first_seen_block: pool.creation_block,
+            });
+        }
+        into.factory_pools.entry(addr).or_insert(pool);
+    }
 }
 
 // ── Module-level macro: fetch logs with optional provider pinning ──
@@ -1609,11 +1708,23 @@ pub async fn discover_and_cache(
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
     let (pools, active_blocks) =
         discover_pools(rpc, from_block, to_block, config, on_batch).await?;
+    persist_discovered_pools(cache, &pools, config.token_cache);
 
+    Ok((pools, active_blocks))
+}
+
+/// Save newly discovered pools and their token symbols to the SQLite caches.
+/// Shared by the `getLogs` and receipts discovery paths so both persist
+/// identical rows for identical `DiscoveredPool` values.
+pub fn persist_discovered_pools(
+    cache: &SqliteStore,
+    pools: &[DiscoveredPool],
+    token_cache: Option<&crate::cache::TokenCache>,
+) {
     // Save newly discovered pool symbols to the token cache
-    if let Some(token_cache) = config.token_cache {
+    if let Some(token_cache) = token_cache {
         let mut new_tokens: Vec<(Address, String, Option<i32>)> = Vec::new();
-        for pool in &pools {
+        for pool in pools {
             if let Some(ref sym) = pool.token0_symbol {
                 if !token_cache.contains(&pool.token0) {
                     new_tokens.push((pool.token0, sym.clone(), None));
@@ -1635,7 +1746,7 @@ pub async fn discover_and_cache(
     let pool_count = pools.len();
     let mut persisted = 0usize;
     let mut skipped_zero = 0usize;
-    for pool in &pools {
+    for pool in pools {
         // Zero-token entries (e.g. V4 activity hits without an Initialize/cache
         // match, or Curve/Balancer hits whose tokens could not be resolved)
         // would poison the pool universe downstream — never persist them.
@@ -1660,8 +1771,219 @@ pub async fn discover_and_cache(
             "Discovery: {skipped_zero}/{pool_count} pools skipped (unresolved/zero tokens) — check RPC health"
         );
     }
+}
 
-    Ok((pools, active_blocks))
+/// Convert an internal cached `LogData` (as produced by `eth_getBlockReceipts`)
+/// into the alloy log shape the shared decoders consume.
+fn receipt_log_to_rpc_log(
+    log: &crate::data::types::LogData,
+    block_number: u64,
+    tx_index: u64,
+    fallback_log_index: u64,
+) -> alloy::rpc::types::Log {
+    alloy::rpc::types::Log {
+        inner: alloy::primitives::Log {
+            address: log.address,
+            data: alloy::primitives::LogData::new_unchecked(
+                log.topics.clone(),
+                log.data.clone(),
+            ),
+        },
+        block_number: Some(block_number),
+        block_hash: None,
+        block_timestamp: None,
+        transaction_hash: None,
+        transaction_index: Some(tx_index),
+        log_index: log.log_index.or(Some(fallback_log_index)),
+        removed: false,
+    }
+}
+
+/// Options for the receipts-based scan.
+pub struct ReceiptScanOptions<'a> {
+    /// Blocks fetched in one `eth_getBlockReceipts` batch POST (default: 4).
+    pub batch_blocks: u64,
+    /// Cache fetched block/receipt bundles in SQLite so `get_receipts` works
+    /// on later runs. Off by default: a 30-day scan needs significant disk.
+    pub cache_blocks: bool,
+    /// Pin every receipt batch to one provider (used by benchmark M1/M2).
+    pub provider_idx: Option<usize>,
+    /// Mixed providers: `(blocks_from_tip, recent_idx, old_idx)`. Windows in
+    /// the trailing `blocks_from_tip` blocks use `recent_idx`, older ones use
+    /// `old_idx` (benchmark M3).
+    pub mixed_recent: Option<(u64, usize, usize)>,
+    /// Maximum number of block windows fetched concurrently.
+    pub concurrency: usize,
+    /// Called once per block window, before the RPC request.
+    pub on_window: Option<&'a (dyn Fn() -> bool + Send + Sync)>,
+}
+
+/// Outcome of a receipts scan. `failed_windows` is the exact list of ranges
+/// that must be re-scanned: callers should only advance the discovery
+/// watermark when it is empty.
+pub struct ReceiptScanResult {
+    pub pools: Vec<DiscoveredPool>,
+    pub active_blocks: HashSet<u64>,
+    pub failed_windows: Vec<(u64, u64)>,
+}
+
+/// Discover pools without `eth_getLogs`: fetch block receipts in batches and
+/// run the same decoders as the `getLogs` scanners over every local log.
+///
+/// The rest of the pipeline (metadata, symbols, output building) is unchanged;
+/// only the log source differs.
+pub async fn discover_pools_from_receipts(
+    rpc: &RpcClient,
+    cache: &SqliteStore,
+    from_block: u64,
+    to_block: u64,
+    config: &DiscoveryConfig<'_>,
+    opts: ReceiptScanOptions<'_>,
+) -> anyhow::Result<ReceiptScanResult> {
+    struct WindowOutcome {
+        from: u64,
+        to: u64,
+        batch: ScanBatchResult,
+        failed: bool,
+    }
+
+    let batch_blocks = opts.batch_blocks.max(1);
+    let cache_blocks = opts.cache_blocks;
+    let pinned = opts.provider_idx;
+    let mixed_recent = opts.mixed_recent;
+    let on_window = opts.on_window;
+    let concurrency = opts.concurrency.max(1);
+
+    let outcomes: Vec<anyhow::Result<WindowOutcome>> = stream::iter(block_windows(
+        from_block,
+        to_block,
+        batch_blocks,
+    ))
+    .map(|(from, to)| {
+        let rpc = rpc;
+        let cache = cache;
+        let config = config;
+        async move {
+            if let Some(cb) = on_window {
+                if !cb() {
+                    anyhow::bail!("job cancelled");
+                }
+            }
+
+            let blocks: Vec<u64> = (from..=to).collect();
+            let provider_idx = pinned.or_else(|| {
+                mixed_recent.map(|(recent_blocks, recent_idx, old_idx)| {
+                    let cutoff = to_block.saturating_sub(recent_blocks);
+                    if to >= cutoff {
+                        recent_idx
+                    } else {
+                        old_idx
+                    }
+                })
+            });
+            let bundles = match provider_idx {
+                Some(idx) => rpc.get_blocks_and_receipts_batch_for_many(idx, &blocks).await,
+                None => rpc.get_blocks_and_receipts_batch(&blocks).await,
+            };
+
+            let bundles = match bundles {
+                Ok(rows) => rows,
+                Err(e) => {
+                    tracing::warn!("Receipt scan failed for {from}..{to}: {e:#}");
+                    return Ok(WindowOutcome {
+                        from,
+                        to,
+                        batch: ScanBatchResult::default(),
+                        failed: true,
+                    });
+                }
+            };
+
+            let mut batch = ScanBatchResult::default();
+            for (block, _txs, receipts) in &bundles {
+                let block_num = block.number;
+                for receipt in receipts {
+                    for (log_idx, log) in receipt.logs.iter().enumerate() {
+                        let rpc_log = receipt_log_to_rpc_log(
+                            log,
+                            block_num,
+                            receipt.tx_index,
+                            log.log_index.unwrap_or(log_idx as u64),
+                        );
+                        absorb_receipt_log(&rpc_log, config, &mut batch);
+                    }
+                }
+            }
+
+            if cache_blocks {
+                let cache_rows: Vec<_> = bundles
+                    .iter()
+                    .map(|(block, txs, receipts)| {
+                        (block.number, block.clone(), txs.clone(), receipts.clone())
+                    })
+                    .collect();
+                if let Err(e) = cache.put_block_data_batch(&cache_rows, None, None) {
+                    tracing::warn!("Failed to cache receipt bundles {from}..{to}: {e:#}");
+                }
+            }
+
+            Ok(WindowOutcome {
+                from,
+                to,
+                batch,
+                failed: false,
+            })
+        }
+    })
+    .buffered(concurrency)
+    .collect()
+    .await;
+
+    let mut active_blocks = HashSet::new();
+    let mut pool_hits: PoolHits = HashMap::new();
+    let mut factory_pools: HashMap<Address, DiscoveredPool> = HashMap::new();
+    let mut failed_windows = Vec::new();
+    // `buffered` preserves input order, so first-wins merges stay deterministic.
+    for outcome in outcomes {
+        let outcome = outcome?;
+        active_blocks.extend(outcome.batch.active_blocks);
+        for (addr, hit) in outcome.batch.pool_hits {
+            pool_hits.entry(addr).or_insert(hit);
+        }
+        for (addr, pool) in outcome.batch.factory_pools {
+            factory_pools.entry(addr).or_insert(pool);
+        }
+        if outcome.failed {
+            failed_windows.push((outcome.from, outcome.to));
+        }
+    }
+
+    if pool_hits.is_empty() && factory_pools.is_empty() {
+        return Ok(ReceiptScanResult {
+            pools: Vec::new(),
+            active_blocks,
+            failed_windows,
+        });
+    }
+
+    tracing::info!(
+        "Receipt scan: {} unique pool addresses from DEX activity, {} from factory events, {} active blocks",
+        pool_hits.len(),
+        factory_pools.len(),
+        active_blocks.len(),
+    );
+
+    resolve_balancer_pool_ids(rpc, config, &mut pool_hits, &mut factory_pools).await;
+    resolve_curve_underlying(rpc, config, &mut factory_pools).await;
+    let results = fetch_dex_metadata(rpc, config, &pool_hits, &mut factory_pools).await;
+    let symbol_results = resolve_token_symbols(rpc, config, &factory_pools, &results).await;
+    let pools = build_discovery_output(config, &pool_hits, factory_pools, results, symbol_results);
+
+    Ok(ReceiptScanResult {
+        pools,
+        active_blocks,
+        failed_windows,
+    })
 }
 
 /// Post-discovery health check: queries on-chain state for V2/Solidly/Camelot
@@ -1965,5 +2287,222 @@ mod tests {
         let balancer = DiscoveredPool::new(Address::ZERO, t0, t1, 0, DexType::Balancer, 0);
         curve.merge_from(&balancer);
         assert_eq!(curve.dex_type, DexType::Curve);
+    }
+
+    fn all_factory_config<'a>() -> DiscoveryConfig<'a> {
+        DiscoveryConfig {
+            batch_size: 1000,
+            factory_batch_size: 1000,
+            v2_fee_override: Some(30),
+            balancer_vault: Some(Address::ZERO),
+            v2_factories: Some(&[]),
+            v3_factories: Some(&[]),
+            curve_registry: Some(Address::ZERO),
+            curve_factories: Some(&[]),
+            solidly_factories: Some(&[]),
+            camelot_factories: Some(&[]),
+            v4_pool_manager: Some(Address::ZERO),
+            infinity_cl_pool_manager: Some(Address::ZERO),
+            metric_factory: Some(Address::ZERO),
+            fluid_factory: Some(Address::ZERO),
+            solidly_fee_bps: None,
+            trader_joe_factories: Some(&[]),
+            pendle_factory: Some(Address::ZERO),
+            rpc_concurrency: 1,
+            token_cache: None,
+            pool_cache: None,
+        }
+    }
+
+    fn word(addr: Address) -> B256 {
+        addr.into_word()
+    }
+
+    /// The unified decoder used by both `getLogs` and receipts must recognize
+    /// every factory topic, so a receipt-derived log cannot silently lose a
+    /// pool compared with the existing scanner.
+    #[test]
+    fn receipt_factory_decoder_covers_all_supported_dexes() {
+        let factory = address!("1111111111111111111111111111111111111111");
+        let token0 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let token1 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let pool = address!("cccccccccccccccccccccccccccccccccccccccc");
+
+        // Config gates each decoder by emitter. Use one synthetic factory for
+        // every family so all branches are exercised with distinct topics.
+        let v2_factories = [factory];
+        let v3_factories = [factory];
+        let curve_factories = [factory];
+        let solidly_factories = [factory];
+        let camelot_factories = [factory];
+        let trader_joe_factories = [factory];
+        let mut cfg = all_factory_config();
+        cfg.balancer_vault = Some(factory);
+        cfg.v2_factories = Some(&v2_factories);
+        cfg.v3_factories = Some(&v3_factories);
+        cfg.curve_registry = Some(factory);
+        cfg.curve_factories = Some(&curve_factories);
+        cfg.solidly_factories = Some(&solidly_factories);
+        cfg.camelot_factories = Some(&camelot_factories);
+        cfg.v4_pool_manager = Some(factory);
+        cfg.infinity_cl_pool_manager = Some(factory);
+        cfg.metric_factory = Some(factory);
+        cfg.fluid_factory = Some(factory);
+        cfg.trader_joe_factories = Some(&trader_joe_factories);
+        cfg.pendle_factory = Some(factory);
+
+        let mut fee_topic = B256::ZERO;
+        fee_topic[28..32].copy_from_slice(&3000u32.to_be_bytes());
+        let mut pool_type = B256::ZERO;
+        pool_type[31] = 1;
+
+        let cases: Vec<(alloy::rpc::types::Log, Address)> = vec![
+            (
+                make_log(
+                    factory,
+                    vec![*V2_PAIR_CREATED_TOPIC, word(token0), word(token1)],
+                    [word(pool).as_slice(), &[0u8; 32][..]].concat(),
+                ),
+                pool,
+            ),
+            (
+                make_log(
+                    factory,
+                    vec![*V3_POOL_CREATED_TOPIC, word(token0), word(token1), fee_topic],
+                    {
+                        let mut data = vec![0u8; 64];
+                        data[28..32].copy_from_slice(&60i32.to_be_bytes());
+                        data[32..64].copy_from_slice(word(pool).as_slice());
+                        data
+                    },
+                ),
+                pool,
+            ),
+            (
+                make_log(
+                    factory,
+                    vec![*SOLIDLY_PAIR_CREATED_TOPIC, word(token0), word(token1)],
+                    {
+                        let mut data = vec![0u8; 64];
+                        data[31] = 1;
+                        data[32..64].copy_from_slice(word(pool).as_slice());
+                        data
+                    },
+                ),
+                pool,
+            ),
+            (
+                make_log(
+                    factory,
+                    vec![*CAMELOT_PAIR_CREATED_TOPIC, word(token0), word(token1)],
+                    {
+                        let mut data = vec![0u8; 96];
+                        data[0..32].copy_from_slice(word(pool).as_slice());
+                        data[63] = 25;
+                        data[95] = 1;
+                        data
+                    },
+                ),
+                pool,
+            ),
+            (
+                make_log(
+                    factory,
+                    vec![*CURVE_POOL_ADDED_TOPIC, word(pool)],
+                    vec![0u8; 32],
+                ),
+                pool,
+            ),
+            (
+                make_log(factory, vec![*CURVE_POOL_DEPLOYED_TOPIC], word(pool).to_vec()),
+                pool,
+            ),
+            (
+                make_log(
+                    factory,
+                    vec![
+                        *BALANCER_POOL_REGISTERED_TOPIC,
+                        B256::repeat_byte(0x22),
+                        word(pool),
+                        pool_type,
+                    ],
+                    vec![0u8; 32],
+                ),
+                pool,
+            ),
+            (
+                make_log(
+                    factory,
+                    vec![*LB_PAIR_CREATED_TOPIC, word(pool), word(token0), word(token1)],
+                    vec![0u8; 64],
+                ),
+                pool,
+            ),
+            (
+                make_log(
+                    factory,
+                    vec![*PENDLE_NEW_MARKET_TOPIC, word(pool), word(token0)],
+                    vec![0u8; 32],
+                ),
+                pool,
+            ),
+            (
+                make_log(
+                    factory,
+                    vec![*V4_INITIALIZE_TOPIC, word(pool), word(token0), word(token1)],
+                    vec![0u8; 160],
+                ),
+                pool,
+            ),
+            (
+                make_log(
+                    factory,
+                    vec![
+                        *INF_CL_INITIALIZE_TOPIC,
+                        word(pool),
+                        word(token0),
+                        word(token1),
+                    ],
+                    vec![0u8; 160],
+                ),
+                pool,
+            ),
+            (
+                make_log(
+                    factory,
+                    vec![*METRIC_POOL_CREATED_TOPIC, word(token0), word(token1), B256::ZERO],
+                    [word(pool).as_slice(), &[0u8; 32][..]].concat(),
+                ),
+                pool,
+            ),
+            (
+                make_log(factory, vec![*FLUID_DEX_DEPLOYED_TOPIC, word(pool)], vec![0u8; 32]),
+                pool,
+            ),
+        ];
+
+        for (idx, (log, expected)) in cases.into_iter().enumerate() {
+            let (addr, decoded) = decode_factory_creation_log(&log, &cfg).unwrap_or_else(|| {
+                panic!("case {idx}: missing decoder for topic {:?}", log.topics()[0])
+            });
+            assert_eq!(addr, expected);
+            assert_eq!(decoded.creation_block, 1000);
+            assert_eq!(decoded.factory, Some(factory));
+        }
+    }
+
+    #[test]
+    fn receipt_log_conversion_keeps_block_and_log_index() {
+        let log = crate::data::types::LogData {
+            log_index: Some(7),
+            address: address!("dddddddddddddddddddddddddddddddddddddddd"),
+            topics: vec![*V2_PAIR_CREATED_TOPIC],
+            data: Bytes::from_static(&[0u8; 32]),
+        };
+        let rpc_log = receipt_log_to_rpc_log(&log, 12345, 3, 99);
+        assert_eq!(rpc_log.block_number, Some(12345));
+        assert_eq!(rpc_log.log_index, Some(7));
+        assert_eq!(rpc_log.transaction_index, Some(3));
+        assert_eq!(rpc_log.address(), log.address);
     }
 }

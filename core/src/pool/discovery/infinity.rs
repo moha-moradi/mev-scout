@@ -32,6 +32,51 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
 /// synthetic pool address is its first 20 bytes, same scheme as V4). The
 /// remaining indexed topics carry currency0/currency1; non-indexed data is
 /// `hooks, fee, parameters, sqrtPriceX96, tick` (5 ABI-padded words).
+/// Decode a Pancake Infinity CL `Initialize(...)` log from the singleton manager.
+pub(super) fn decode_infinity_initialize(
+    log: &alloy::rpc::types::Log,
+    pool_manager: Address,
+) -> Option<(Address, DiscoveredPool)> {
+    let topics = log.topics();
+    let log_data = log.data();
+    // non-indexed: hooks(20B right-aligned) + fee(uint24) + parameters(32B)
+    // + sqrtPriceX96(20B) + tick(int24) => 5 words, 160 bytes.
+    if topics.len() < 4 || log_data.data.len() < 160 {
+        return None;
+    }
+    let pool_id: [u8; 32] = topics[1].0;
+    let Some(pool_addr) = abi_decode_address(&pool_id, 0) else {
+        return None;
+    };
+    let Some(token0) = abi_decode_address(topics[2].as_slice(), 0) else {
+        return None;
+    };
+    let Some(token1) = abi_decode_address(topics[3].as_slice(), 0) else {
+        return None;
+    };
+    let mut fb = [0u8; 4];
+    fb[1] = log_data.data[61];
+    fb[2] = log_data.data[62];
+    fb[3] = log_data.data[63];
+    let fee = u32::from_be_bytes(fb);
+    let hook_address = abi_decode_address(&log_data.data, 0).filter(|a| !a.is_zero());
+    let creation_block = log.block_number.unwrap_or(0);
+    Some((
+        pool_addr,
+        DiscoveredPool::new(
+            pool_addr,
+            token0,
+            token1,
+            fee,
+            DexType::PancakeInfinity,
+            creation_block,
+        )
+        .with_pool_id(Some(pool_id))
+        .with_factory(Some(pool_manager))
+        .with_hook_address(hook_address),
+    ))
+}
+
 pub(crate) async fn scan_infinity_cl_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
     let ScanContext {
         rpc,
@@ -53,46 +98,9 @@ pub(crate) async fn scan_infinity_cl_batch(ctx: &ScanContext<'_>) -> ScanBatchRe
                     if let Some(bn) = log.block_number {
                         out.active_blocks.insert(bn);
                     }
-                    let topics = log.topics();
-                    let log_data = log.data();
-                    // non-indexed: hooks(20B right-aligned) + fee(uint24) + parameters(32B)
-                    // + sqrtPriceX96(20B) + tick(int24) => 5 words, 160 bytes.
-                    if topics.len() < 4 || log_data.data.len() < 160 {
-                        continue;
+                    if let Some((addr, pool)) = decode_infinity_initialize(log, pool_manager) {
+                        out.factory_pools.entry(addr).or_insert(pool);
                     }
-                    let pool_id: [u8; 32] = topics[1].0;
-                    let Some(pool_addr) = abi_decode_address(&pool_id, 0) else {
-                        continue;
-                    };
-                    let Some(token0) = abi_decode_address(topics[2].as_slice(), 0) else {
-                        continue;
-                    };
-                    let Some(token1) = abi_decode_address(topics[3].as_slice(), 0) else {
-                        continue;
-                    };
-                    let fee = {
-                        let mut fb = [0u8; 4];
-                        fb[1] = log_data.data[61];
-                        fb[2] = log_data.data[62];
-                        fb[3] = log_data.data[63];
-                        u32::from_be_bytes(fb)
-                    };
-                    let hook_address =
-                        abi_decode_address(&log_data.data, 0).filter(|a| !a.is_zero());
-                    let creation_block = log.block_number.unwrap_or(0);
-                    out.factory_pools.entry(pool_addr).or_insert(
-                        DiscoveredPool::new(
-                            pool_addr,
-                            token0,
-                            token1,
-                            fee,
-                            DexType::PancakeInfinity,
-                            creation_block,
-                        )
-                        .with_pool_id(Some(pool_id))
-                        .with_factory(Some(pool_manager))
-                        .with_hook_address(hook_address),
-                    );
                 }
             }
             Err(e) => {

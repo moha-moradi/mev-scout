@@ -108,6 +108,7 @@ Inventory of production calls (all POSTed to the configured URL verbatim;
 | connectivity, tip, all ranges | `eth_blockNumber` |
 | `live`, `explorer index`, replay | `eth_getBlockByNumber`, `eth_getBlockReceipts`, `eth_getBlockByHash` |
 | `discover`, pool scan, `explorer --discover-pools` | `eth_getLogs` (address-less; never JSON-RPC batched) |
+| `discover` with `[discover] source = "receipts"` | `eth_getBlockReceipts` + `eth_getBlockByNumber` (batched), local log filtering — no address-less `eth_getLogs` |
 | replay / live state | `eth_getStorageAt`, `eth_getTransactionCount`, `eth_getBalance`, `eth_getCode` |
 | pool metadata, sAVAX, funding, explorer evidence | `eth_call` (`latest` → local node; historical block/hash → archive peer) |
 | `explorer audit` (optional) | `debug_traceTransaction`, then `trace_transaction` (AvalancheGo does not serve the latter; the audit records it as unavailable) |
@@ -325,19 +326,21 @@ later without re-fetching blocks, rerun the same `explorer index ... --out`
 command (idempotent); bare `explorer --out results/all.html` emits the all-time
 dashboard.
 
-**Can a fresh node index the last month of pools? No.** Bare `discover` (there
-is no `--days` CLI flag in this build) uses `[discover].lookback_days = 30`
-→ `30 × 43,200 = 1,296,000` blocks. Every window issues address-less
-`eth_getLogs` for DEX activity plus 12 factory scanners per ~10,000-block step
-(~1,700 log calls). A state-synced node stores neither the blocks nor the logs
-from before the day it synced, so those calls fail and the code logs
-`Skipping range … after 3 retries` and returns empty — a near-empty universe,
-not a loud error. Log scans are pinned to the `rpc_rps = 0` local provider;
-Dwellir is **not** a substitute: it returns 403 for every `eth_getLogs`, even
-with `address` + `topic` (probed). To get a real 30-day pool index: keep this
-node online for 30 days and then run bare `discover`, or use a full/archive
-node that serves address-less logs. Until then use `discover --blocks N` with
-`N` inside the node's own uptime.
+**Can a fresh node index the last month of pools? Not with bare `hybrid` yet.**
+Bare `discover` (there is no `--days` CLI flag in this build) uses
+`[discover].lookback_days = 30` → `30 × 43,200 = 1,296,000` blocks. Every
+window issues address-less `eth_getLogs` for DEX activity plus 12 factory
+scanners per ~10,000-block step (~1,700 log calls). A state-synced node stores
+neither the blocks nor the logs from before the day it synced, so those calls
+fail and the code logs `Skipping range … after 3 retries` and returns empty —
+a near-empty universe, not a loud error. Log scans are pinned to the
+`rpc_rps = 0` local provider; Dwellir is **not** a substitute: it returns 403
+for every `eth_getLogs`, even with `address` + `topic` (probed). There are three
+ways to get a real 30-day pool index: keep this node online for 30 days and
+then run bare `discover` (the steady-state default), use a full/archive node
+that serves address-less logs, or do a one-time `receipts` backfill as described
+below. Until then, for the local node itself use `discover --blocks N` with `N`
+inside the node's own uptime.
 
 A different option is a **current pool list, not a historical index**: set
 `[discover].source = "remote"` in the TOML (there is no `--source` CLI flag;
@@ -351,6 +354,74 @@ universe. It still needs an RPC for the startup check and, with defaults,
 `resolve_remote_metadata = false` and `health_check = false` for a listing-only
 run. Verified with a 5-pool cap: `5 pool(s) in 0 active blocks`, all with
 `creation_block = 0`.
+
+### Discovery defaults: keep `hybrid`, add a receipts backfill profile
+
+Decision after the W1 benchmark (`docs/POOL_DISCOVERY_RECEIPTS.md`):
+
+- **Global default stays `source = "hybrid"` — do not change it.** Once this
+  node has 30 days of uptime, `hybrid` is the cheapest correct path:
+  address-less `eth_getLogs` comes from the local node, remote TVL ranking is
+  preserved, and incremental runs read only new blocks via the watermark.
+- **`source = "receipts"` is an opt-in backfill profile, not the default.** It
+  is the only working on-chain path before the node has history (public peers
+  reject address-less `eth_getLogs`, Dwellir returns 403) and it recovers
+  `creation_block`.
+- `factory_state`/M4 stays inactive (P4 reverted on both peers). M2/M3 were
+  benchmark workarounds for provider rate limits, not production defaults.
+  `remote`/M5 is a control, not an on-chain index.
+
+| Phase | Command / profile | Why |
+| --- | --- | --- |
+| Now, before the node exists | `hybrid` remains the documented default; use the `receipts` profile for any real 30-day backfill | No peer serves address-less `eth_getLogs` ranges |
+| Right after node launch | local profile with `source = "hybrid"` + `discover --blocks N` for `N` inside the node's own uptime; `receipts` profile for the older window | The pruned node has no logs before its sync date |
+| After 30 days of uptime | Plain `hybrid` + incremental | Local logs cover the lookback; no public batch storm |
+
+This is already saved as `mev-scout.public-discover.toml`; the full profile
+matrix (local/public × discover/explorer/live/remote) is in
+`docs/CONFIG_PROFILES.md`. Its key settings are:
+
+```toml
+chain = "avalanche"
+rpc_urls = [
+  "https://avalanche-c-chain.publicnode.com",
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/${DWELLIR_AVALANCHE_KEY}/ext/bc/C/rpc",
+]
+rpc_rps = [0.0, 1.0]   # publicnode unlimited, Dwellir free tier: 1 RPS
+rps_limit = 0.0
+
+[discover]
+source = "receipts"
+lookback_days = 30
+rpc_concurrency = 8
+receipt_batch_blocks = 4
+receipt_cache_blocks = false
+health_check = false
+resolve_remote_metadata = false
+min_tvl = 0.0
+max_pools = 100_000
+```
+
+Run the smoke test first, then the backfill:
+
+```bash
+./target/release/mev-scout --config mev-scout.public-discover.toml discover --blocks 100
+./target/release/mev-scout --config mev-scout.public-discover.toml discover
+```
+
+It batches `eth_getBlockByNumber` + `eth_getBlockReceipts`, filters factory
+logs locally, and never calls address-less `eth_getLogs`. W1 (1000 blocks) took
+~14 s on publicnode with 0 failed windows and returned 100 pools with
+`creation_block`; a full 30-day scan is ~1.3M blocks / ~325k batch POSTs /
+hours. Keep Dwellir at 1 RPS: higher concurrency produced failed windows and
+the watermark stops advancing. If you have no Dwellir key, use only publicnode
+and `rpc_rps = [0.0]` — receipts retention is confirmed there too.
+
+After the backfill, use `mev-scout.local.toml` with `[discover].source =
+"hybrid"` (the checked-in local profile currently has `onchain`; switch it if
+you want the documented default). With a populated cache the CLI resumes
+incrementally and only scans new blocks. Details and benchmark results:
+`docs/POOL_DISCOVERY_RECEIPTS.md`.
 
 **One-off 30-day pool list without 30 days of uptime:** don't use `discover`.
 `explorer index` fetches receipts (publicnode serves 30-day-old receipts —

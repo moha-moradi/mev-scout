@@ -1,9 +1,9 @@
 //! Multi-provider RPC client with per-endpoint rate limiting, weighted selection,
 //! and block-range sharding for load distribution across public/private RPC endpoints.
 use crate::rpc::consts::{DEAD_PROVIDER_COOLDOWN_SECS, HTTP_TIMEOUT_SECS};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::data::types::{AccessListItem, BlockData, LogData, ReceiptData, TxData};
 use alloy::consensus::Transaction;
@@ -16,6 +16,7 @@ use alloy::rpc::client::{BatchRequest, RpcClient as AlloyRpcClient, Waiter};
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::rpc::types::{Block, Filter, Log, Transaction as AlloyTx, TransactionReceipt};
 use futures;
+use serde::Serialize;
 use serde_json::Value;
 use url::Url;
 
@@ -25,6 +26,80 @@ use super::middleware::{ProviderState, RateLimiter};
 /// [`RpcClient::distribute_blocks`] assigns essentially the whole range to it
 /// while a 1 RPS peer still receives a remainder for failover.
 const UNLIMITED_PROVIDER_WEIGHT: f64 = 10_000.0;
+
+/// Lightweight per-client counters used by the discovery benchmark harness.
+/// They track individual JSON-RPC attempts (not just logical calls), so a
+/// transport retry is visible as more than one request.
+#[derive(Debug, Default)]
+pub struct RpcMetrics {
+    requests: AtomicU64,
+    errors: AtomicU64,
+    retryable_errors: AtomicU64,
+    bytes: AtomicU64,
+    latency_ms: Mutex<Vec<u64>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RpcMetricsSnapshot {
+    pub requests: u64,
+    pub errors: u64,
+    pub retryable_errors: u64,
+    pub bytes: u64,
+    pub p50_ms: u64,
+    pub p95_ms: u64,
+}
+
+impl RpcMetrics {
+    fn record_request(&self) {
+        self.requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_error(&self) {
+        self.errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_retryable_error(&self) {
+        self.retryable_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_latency(&self, latency: Duration) {
+        let ms = latency.as_millis().min(u64::MAX as u128) as u64;
+        let mut guard = self.latency_ms.lock().unwrap_or_else(|e| e.into_inner());
+        guard.push(ms);
+    }
+
+    fn add_bytes(&self, bytes: usize) {
+        self.bytes
+            .fetch_add(bytes.min(u64::MAX as usize) as u64, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> RpcMetricsSnapshot {
+        let mut latencies = self
+            .latency_ms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let (p50_ms, p95_ms) = if latencies.is_empty() {
+            (0, 0)
+        } else {
+            latencies.sort_unstable();
+            let p50 = (latencies.len() * 50) / 100;
+            let p95 = (latencies.len() * 95) / 100;
+            (
+                latencies[p50.min(latencies.len() - 1)],
+                latencies[p95.min(latencies.len() - 1)],
+            )
+        };
+        RpcMetricsSnapshot {
+            requests: self.requests.load(Ordering::Relaxed),
+            errors: self.errors.load(Ordering::Relaxed),
+            retryable_errors: self.retryable_errors.load(Ordering::Relaxed),
+            bytes: self.bytes.load(Ordering::Relaxed),
+            p50_ms,
+            p95_ms,
+        }
+    }
+}
 
 /// Block reference for pool-state queries: either an explicit block number
 /// (requires archive/recent-state-capable providers) or the `latest` tag
@@ -161,6 +236,7 @@ pub struct RpcClient {
     /// and all traffic pins to a single rate limiter (e.g. one 10 RPS endpoint
     /// while four identical siblings sit idle).
     dispatch_counter: Arc<AtomicUsize>,
+    metrics: Arc<RpcMetrics>,
 }
 
 impl RpcClient {
@@ -197,6 +273,7 @@ impl RpcClient {
             chain_id,
             current: Arc::new(AtomicUsize::new(0)),
             dispatch_counter: Arc::new(AtomicUsize::new(0)),
+            metrics: Arc::new(RpcMetrics::default()),
         })
     }
 
@@ -224,6 +301,16 @@ impl RpcClient {
     /// Returns the chain ID this client is configured for.
     pub fn chain_id(&self) -> u64 {
         self.chain_id
+    }
+
+    /// Number of configured providers. Used to validate mixed-provider scans.
+    pub async fn provider_count(&self) -> usize {
+        self.providers.lock().await.len()
+    }
+
+    /// Counters for this client, for the discovery benchmark harness.
+    pub fn metrics_snapshot(&self) -> RpcMetricsSnapshot {
+        self.metrics.snapshot()
     }
 
     /// Return a summary string of all providers and their status.
@@ -586,14 +673,23 @@ impl RpcClient {
                     // Retries must re-acquire so they can't burst past the
                     // configured per-provider RPS while upstream throttles us.
                     provider.acquire_permit().await;
+                    self.metrics.record_request();
                     let t0 = Instant::now();
                     match f(provider.provider().clone()).await {
-                        Ok(val) => break Ok((val, t0.elapsed())),
+                        Ok(val) => {
+                            let latency = t0.elapsed();
+                            self.metrics.record_latency(latency);
+                            break Ok((val, latency));
+                        }
                         Err(e) => {
+                            let latency = t0.elapsed();
+                            self.metrics.record_error();
+                            self.metrics.record_latency(latency);
                             let err_msg = format!("{e:#}");
                             let is_evm_revert = err_msg.contains("execution reverted");
                             let transient = !is_evm_revert && is_transport_error(&err_msg);
                             if transient && attempts < 3 {
+                                self.metrics.record_retryable_error();
                                 tracing::debug!(
                                     "transport/rate-limit error on {} (attempt {attempts}): {err_msg}",
                                     provider.label(),
@@ -1201,8 +1297,12 @@ impl RpcClient {
         &self,
         block_number: u64,
     ) -> anyhow::Result<(BlockData, Vec<TxData>, Vec<ReceiptData>)> {
+        let metrics = self.metrics.clone();
         self.retry_call(
-            |provider| async move { Self::batch_rpc_call(provider, block_number).await },
+            move |provider| {
+                let metrics = metrics.clone();
+                async move { Self::batch_rpc_call(provider, block_number, &metrics).await }
+            },
             ProviderScope::Any,
         )
         .await
@@ -1227,11 +1327,13 @@ impl RpcClient {
             ]);
         }
         let blocks = block_numbers.to_vec();
+        let metrics = self.metrics.clone();
         match self
             .retry_call(
-                |provider| {
+                move |provider| {
                     let blocks = blocks.clone();
-                    async move { Self::batch_rpc_call_many(provider, &blocks).await }
+                    let metrics = metrics.clone();
+                    async move { Self::batch_rpc_call_many(provider, &blocks, &metrics).await }
                 },
                 ProviderScope::Any,
             )
@@ -1279,9 +1381,16 @@ impl RpcClient {
 
         provider.acquire_permit().await;
 
+        let metrics = self.metrics.clone();
+        self.metrics.record_request();
         let t0 = Instant::now();
-        let result = Self::batch_rpc_call(provider.provider().clone(), block_number).await;
+        let result =
+            Self::batch_rpc_call(provider.provider().clone(), block_number, &metrics).await;
         let latency = t0.elapsed();
+        self.metrics.record_latency(latency);
+        if result.is_err() {
+            self.metrics.record_error();
+        }
 
         match result {
             Ok(val) => {
@@ -1312,10 +1421,90 @@ impl RpcClient {
         }
     }
 
+    /// Fetch several blocks and their receipts in one JSON-RPC batch POST,
+    /// pinned to a specific provider (used by receipts discovery benchmarks).
+    ///
+    /// Mirrors [`Self::get_blocks_and_receipts_batch`]: splits on batch-level
+    /// failure and falls back to the unpinned path if the provider is gone.
+    pub async fn get_blocks_and_receipts_batch_for_many(
+        &self,
+        provider_idx: usize,
+        block_numbers: &[u64],
+    ) -> anyhow::Result<Vec<(BlockData, Vec<TxData>, Vec<ReceiptData>)>> {
+        if block_numbers.is_empty() {
+            return Ok(Vec::new());
+        }
+        if block_numbers.len() == 1 {
+            return Ok(vec![
+                self.get_block_and_receipts_batch_for(provider_idx, block_numbers[0])
+                    .await?,
+            ]);
+        }
+
+        let provider = {
+            let provs = self.providers.lock().await;
+            provs.get(provider_idx).cloned()
+        };
+        let Some(provider) = provider.filter(|p| p.is_available()) else {
+            return self.get_blocks_and_receipts_batch(block_numbers).await;
+        };
+
+        provider.acquire_permit().await;
+        let metrics = self.metrics.clone();
+        self.metrics.record_request();
+        let t0 = Instant::now();
+        let result =
+            Self::batch_rpc_call_many(provider.provider().clone(), block_numbers, &metrics).await;
+        let latency = t0.elapsed();
+        self.metrics.record_latency(latency);
+        if result.is_err() {
+            self.metrics.record_error();
+        }
+
+        match result {
+            Ok(rows) => {
+                let mut provs = self.providers.lock().await;
+                if let Some(p) = provs.get_mut(provider_idx) {
+                    p.record_success(latency);
+                    p.sync_rate_limiter().await;
+                }
+                Ok(rows)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Pinned provider-{provider_idx} batch for {} blocks failed (cooldown={:?}): {e:#}",
+                    block_numbers.len(),
+                    provider.cooldown_until(),
+                );
+                {
+                    let mut provs = self.providers.lock().await;
+                    if let Some(p) = provs.get_mut(provider_idx) {
+                        p.record_failure();
+                        p.sync_rate_limiter().await;
+                    }
+                }
+                let mid = block_numbers.len() / 2;
+                let mut left = Box::pin(self.get_blocks_and_receipts_batch_for_many(
+                    provider_idx,
+                    &block_numbers[..mid],
+                ))
+                .await?;
+                let right = Box::pin(self.get_blocks_and_receipts_batch_for_many(
+                    provider_idx,
+                    &block_numbers[mid..],
+                ))
+                .await?;
+                left.extend(right);
+                Ok(left)
+            }
+        }
+    }
+
     /// Core batch RPC logic shared by pinned and unpinned paths.
     async fn batch_rpc_call(
         provider: RootProvider,
         block_number: u64,
+        metrics: &RpcMetrics,
     ) -> anyhow::Result<(BlockData, Vec<TxData>, Vec<ReceiptData>)> {
         let mut batch = BatchRequest::new(provider.client());
 
@@ -1339,13 +1528,14 @@ impl RpcClient {
         let receipts_raw: Value = receipts_waiter
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
-        Self::decode_block_and_receipts(block_number, raw, receipts_raw)
+        Self::decode_block_and_receipts(block_number, raw, receipts_raw, metrics)
     }
 
     /// Several blocks in one HTTP POST. Caller splits on error.
     async fn batch_rpc_call_many(
         provider: RootProvider,
         block_numbers: &[u64],
+        metrics: &RpcMetrics,
     ) -> anyhow::Result<Vec<(BlockData, Vec<TxData>, Vec<ReceiptData>)>> {
         let mut batch = BatchRequest::new(provider.client());
         let mut block_waiters = Vec::with_capacity(block_numbers.len());
@@ -1381,6 +1571,7 @@ impl RpcClient {
                 block_number,
                 raw,
                 receipts_raw,
+                metrics,
             )?);
         }
         Ok(out)
@@ -1390,6 +1581,7 @@ impl RpcClient {
         block_number: u64,
         mut raw: Value,
         mut receipts_raw: Value,
+        metrics: &RpcMetrics,
     ) -> anyhow::Result<(BlockData, Vec<TxData>, Vec<ReceiptData>)> {
         if raw.is_null() {
             anyhow::bail!("block {} not found", block_number);
@@ -1409,6 +1601,7 @@ impl RpcClient {
         let receipts: Vec<TransactionReceipt> =
             serde_json::from_value(receipts_raw).map_err(|e| anyhow::anyhow!("{}", e))?;
 
+        metrics.add_bytes(block_json_size + receipts_json_size);
         tracing::debug!(
             block = block_number,
             block_bytes = block_json_size,

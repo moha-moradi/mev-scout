@@ -134,6 +134,17 @@ pub struct DiscoverConfig {
     /// Solidly-style pool fee override in basis points (optional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solidly_fee_bps: Option<u32>,
+    /// Blocks per `eth_getBlockReceipts` batch for `source = "receipts"`.
+    #[serde(default = "default_receipt_batch_blocks")]
+    pub receipt_batch_blocks: u64,
+    /// Cache fetched block/receipt bundles for `source = "receipts"` so later
+    /// runs can reuse `get_receipts` without re-fetching. Off by default.
+    #[serde(default)]
+    pub receipt_cache_blocks: bool,
+    /// Mixed-provider receipts (benchmark M3): trailing block count that must
+    /// go to provider 0, with older blocks going to provider 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_recent_blocks: Option<u64>,
 }
 
 /// Live sub-config: `[live]` TOML section.
@@ -401,6 +412,9 @@ fn default_discover_min_tvl() -> f64 {
 fn default_discover_max_pools() -> usize {
     1000
 }
+fn default_receipt_batch_blocks() -> u64 {
+    4
+}
 fn default_live_poll_ms() -> u64 {
     2000
 }
@@ -561,6 +575,9 @@ impl Default for DiscoverConfig {
             max_pools: default_discover_max_pools(),
             resolve_remote_metadata: true,
             solidly_fee_bps: None,
+            receipt_batch_blocks: default_receipt_batch_blocks(),
+            receipt_cache_blocks: false,
+            receipt_recent_blocks: None,
         }
     }
 }

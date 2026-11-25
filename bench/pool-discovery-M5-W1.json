@@ -1,0 +1,239 @@
+{
+  "method": "M5",
+  "window": "W1",
+  "repeats": 3,
+  "median_elapsed_ms": 5588,
+  "runs": [
+    {
+      "method": "M5",
+      "window": "W1",
+      "iteration": 1,
+      "status": "ok",
+      "source": "remote",
+      "rpc_urls": [
+        "https://avalanche-c-chain.publicnode.com"
+      ],
+      "elapsed_ms": 8573,
+      "outcome": {
+        "pools_total": 27,
+        "dex_families": [
+          "TraderJoeLB",
+          "UniswapV2",
+          "UniswapV3"
+        ],
+        "pools_with_creation_block": 0,
+        "token_complete": 27,
+        "fee_complete": 0,
+        "tick_spacing_complete": 0,
+        "dex_name_complete": 27,
+        "tvl_usd_complete": 27,
+        "active_blocks": 0,
+        "remote_count": 27
+      },
+      "rpc": {
+        "requests": 1,
+        "errors": 0,
+        "retryable_errors": 0,
+        "bytes": 0,
+        "p50_ms": 99,
+        "p95_ms": 99
+      },
+      "errors": {
+        "total": 0,
+        "no_address_logs": 0,
+        "http_403": 0,
+        "rate_limit": 0,
+        "null_receipts": 0
+      },
+      "addresses": [
+        "0xf01449c0ba930b6e2caca3def3ccbd7a3e589534",
+        "0xfae3f424a0a47706811521e3ee268f00cfb5c45e",
+        "0x8ac5707f8d4bde1d771d34c7afd81c3922b73379",
+        "0xed8cbd9f0ce3c6986b22002f03c6475ceb7a6256",
+        "0xa389f9430876455c36478deea9769b7ca4e3ddb1",
+        "0xf4003f4efbe8691b60249e6afbd307abe7758adb",
+        "0x864d4e5ee7318e97483db7eb0912e09f161516ea",
+        "0x87eb2f90d7d0034571f343fb7429ae22c1bd9f72",
+        "0x0e0100ab771e9288e0aa97e11557e6654c3a9665",
+        "0xe3ba3d5e3f98eeff5e9eddd5bd20e476202770da",
+        "0xbd918ed441767fe7924e99f6a0e0b568ac1970d9",
+        "0x25f21ea641f7113b86a1542ee79936ed3670cde7",
+        "0xbb4646a764358ee93c2a9c4a147d5aded527ab73",
+        "0x87dee1cc9ffd464b79e058ba20387c1984aed86a",
+        "0x27b571f3e7f7827b13d927d2d59244e3e58a7d1a",
+        "0x11476e10eb79ddffa6f2585be526d2bd840c3e20",
+        "0xa20c959b19f114e9c2d81547734cdc1110bd773d",
+        "0x0e663593657b064e1bae76d28625df5d0ebd4421",
+        "0x5fc70cf6a4a858cf4124013047e408367eba1ace",
+        "0x89810ddb66d08a532f51fb36e8fa108ebb36ca1a",
+        "0x6539bf462f73ff9497054ba261c195da8639ed61",
+        "0xd18384f4398bf5415902ad5d87eaa96549fd4f1e",
+        "0x6b00325bc678e0fbcbd7d4be4eb0785408860176",
+        "0x4b91e7146b7d33c45e1ee53e3ddd3084595dc757",
+        "0x519de4668ea6661d1870928a3033a62dc2acc503",
+        "0xabb25c3c18e73b4578005637b902aef458459b05",
+        "0x7e028006ec8632bf009fa4bdd8f1e5a50124efec"
+      ],
+      "logs": [
+        "Pool discovery — chain avalanche, sources: remote, blocks 101333712-101334711 (json=false)",
+        "Remote pool sources: 27 pool(s)",
+        "Cached 27 pool(s) to bench/cache/M5-W1-run1.sqlite",
+        "Found 27 pool(s) in 0 active blocks (remote=27)"
+      ]
+    },
+    {
+      "method": "M5",
+      "window": "W1",
+      "iteration": 2,
+      "status": "ok",
+      "source": "remote",
+      "rpc_urls": [
+        "https://avalanche-c-chain.publicnode.com"
+      ],
+      "elapsed_ms": 4708,
+      "outcome": {
+        "pools_total": 27,
+        "dex_families": [
+          "TraderJoeLB",
+          "UniswapV2",
+          "UniswapV3"
+        ],
+        "pools_with_creation_block": 0,
+        "token_complete": 27,
+        "fee_complete": 0,
+        "tick_spacing_complete": 0,
+        "dex_name_complete": 27,
+        "tvl_usd_complete": 27,
+        "active_blocks": 0,
+        "remote_count": 27
+      },
+      "rpc": {
+        "requests": 1,
+        "errors": 0,
+        "retryable_errors": 0,
+        "bytes": 0,
+        "p50_ms": 113,
+        "p95_ms": 113
+      },
+      "errors": {
+        "total": 0,
+        "no_address_logs": 0,
+        "http_403": 0,
+        "rate_limit": 0,
+        "null_receipts": 0
+      },
+      "addresses": [
+        "0xf01449c0ba930b6e2caca3def3ccbd7a3e589534",
+        "0xfae3f424a0a47706811521e3ee268f00cfb5c45e",
+        "0x8ac5707f8d4bde1d771d34c7afd81c3922b73379",
+        "0xed8cbd9f0ce3c6986b22002f03c6475ceb7a6256",
+        "0xa389f9430876455c36478deea9769b7ca4e3ddb1",
+        "0xf4003f4efbe8691b60249e6afbd307abe7758adb",
+        "0x864d4e5ee7318e97483db7eb0912e09f161516ea",
+        "0x87eb2f90d7d0034571f343fb7429ae22c1bd9f72",
+        "0x0e0100ab771e9288e0aa97e11557e6654c3a9665",
+        "0xe3ba3d5e3f98eeff5e9eddd5bd20e476202770da",
+        "0xbd918ed441767fe7924e99f6a0e0b568ac1970d9",
+        "0x25f21ea641f7113b86a1542ee79936ed3670cde7",
+        "0xbb4646a764358ee93c2a9c4a147d5aded527ab73",
+        "0x87dee1cc9ffd464b79e058ba20387c1984aed86a",
+        "0x27b571f3e7f7827b13d927d2d59244e3e58a7d1a",
+        "0x11476e10eb79ddffa6f2585be526d2bd840c3e20",
+        "0xa20c959b19f114e9c2d81547734cdc1110bd773d",
+        "0x0e663593657b064e1bae76d28625df5d0ebd4421",
+        "0x5fc70cf6a4a858cf4124013047e408367eba1ace",
+        "0x89810ddb66d08a532f51fb36e8fa108ebb36ca1a",
+        "0x6539bf462f73ff9497054ba261c195da8639ed61",
+        "0xd18384f4398bf5415902ad5d87eaa96549fd4f1e",
+        "0x6b00325bc678e0fbcbd7d4be4eb0785408860176",
+        "0x4b91e7146b7d33c45e1ee53e3ddd3084595dc757",
+        "0x519de4668ea6661d1870928a3033a62dc2acc503",
+        "0xabb25c3c18e73b4578005637b902aef458459b05",
+        "0x7e028006ec8632bf009fa4bdd8f1e5a50124efec"
+      ],
+      "logs": [
+        "Pool discovery — chain avalanche, sources: remote, blocks 101333723-101334722 (json=false)",
+        "Remote pool sources: 27 pool(s)",
+        "Cached 27 pool(s) to bench/cache/M5-W1-run2.sqlite",
+        "Found 27 pool(s) in 0 active blocks (remote=27)"
+      ]
+    },
+    {
+      "method": "M5",
+      "window": "W1",
+      "iteration": 3,
+      "status": "ok",
+      "source": "remote",
+      "rpc_urls": [
+        "https://avalanche-c-chain.publicnode.com"
+      ],
+      "elapsed_ms": 5588,
+      "outcome": {
+        "pools_total": 27,
+        "dex_families": [
+          "TraderJoeLB",
+          "UniswapV2",
+          "UniswapV3"
+        ],
+        "pools_with_creation_block": 0,
+        "token_complete": 27,
+        "fee_complete": 0,
+        "tick_spacing_complete": 0,
+        "dex_name_complete": 27,
+        "tvl_usd_complete": 27,
+        "active_blocks": 0,
+        "remote_count": 27
+      },
+      "rpc": {
+        "requests": 1,
+        "errors": 0,
+        "retryable_errors": 0,
+        "bytes": 0,
+        "p50_ms": 105,
+        "p95_ms": 105
+      },
+      "errors": {
+        "total": 0,
+        "no_address_logs": 0,
+        "http_403": 0,
+        "rate_limit": 0,
+        "null_receipts": 0
+      },
+      "addresses": [
+        "0xf01449c0ba930b6e2caca3def3ccbd7a3e589534",
+        "0xfae3f424a0a47706811521e3ee268f00cfb5c45e",
+        "0x8ac5707f8d4bde1d771d34c7afd81c3922b73379",
+        "0xed8cbd9f0ce3c6986b22002f03c6475ceb7a6256",
+        "0xa389f9430876455c36478deea9769b7ca4e3ddb1",
+        "0xf4003f4efbe8691b60249e6afbd307abe7758adb",
+        "0x864d4e5ee7318e97483db7eb0912e09f161516ea",
+        "0x87eb2f90d7d0034571f343fb7429ae22c1bd9f72",
+        "0x0e0100ab771e9288e0aa97e11557e6654c3a9665",
+        "0xe3ba3d5e3f98eeff5e9eddd5bd20e476202770da",
+        "0xbd918ed441767fe7924e99f6a0e0b568ac1970d9",
+        "0x25f21ea641f7113b86a1542ee79936ed3670cde7",
+        "0xbb4646a764358ee93c2a9c4a147d5aded527ab73",
+        "0x87dee1cc9ffd464b79e058ba20387c1984aed86a",
+        "0x27b571f3e7f7827b13d927d2d59244e3e58a7d1a",
+        "0x11476e10eb79ddffa6f2585be526d2bd840c3e20",
+        "0xa20c959b19f114e9c2d81547734cdc1110bd773d",
+        "0x0e663593657b064e1bae76d28625df5d0ebd4421",
+        "0x5fc70cf6a4a858cf4124013047e408367eba1ace",
+        "0x89810ddb66d08a532f51fb36e8fa108ebb36ca1a",
+        "0x6539bf462f73ff9497054ba261c195da8639ed61",
+        "0xd18384f4398bf5415902ad5d87eaa96549fd4f1e",
+        "0x6b00325bc678e0fbcbd7d4be4eb0785408860176",
+        "0x4b91e7146b7d33c45e1ee53e3ddd3084595dc757",
+        "0x519de4668ea6661d1870928a3033a62dc2acc503",
+        "0xabb25c3c18e73b4578005637b902aef458459b05",
+        "0x7e028006ec8632bf009fa4bdd8f1e5a50124efec"
+      ],
+      "logs": [
+        "Pool discovery — chain avalanche, sources: remote, blocks 101333731-101334730 (json=false)",
+        "Remote pool sources: 27 pool(s)",
+        "Cached 27 pool(s) to bench/cache/M5-W1-run3.sqlite",
+        "Found 27 pool(s) in 0 active blocks (remote=27)"
+      ]
+    }
+  ]
+}

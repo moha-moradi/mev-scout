@@ -1,5 +1,8 @@
 # mev-scout configuration — public RPCs from chainlist (no API keys needed).
 #
+# Ready-made Avalanche job profiles (local/public × discover/explorer/live/remote):
+#   docs/CONFIG_PROFILES.md
+#
 # Generated from mev-scout.example.toml with free public endpoints listed on
 # chainlist.org / the ethereum-lists/chains registry for every supported chain.
 # No `${ENV_VAR}` placeholders require exporting any key; every URL below is a
@@ -45,17 +48,29 @@ output = "table"
 
 # ── Discover tuning ────────────────────────────────────────────────
 # Default source is hybrid (on-chain + GeckoTerminal/DexScreener), ranked by
-# TVL like a DEX explorer. Use source = "onchain" for a pure factory scan.
+# TVL like a DEX explorer. Other sources: "onchain" (pure factory getLogs scan),
+# "remote" (explorer-only control) and "receipts" (opt-in, TOML-only).
+#
+# `receipts` avoids address-less `eth_getLogs` entirely: it batches
+# `eth_getBlockReceipts` + `eth_getBlockByNumber` and filters logs locally.
+# A 30-day scan on public peers is ~1.3M blocks / ~325k batch POSTs / hours;
+# always try a short `--blocks 100` range first.
+#
 # [discover]
-# source = "hybrid"          # hybrid | remote | onchain
+# source = "hybrid"          # hybrid | remote | onchain | receipts
 # enrich = false             # onchain-only: add aggregator TVL without remote addresses
 # batch_size = 500
-# rpc_concurrency = 8
+# rpc_concurrency = 8        # also bounds concurrent receipt batch windows
 # health_check = true
 # min_tvl = 25000.0
 # max_pools = 1000
 # resolve_remote_metadata = true
 # solidly_fee_bps = 30
+# lookback_days = 30         # receipts/onchain window when no explicit range is given
+# receipt_batch_blocks = 4   # blocks per eth_getBlockReceipts batch POST
+# receipt_cache_blocks = false # cache bundles for later get_receipts() reuse
+# receipt_recent_blocks = 1000 # benchmark M3 only: trailing blocks -> provider 0, older -> provider 1
+#                               # requires at least two configured rpc_urls
 
 # ── Live polling ───────────────────────────────────────────────────
 # [live]

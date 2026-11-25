@@ -1,0 +1,16 @@
+# Current TVL-ranked pool list only: no on-chain scan, no eth_getLogs,
+# no creation_block. TVL/volume come from GeckoTerminal + DexScreener over
+# plain HTTPS, not from RPC logs. Use as a control or quick listing.
+chain = "avalanche"
+output = "table"
+
+rps_limit = 0.0
+rpc_urls = ["https://avalanche-c-chain.publicnode.com"]
+rpc_rps = [0.0]
+
+[discover]
+source = "remote"
+health_check = false
+resolve_remote_metadata = false
+min_tvl = 25000.0
+max_pools = 1000

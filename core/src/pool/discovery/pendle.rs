@@ -32,6 +32,35 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     None
 }
 
+/// Decode a Pendle `NewMarket(address,address,uint256)` log.
+pub(super) fn decode_pendle_new_market(
+    log: &alloy::rpc::types::Log,
+    factory: Address,
+) -> Option<(Address, DiscoveredPool)> {
+    let topics = log.topics();
+    let log_data = log.data();
+    if topics.len() < 3 || log_data.data.len() < 32 {
+        return None;
+    }
+    let market_addr = topic_address(topics[1]);
+    let pt_addr = topic_address(topics[2]);
+    let expiry = U256::from_be_slice(&log_data.data[..32]).to::<u64>();
+    let creation_block = log.block_number.unwrap_or(0);
+    Some((
+        market_addr,
+        DiscoveredPool::new(
+            market_addr,
+            pt_addr,
+            Address::ZERO,
+            0,
+            DexType::Pendle,
+            creation_block,
+        )
+        .with_factory(Some(factory))
+        .with_maturity_timestamp(Some(expiry)),
+    ))
+}
+
 pub(crate) async fn scan_pendle_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
     let ScanContext {
         rpc,
@@ -53,27 +82,9 @@ pub(crate) async fn scan_pendle_batch(ctx: &ScanContext<'_>) -> ScanBatchResult 
                     if let Some(bn) = log.block_number {
                         out.active_blocks.insert(bn);
                     }
-                    let topics = log.topics();
-                    let log_data = log.data();
-                    if topics.len() < 3 || log_data.data.len() < 32 {
-                        continue;
+                    if let Some((addr, pool)) = decode_pendle_new_market(log, factory) {
+                        out.factory_pools.entry(addr).or_insert(pool);
                     }
-                    let market_addr = topic_address(topics[1]);
-                    let pt_addr = topic_address(topics[2]);
-                    let expiry = U256::from_be_slice(&log_data.data[..32]).to::<u64>();
-                    let creation_block = log.block_number.unwrap_or(0);
-                    out.factory_pools.entry(market_addr).or_insert(
-                        DiscoveredPool::new(
-                            market_addr,
-                            pt_addr,
-                            Address::ZERO,
-                            0,
-                            DexType::Pendle,
-                            creation_block,
-                        )
-                        .with_factory(Some(factory))
-                        .with_maturity_timestamp(Some(expiry)),
-                    );
                 }
             }
             Err(e) => {

@@ -4,6 +4,7 @@ use super::{ALGEBRA_POOL_CREATED_TOPIC, SLIPSTREAM_POOL_CREATED_TOPIC, V3_POOL_C
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
 use crate::utils::{abi_word_address, topic_address};
+use alloy::primitives::Address;
 
 /// V3 activity: per-pool contracts emit Swap/Mint/Burn from the pool address.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
@@ -13,6 +14,118 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     } else {
         None
     }
+}
+
+/// Canonical Uniswap V3 `PoolCreated(address,address,uint24,int24,address)`.
+pub(super) fn decode_v3_pool_created(
+    log: &alloy::rpc::types::Log,
+) -> Option<(Address, DiscoveredPool)> {
+    let log_data = log.data();
+    let topics = log.topics();
+    if log_data.data.len() < 64 || topics.len() < 4 {
+        return None;
+    }
+    let pool_addr = abi_word_address(&log_data.data, 1);
+    let token0 = topic_address(topics[1]);
+    let token1 = topic_address(topics[2]);
+    let fee = u32::from_be_bytes([
+        topics[3][28],
+        topics[3][29],
+        topics[3][30],
+        topics[3][31],
+    ]);
+    let mut ts_bytes = [0u8; 4];
+    ts_bytes.copy_from_slice(&log_data.data[28..32]);
+    let tick_spacing = i32::from_be_bytes(ts_bytes);
+    let creation_block = log.block_number.unwrap_or(0);
+    let factory = log.address();
+    Some((
+        pool_addr,
+        DiscoveredPool::new(
+            pool_addr,
+            token0,
+            token1,
+            fee,
+            DexType::UniswapV3,
+            creation_block,
+        )
+        .with_tick_spacing(Some(tick_spacing))
+        .with_factory(Some(factory))
+        .with_dex_name(Some(resolve_dex_name(Some(factory), "UniswapV3"))),
+    ))
+}
+
+/// Algebra `Pool(address,address,address)` (QuickSwap V3).
+pub(super) fn decode_algebra_pool_created(
+    log: &alloy::rpc::types::Log,
+) -> Option<(Address, DiscoveredPool)> {
+    let log_data = log.data();
+    let topics = log.topics();
+    if topics.len() < 3 || log_data.data.len() < 32 {
+        return None;
+    }
+    let token0 = topic_address(topics[1]);
+    let token1 = topic_address(topics[2]);
+    // pool address is ABI-encoded address in log data (32 bytes, last 20 bytes)
+    let pool_addr = abi_word_address(&log_data.data, 0);
+    if token0.is_zero() || token1.is_zero() || pool_addr.is_zero() {
+        return None;
+    }
+    let creation_block = log.block_number.unwrap_or(0);
+    let factory = log.address();
+    // fee / tickSpacing not in event; fetched via eth_call during metadata pass.
+    Some((
+        pool_addr,
+        DiscoveredPool::new(
+            pool_addr,
+            token0,
+            token1,
+            0,
+            DexType::UniswapV3,
+            creation_block,
+        )
+        .with_factory(Some(factory))
+        .with_dex_name(Some(resolve_dex_name(Some(factory), "Algebra CL"))),
+    ))
+}
+
+/// Aerodrome Slipstream / Velodrome V3 `PoolCreated(address,address,int24,address)`.
+pub(super) fn decode_slipstream_pool_created(
+    log: &alloy::rpc::types::Log,
+) -> Option<(Address, DiscoveredPool)> {
+    let log_data = log.data();
+    let topics = log.topics();
+    if log_data.data.len() < 32 || topics.len() < 4 {
+        return None;
+    }
+    let token0 = topic_address(topics[1]);
+    let token1 = topic_address(topics[2]);
+    // int24 tickSpacing is right-aligned in the third topic's 32-byte word.
+    let ts_bytes = [topics[3][29], topics[3][30], topics[3][31]];
+    let sign = if ts_bytes[0] & 0x80 != 0 { 0xFF } else { 0 };
+    let tick_spacing = i32::from_be_bytes([sign, ts_bytes[0], ts_bytes[1], ts_bytes[2]]);
+    // pool address is ABI-encoded address in log data (32 bytes, last 20 bytes)
+    let pool_addr = abi_word_address(&log_data.data, 0);
+    if token0.is_zero() || token1.is_zero() || pool_addr.is_zero() {
+        return None;
+    }
+    let creation_block = log.block_number.unwrap_or(0);
+    let factory = log.address();
+    // fee defaults to 0 (repaired via eth_call during metadata pass).
+    Some((
+        pool_addr,
+        DiscoveredPool::new(
+            pool_addr,
+            token0,
+            token1,
+            0,
+            DexType::UniswapV3,
+            creation_block,
+        )
+        .with_tick_spacing(Some(tick_spacing))
+        .with_factory(Some(factory))
+        .with_dex_name(Some(resolve_dex_name(Some(factory), "Slipstream CL"))),
+    ))
 }
 
 pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
@@ -33,43 +146,7 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                 current,
                 batch_end,
                 provider_idx,
-                |log| {
-                    let log_data = log.data();
-                    let topics = log.topics();
-                    if log_data.data.len() < 64 || topics.len() < 4 {
-                        return None;
-                    }
-                    let pool_addr = abi_word_address(&log_data.data, 1);
-                    let token0 = topic_address(topics[1]);
-                    let token1 = topic_address(topics[2]);
-                    let fee = u32::from_be_bytes([
-                        topics[3][28],
-                        topics[3][29],
-                        topics[3][30],
-                        topics[3][31],
-                    ]);
-                    let tick_spacing = {
-                        let mut ts_bytes = [0u8; 4];
-                        ts_bytes.copy_from_slice(&log_data.data[28..32]);
-                        Some(i32::from_be_bytes(ts_bytes))
-                    };
-                    let creation_block = log.block_number.unwrap_or(0);
-                    let factory = log.address();
-                    Some((
-                        pool_addr,
-                        DiscoveredPool::new(
-                            pool_addr,
-                            token0,
-                            token1,
-                            fee,
-                            DexType::UniswapV3,
-                            creation_block,
-                        )
-                        .with_tick_spacing(tick_spacing)
-                        .with_factory(Some(factory))
-                        .with_dex_name(Some(resolve_dex_name(Some(factory), "UniswapV3"))),
-                    ))
-                },
+                decode_v3_pool_created,
             )
             .await,
         );
@@ -81,39 +158,7 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                 current,
                 batch_end,
                 provider_idx,
-                |log| {
-                    let log_data = log.data();
-                    let topics = log.topics();
-                    if topics.len() < 3 {
-                        return None;
-                    }
-                    if log_data.data.len() < 32 {
-                        return None;
-                    }
-                    let token0 = topic_address(topics[1]);
-                    let token1 = topic_address(topics[2]);
-                    // pool address is ABI-encoded address in log data (32 bytes, last 20 bytes)
-                    let pool_addr = abi_word_address(&log_data.data, 0);
-                    if token0.is_zero() || token1.is_zero() || pool_addr.is_zero() {
-                        return None;
-                    }
-                    let creation_block = log.block_number.unwrap_or(0);
-                    let factory = log.address();
-                    // fee / tickSpacing not in event; fetched via eth_call during metadata pass.
-                    Some((
-                        pool_addr,
-                        DiscoveredPool::new(
-                            pool_addr,
-                            token0,
-                            token1,
-                            0,
-                            DexType::UniswapV3,
-                            creation_block,
-                        )
-                        .with_factory(Some(factory))
-                        .with_dex_name(Some(resolve_dex_name(Some(factory), "Algebra CL"))),
-                    ))
-                },
+                decode_algebra_pool_created,
             )
             .await,
         );
@@ -125,44 +170,7 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                 current,
                 batch_end,
                 provider_idx,
-                |log| {
-                    let log_data = log.data();
-                    let topics = log.topics();
-                    if log_data.data.len() < 32 || topics.len() < 4 {
-                        return None;
-                    }
-                    let token0 = topic_address(topics[1]);
-                    let token1 = topic_address(topics[2]);
-                    // int24 tickSpacing is right-aligned in the third topic's 32-byte word.
-                    let tick_spacing = {
-                        let ts_bytes = [topics[3][29], topics[3][30], topics[3][31]];
-                        let sign = if ts_bytes[0] & 0x80 != 0 { 0xFF } else { 0 };
-                        i32::from_be_bytes([sign, ts_bytes[0], ts_bytes[1], ts_bytes[2]])
-                    };
-                    // pool address is ABI-encoded address in log data (32 bytes, last 20 bytes)
-                    let pool_addr = abi_word_address(&log_data.data, 0);
-                    if token0.is_zero() || token1.is_zero() || pool_addr.is_zero() {
-                        return None;
-                    }
-                    let creation_block = log.block_number.unwrap_or(0);
-                    let factory = log.address();
-                    // fee / liquidity not in event; CL pools expose slot0/liquidity so
-                    // V3 state init applies, fee defaults to 0 (repaired via eth_call during metadata pass).
-                    Some((
-                        pool_addr,
-                        DiscoveredPool::new(
-                            pool_addr,
-                            token0,
-                            token1,
-                            0,
-                            DexType::UniswapV3,
-                            creation_block,
-                        )
-                        .with_tick_spacing(Some(tick_spacing))
-                        .with_factory(Some(factory))
-                        .with_dex_name(Some(resolve_dex_name(Some(factory), "Slipstream CL"))),
-                    ))
-                },
+                decode_slipstream_pool_created,
             )
             .await,
         );

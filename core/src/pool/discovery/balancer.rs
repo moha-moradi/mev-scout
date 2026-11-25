@@ -33,6 +33,39 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     }
 }
 
+/// Decode a Balancer `PoolRegistered(bytes32,address,uint8)` log from the Vault.
+pub(super) fn decode_balancer_pool_registered(
+    log: &alloy::rpc::types::Log,
+    vault: Address,
+) -> Option<(Address, DiscoveredPool)> {
+    let topics = log.topics();
+    if topics.len() < 4 {
+        return None;
+    }
+    let pool_type = topics[3][31];
+    if pool_type == 2 || pool_type > 3 {
+        return None;
+    }
+    let mut pool_id = [0u8; 32];
+    pool_id.copy_from_slice(topics[1].as_slice());
+    let pool_addr = topic_address(topics[2]);
+    let creation_block = log.block_number.unwrap_or(0);
+    Some((
+        pool_addr,
+        DiscoveredPool::new(
+            pool_addr,
+            Address::ZERO,
+            Address::ZERO,
+            0,
+            DexType::Balancer,
+            creation_block,
+        )
+        .with_pool_id(Some(pool_id))
+        .with_factory(Some(vault))
+        .with_balancer_pool_type(Some(pool_type)),
+    ))
+}
+
 pub(crate) async fn scan_balancer_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
     let ScanContext {
         rpc,
@@ -54,37 +87,15 @@ pub(crate) async fn scan_balancer_batch(ctx: &ScanContext<'_>) -> ScanBatchResul
                     if let Some(bn) = log.block_number {
                         out.active_blocks.insert(bn);
                     }
-                    let topics = log.topics();
-                    if topics.len() < 4 {
-                        continue;
+                    if let Some((addr, pool)) = decode_balancer_pool_registered(log, vault) {
+                        out.pool_hits.entry(addr).or_insert(PoolHit {
+                            dex_type: DexType::Balancer,
+                            pool_id: pool.pool_id,
+                            tokens: None,
+                            first_seen_block: pool.creation_block,
+                        });
+                        out.factory_pools.entry(addr).or_insert(pool);
                     }
-                    let pool_type = topics[3][31];
-                    if pool_type == 2 || pool_type > 3 {
-                        continue;
-                    }
-                    let mut pool_id = [0u8; 32];
-                    pool_id.copy_from_slice(topics[1].as_slice());
-                    let pool_addr = topic_address(topics[2]);
-                    let creation_block = log.block_number.unwrap_or(0);
-                    out.pool_hits.entry(pool_addr).or_insert(PoolHit {
-                        dex_type: DexType::Balancer,
-                        pool_id: Some(pool_id),
-                        tokens: None,
-                        first_seen_block: creation_block,
-                    });
-                    out.factory_pools.entry(pool_addr).or_insert(
-                        DiscoveredPool::new(
-                            pool_addr,
-                            Address::ZERO,
-                            Address::ZERO,
-                            0,
-                            DexType::Balancer,
-                            creation_block,
-                        )
-                        .with_pool_id(Some(pool_id))
-                        .with_factory(Some(vault))
-                        .with_balancer_pool_type(Some(pool_type)),
-                    );
                 }
             }
             Err(e) => {

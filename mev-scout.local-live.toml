@@ -1,0 +1,18 @@
+# Live loop on the local Avalanche node.
+# Address-list eth_getLogs is required for pending/swap feeds; publicnode
+# caps it at 10 addresses (403) and Dwellir returns 403, so there is no
+# usable public-live profile. Dwellir stays as historical-state fallback.
+chain = "avalanche"
+output = "table"
+
+rps_limit = 0.0
+block_concurrency = 4
+
+rpc_urls = [
+  "${AVAX_RPC_URL}",
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/${DWELLIR_AVALANCHE_KEY}/ext/bc/C/rpc",
+]
+rpc_rps = [0.0, 1.0]
+
+[live]
+poll_interval_ms = 500

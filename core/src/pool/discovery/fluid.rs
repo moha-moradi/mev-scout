@@ -16,10 +16,31 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     }
 }
 
-/// Fluid DEX factory scan — `LogDexDeployed(address indexed dex, uint256
-/// indexed dexId)` (verified against Instadapp/fluid-contracts-public
-/// factory/main.sol). The event carries only the pool address; token metadata
-/// is fetched later via the pool's `token0`/`token1` getters.
+/// Decode a Fluid `LogDexDeployed(address indexed dex, uint256 indexed dexId)` log.
+pub(super) fn decode_fluid_dex_deployed(
+    log: &alloy::rpc::types::Log,
+) -> Option<(Address, DiscoveredPool)> {
+    let topics = log.topics();
+    if topics.len() < 2 {
+        return None;
+    }
+    let pool_addr = topic_address(topics[1]);
+    let creation_block = log.block_number.unwrap_or(0);
+    Some((
+        pool_addr,
+        DiscoveredPool::new(
+            pool_addr,
+            Address::ZERO,
+            Address::ZERO,
+            0,
+            DexType::Fluid,
+            creation_block,
+        )
+        .with_factory(Some(log.address())),
+    ))
+}
+
+/// Fluid DEX factory scan — see [`decode_fluid_dex_deployed`].
 pub(crate) async fn scan_fluid_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
     let ScanContext {
         rpc,
@@ -37,26 +58,7 @@ pub(crate) async fn scan_fluid_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
             current,
             batch_end,
             provider_idx,
-            |log| {
-                let topics = log.topics();
-                if topics.len() < 2 {
-                    return None;
-                }
-                let pool_addr = topic_address(topics[1]);
-                let creation_block = log.block_number.unwrap_or(0);
-                Some((
-                    pool_addr,
-                    DiscoveredPool::new(
-                        pool_addr,
-                        Address::ZERO,
-                        Address::ZERO,
-                        0,
-                        DexType::Fluid,
-                        creation_block,
-                    )
-                    .with_factory(Some(log.address())),
-                ))
-            },
+            decode_fluid_dex_deployed,
         )
         .await;
     }

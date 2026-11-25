@@ -1,0 +1,27 @@
+# Steady-state pool discovery for the local pruned Avalanche node.
+# Use after ~30 days of uptime, when the node can serve address-less
+# eth_getLogs for the whole lookback window. Before that add --blocks N.
+# RPC order: local node first (unlimited), Dwellir only for historical state.
+chain = "avalanche"
+output = "table"
+
+rps_limit = 0.0
+block_concurrency = 4
+rpc_batch_blocks = 4
+
+rpc_urls = [
+  "${AVAX_RPC_URL}",
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/${DWELLIR_AVALANCHE_KEY}/ext/bc/C/rpc",
+]
+rpc_rps = [0.0, 1.0]
+
+[discover]
+source = "hybrid"
+batch_size = 2000
+factory_batch_size = 10000
+lookback_days = 30
+rpc_concurrency = 4
+health_check = true
+resolve_remote_metadata = true
+min_tvl = 25000.0
+max_pools = 1000

@@ -1,0 +1,176 @@
+[
+  {
+    "peer": "publicnode",
+    "url": "https://avalanche-c-chain.publicnode.com",
+    "tip": 101335035,
+    "probes": [
+      {
+        "test": "P1a",
+        "ok": true,
+        "status": 200,
+        "latency_ms": 904,
+        "bytes": 0,
+        "detail": "tip=101335035"
+      },
+      {
+        "test": "P1b",
+        "ok": true,
+        "status": 200,
+        "latency_ms": 406,
+        "bytes": 43,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P1b\",\"result\":null} "
+      },
+      {
+        "test": "P2",
+        "ok": true,
+        "status": 200,
+        "latency_ms": 401,
+        "bytes": 2497,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P2\",\"result\":[{\"blockHash\":\"0x590e145a1ca23e53167fe45c36f9dd1c584825be8f8aaaad5ee868066ffe62d7\",\"blockNumber\":\"0x5f6797b\",\"contractAddress\":null,\"cumulativeGasUsed\":\"0x2b089\",\"effectiveGasPrice\":\"0"
+      },
+      {
+        "test": "P3",
+        "ok": true,
+        "status": 200,
+        "latency_ms": 432,
+        "bytes": 36672,
+        "detail": "batch items=4"
+      },
+      {
+        "test": "P4",
+        "ok": false,
+        "status": 200,
+        "latency_ms": 395,
+        "bytes": 90,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P4-latest\",\"error\":{\"code\":-32000,\"message\":\"execution reverted\"}} "
+      },
+      {
+        "test": "P4",
+        "ok": false,
+        "status": 200,
+        "latency_ms": 30252,
+        "bytes": 86,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P4-old\",\"error\":{\"code\":-32002,\"message\":\"request timed out\"}} "
+      },
+      {
+        "test": "P4",
+        "ok": false,
+        "status": 200,
+        "latency_ms": 538,
+        "bytes": 94,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P4-latest-get\",\"error\":{\"code\":-32000,\"message\":\"execution reverted\"}} "
+      },
+      {
+        "test": "P4",
+        "ok": false,
+        "status": 200,
+        "latency_ms": 30239,
+        "bytes": 90,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P4-old-get\",\"error\":{\"code\":-32002,\"message\":\"request timed out\"}} "
+      },
+      {
+        "test": "P?",
+        "ok": true,
+        "status": 200,
+        "latency_ms": 636,
+        "bytes": 44,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P5-tip\",\"result\":[]} "
+      },
+      {
+        "test": "P?",
+        "ok": false,
+        "status": 200,
+        "latency_ms": 327,
+        "bytes": 206,
+        "detail": "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32701,\"message\":\"Please specify an address in your request or, to remove restrictions, order a dedicated full node here: https://www.allnodes.com/avax/host\"},\"id\":\"P5-10\"} "
+      }
+    ]
+  },
+  {
+    "peer": "dwellir",
+    "url": "https://api-avalanche-mainnet-archive.n.dwellir.com/<redacted>/ext/bc/C/rpc",
+    "tip": 101335093,
+    "probes": [
+      {
+        "test": "P1a",
+        "ok": true,
+        "status": 200,
+        "latency_ms": 418,
+        "bytes": 0,
+        "detail": "tip=101335093"
+      },
+      {
+        "test": "P1b",
+        "ok": true,
+        "status": 200,
+        "latency_ms": 255,
+        "bytes": 11646,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P1b\",\"result\":[{\"blockHash\":\"0xf8e80b564edb4480b7fefba25db1658cc3f16d7760cb7ce879794f4b087b1a67\",\"blockNumber\":\"0x60a4035\",\"contractAddress\":null,\"cumulativeGasUsed\":\"0x5a067e\",\"effectiveGasPrice\":"
+      },
+      {
+        "test": "P2",
+        "ok": true,
+        "status": 200,
+        "latency_ms": 266,
+        "bytes": 3438,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P2\",\"result\":[{\"blockHash\":\"0xc8d85ca00be8fd10339171a7e04d4f0ea680f56d97f337bc7db8309eb892210d\",\"blockNumber\":\"0x5f679b5\",\"contractAddress\":null,\"cumulativeGasUsed\":\"0x5208\",\"effectiveGasPrice\":\"0x"
+      },
+      {
+        "test": "P3",
+        "ok": true,
+        "status": 200,
+        "latency_ms": 469,
+        "bytes": 75200,
+        "detail": "batch items=4"
+      },
+      {
+        "test": "P4",
+        "ok": false,
+        "status": 200,
+        "latency_ms": 268,
+        "bytes": 90,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P4-latest\",\"error\":{\"code\":-32000,\"message\":\"execution reverted\"}} "
+      },
+      {
+        "test": "P4",
+        "ok": false,
+        "status": 200,
+        "latency_ms": 262,
+        "bytes": 87,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P4-old\",\"error\":{\"code\":-32000,\"message\":\"execution reverted\"}} "
+      },
+      {
+        "test": "P4",
+        "ok": false,
+        "status": 200,
+        "latency_ms": 284,
+        "bytes": 94,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P4-latest-get\",\"error\":{\"code\":-32000,\"message\":\"execution reverted\"}} "
+      },
+      {
+        "test": "P4",
+        "ok": false,
+        "status": 200,
+        "latency_ms": 295,
+        "bytes": 91,
+        "detail": "{\"jsonrpc\":\"2.0\",\"id\":\"P4-old-get\",\"error\":{\"code\":-32000,\"message\":\"execution reverted\"}} "
+      },
+      {
+        "test": "P?",
+        "ok": false,
+        "status": 403,
+        "latency_ms": 298,
+        "bytes": 115,
+        "detail": "Your current plan does not support the eth_getLogs method. Please upgrade to a paid plan at dashboard.dwellir.com. "
+      },
+      {
+        "test": "P?",
+        "ok": false,
+        "status": 403,
+        "latency_ms": 293,
+        "bytes": 115,
+        "detail": "Your current plan does not support the eth_getLogs method. Please upgrade to a paid plan at dashboard.dwellir.com. "
+      }
+    ]
+  }
+]

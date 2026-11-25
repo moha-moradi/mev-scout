@@ -35,6 +35,12 @@ pub struct DiscoverOpts {
     pub json: bool,
     pub solidly_fee_bps: Option<u64>,
     pub resolve_remote_metadata: bool,
+    /// Blocks per `eth_getBlockReceipts` batch for `source = "receipts"`.
+    pub receipt_batch_blocks: u64,
+    /// Cache fetched receipt bundles in the SQLite store.
+    pub receipt_cache_blocks: bool,
+    /// Mixed-provider receipts: trailing blocks routed to provider 0.
+    pub receipt_recent_blocks: Option<u64>,
 }
 
 impl Default for DiscoverOpts {
@@ -53,6 +59,9 @@ impl Default for DiscoverOpts {
             json: false,
             solidly_fee_bps: None,
             resolve_remote_metadata: true,
+            receipt_batch_blocks: 4,
+            receipt_cache_blocks: false,
+            receipt_recent_blocks: None,
         }
     }
 }
@@ -79,6 +88,9 @@ impl DiscoverOpts {
             json: matches!(config.output.output, crate::types::OutputFormat::Json),
             solidly_fee_bps: d.solidly_fee_bps.map(u64::from),
             resolve_remote_metadata: d.resolve_remote_metadata,
+            receipt_batch_blocks: d.receipt_batch_blocks,
+            receipt_cache_blocks: d.receipt_cache_blocks,
+            receipt_recent_blocks: d.receipt_recent_blocks,
         }
     }
 }
@@ -88,6 +100,8 @@ pub struct DiscoverOutcome {
     pub active_blocks: usize,
     pub remote_count: usize,
     pub pools: Vec<DiscoveredPool>,
+    /// RPC attempts observed while this job ran (used by the benchmark harness).
+    pub rpc_metrics: Option<crate::rpc::RpcMetricsSnapshot>,
 }
 
 async fn fetch_remote(
@@ -240,6 +254,54 @@ async fn scan_onchain(
     }
 }
 
+/// Receipt-based counterpart of [`scan_onchain`]. Uses the same progress
+/// stage so ETA works, and persists pools exactly like the `getLogs` path.
+async fn scan_receipts(
+    rpc: &RpcClient,
+    cache: &SqliteStore,
+    from: u64,
+    to: u64,
+    disc_config: &crate::pool::discovery::DiscoveryConfig<'_>,
+    progress: &dyn JobProgress,
+    opts: &DiscoverOpts,
+) -> anyhow::Result<crate::pool::discovery::ReceiptScanResult> {
+    let total = to.saturating_sub(from) + 1;
+    let done = Arc::new(AtomicU64::new(0));
+    let tick = move || {
+        if progress.cancelled() {
+            return false;
+        }
+        let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+        progress.emit(ProgressEvent {
+            stage: "fetch".to_string(),
+            done: Some(d),
+            total: Some(total),
+            run_id: None,
+            ops: None,
+            elapsed_ms: None,
+        });
+        true
+    };
+    let result = crate::pool::discovery::discover_pools_from_receipts(
+        rpc,
+        cache,
+        from,
+        to,
+        disc_config,
+        crate::pool::discovery::ReceiptScanOptions {
+            batch_blocks: opts.receipt_batch_blocks,
+            cache_blocks: opts.receipt_cache_blocks,
+            provider_idx: None,
+            mixed_recent: opts.receipt_recent_blocks.map(|n| (n, 0, 1)),
+            concurrency: opts.rpc_concurrency,
+            on_window: Some(&tick),
+        },
+    )
+    .await?;
+    crate::pool::discovery::persist_discovered_pools(cache, &result.pools, disc_config.token_cache);
+    Ok(result)
+}
+
 pub async fn job_discover(
     config: &Config,
     opts: &DiscoverOpts,
@@ -253,11 +315,20 @@ pub async fn job_discover(
 
     let source = opts.source.clone();
     anyhow::ensure!(
-        matches!(source.as_str(), "onchain" | "remote" | "hybrid"),
-        "unknown discover source '{source}' (expected onchain|remote|hybrid)"
+        matches!(source.as_str(), "onchain" | "remote" | "hybrid" | "receipts"),
+        "unknown discover source '{source}' (expected onchain|remote|hybrid|receipts)"
     );
     let is_remote_only = source == "remote";
     let is_hybrid = source == "hybrid";
+    let is_receipts = source == "receipts";
+    anyhow::ensure!(
+        opts.receipt_batch_blocks > 0,
+        "receipt_batch_blocks must be at least 1"
+    );
+    anyhow::ensure!(
+        opts.rpc_concurrency > 0,
+        "rpc_concurrency must be at least 1"
+    );
     let enrich = opts.enrich;
     let should_fetch_remote = is_remote_only || is_hybrid || enrich;
 
@@ -271,6 +342,15 @@ pub async fn job_discover(
 
     let setup = init_rpc(config, chain_name, true).await?;
     let rpc = setup.rpc;
+    if is_receipts {
+        if let Some(recent) = opts.receipt_recent_blocks {
+            anyhow::ensure!(recent > 0, "receipt_recent_blocks must be at least 1");
+            anyhow::ensure!(
+                rpc.provider_count().await >= 2,
+                "receipt_recent_blocks requires at least two configured RPC providers"
+            );
+        }
+    }
 
     // Block range — not needed for pure remote mode.
     let (from, to) =
@@ -323,6 +403,7 @@ pub async fn job_discover(
                     active_blocks: 0,
                     remote_count: 0,
                     pools: Vec::new(),
+                    rpc_metrics: Some(rpc.metrics_snapshot()),
                 });
             }
         } else {
@@ -352,6 +433,7 @@ pub async fn job_discover(
                             active_blocks: 0,
                             remote_count: 0,
                             pools: Vec::new(),
+                            rpc_metrics: Some(rpc.metrics_snapshot()),
                         });
                     }
                 } else {
@@ -389,6 +471,24 @@ pub async fn job_discover(
         "Pool discovery — chain {chain_name}, sources: {source}, blocks {range_label} (json={json})"
     ));
 
+    if is_receipts && !scan_ranges.is_empty() {
+        let scan_blocks: u64 = scan_ranges
+            .iter()
+            .map(|(a, b)| b.saturating_sub(*a) + 1)
+            .sum();
+        let batches = scan_blocks / opts.receipt_batch_blocks
+            + u64::from(scan_blocks % opts.receipt_batch_blocks != 0);
+        // Public peers measured ~0.37 s per 4-block receipt batch in Phase 0.
+        let approx_hours = (batches as f64 * 0.37)
+            / (opts.rpc_concurrency.max(1) as f64)
+            / 3600.0;
+        progress.log(&format!(
+            "Receipt discovery cost estimate: {scan_blocks} blocks ≈ {batches} batch POSTs \
+             (≈ {approx_hours:.1} h on public peers at concurrency {}); use a short --blocks range first",
+            opts.rpc_concurrency.max(1)
+        ));
+    }
+
     // factory/event scan.
     let (all_pools, all_active_blocks) = if is_remote_only || skip_onchain_scan {
         (Vec::new(), std::collections::HashSet::new())
@@ -414,12 +514,47 @@ pub async fn job_discover(
         let mut pools = Vec::new();
         let mut active = std::collections::HashSet::new();
         for (range_from, range_to) in &scan_ranges {
-            let (found, blocks) =
-                scan_onchain(&rpc, &cache, *range_from, *range_to, &disc_config, progress).await?;
-            pools.extend(found);
-            active.extend(blocks);
-            if let Err(e) = cache.note_discovery_scan(*range_from, *range_to) {
-                tracing::warn!("discovery watermark update failed: {e:#}");
+            if is_receipts {
+                let result = scan_receipts(
+                    &rpc,
+                    &cache,
+                    *range_from,
+                    *range_to,
+                    &disc_config,
+                    progress,
+                    opts,
+                )
+                .await?;
+                progress.log(&format!(
+                    "On-chain (receipts): found {} pools in {} active blocks ({} failed windows)",
+                    result.pools.len(),
+                    result.active_blocks.len(),
+                    result.failed_windows.len()
+                ));
+                pools.extend(result.pools);
+                active.extend(result.active_blocks);
+                // Only mark fully successful ranges: failed windows must be
+                // picked up as gaps by the next incremental run.
+                if result.failed_windows.is_empty() {
+                    if let Err(e) = cache.note_discovery_scan(*range_from, *range_to) {
+                        tracing::warn!("discovery watermark update failed: {e:#}");
+                    }
+                } else {
+                    tracing::warn!(
+                        "Skipping discovery watermark for {range_from}..{range_to}: \
+                         failed windows {:?}",
+                        result.failed_windows
+                    );
+                }
+            } else {
+                let (found, blocks) =
+                    scan_onchain(&rpc, &cache, *range_from, *range_to, &disc_config, progress)
+                        .await?;
+                pools.extend(found);
+                active.extend(blocks);
+                if let Err(e) = cache.note_discovery_scan(*range_from, *range_to) {
+                    tracing::warn!("discovery watermark update failed: {e:#}");
+                }
             }
         }
         (pools, active)
@@ -544,6 +679,7 @@ pub async fn job_discover(
         active_blocks: all_active_blocks.len(),
         remote_count,
         pools,
+        rpc_metrics: Some(rpc.metrics_snapshot()),
     })
 }
 

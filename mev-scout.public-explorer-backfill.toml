@@ -1,0 +1,20 @@
+# Explorer index backfill over public peers only.
+# Uses batched eth_getBlockByNumber + eth_getBlockReceipts and local log
+# filtering, so it never calls eth_getLogs. ~1.3M blocks / ~325k batches
+# for 30 days: hours, not minutes. Keep Dwellir at 1 RPS.
+chain = "avalanche"
+output = "table"
+
+rps_limit = 0.0
+block_concurrency = 2
+rpc_batch_blocks = 4
+batch_rpc = true
+
+rpc_urls = [
+  "https://avalanche-c-chain.publicnode.com",
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/${DWELLIR_AVALANCHE_KEY}/ext/bc/C/rpc",
+]
+rpc_rps = [0.0, 1.0]
+
+[explorer]
+confirmations = 4

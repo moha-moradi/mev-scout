@@ -5,6 +5,7 @@ use super::{
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
 use crate::utils::topic_address;
+use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
 
 /// Trader Joe / LFJ V2 activity: LBPair contracts are per-pool and emit their
@@ -16,6 +17,35 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     } else {
         None
     }
+}
+
+/// Decode a Trader Joe / LFJ `LBPairCreated(address,address,address,uint256,address[])` log.
+pub(super) fn decode_lb_pair_created(
+    log: &alloy::rpc::types::Log,
+    factory: Address,
+) -> Option<(Address, DiscoveredPool)> {
+    let topics = log.topics();
+    let log_data = log.data();
+    if topics.len() < 4 || log_data.data.len() < 64 {
+        return None;
+    }
+    let lb_pair = topic_address(topics[1]);
+    let token0 = topic_address(topics[2]);
+    let token1 = topic_address(topics[3]);
+    let creation_block = log.block_number.unwrap_or(0);
+    Some((
+        lb_pair,
+        DiscoveredPool::new(
+            lb_pair,
+            token0,
+            token1,
+            0,
+            DexType::TraderJoeLB,
+            creation_block,
+        )
+        .with_factory(Some(factory))
+        .with_dex_name(Some(resolve_dex_name(Some(factory), "TraderJoeLB"))),
+    ))
 }
 
 pub(crate) async fn scan_trader_joe_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
@@ -40,33 +70,15 @@ pub(crate) async fn scan_trader_joe_batch(ctx: &ScanContext<'_>) -> ScanBatchRes
                         if let Some(bn) = log.block_number {
                             out.active_blocks.insert(bn);
                         }
-                        let topics = log.topics();
-                        let log_data = log.data();
-                        if topics.len() < 4 || log_data.data.len() < 64 {
-                            continue;
+                        if let Some((addr, pool)) = decode_lb_pair_created(log, factory) {
+                            out.pool_hits.entry(addr).or_insert(PoolHit {
+                                dex_type: DexType::TraderJoeLB,
+                                pool_id: None,
+                                tokens: None,
+                                first_seen_block: pool.creation_block,
+                            });
+                            out.factory_pools.entry(addr).or_insert(pool);
                         }
-                        let lb_pair = topic_address(topics[1]);
-                        let token0 = topic_address(topics[2]);
-                        let token1 = topic_address(topics[3]);
-                        let creation_block = log.block_number.unwrap_or(0);
-                        out.pool_hits.entry(lb_pair).or_insert(PoolHit {
-                            dex_type: DexType::TraderJoeLB,
-                            pool_id: None,
-                            tokens: None,
-                            first_seen_block: creation_block,
-                        });
-                        out.factory_pools.entry(lb_pair).or_insert(
-                            DiscoveredPool::new(
-                                lb_pair,
-                                token0,
-                                token1,
-                                0,
-                                DexType::TraderJoeLB,
-                                creation_block,
-                            )
-                            .with_factory(Some(factory))
-                            .with_dex_name(Some(resolve_dex_name(Some(factory), "TraderJoeLB"))),
-                        );
                     }
                 }
                 Err(e) => {
