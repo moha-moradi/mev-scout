@@ -20,25 +20,42 @@ rpc_batch_blocks = 4
 # AvalancheGo allows up to 1000 requests per batch.
 batch_rpc = true
 
+# SQLite is the only backend (rusqlite; no PostgreSQL support). Defaults are
+# ./cache/avalanche-mev-scout.sqlite and ./cache/explorer-avalanche.sqlite.
+# Move them to the 1 TB disk only if the 180 GB system disk fills.
+# Top-level key (the output table is flattened — do not write [output] db_path):
+# db_path = "/mnt/avalanche-db/mev-scout/cache.sqlite"
+
 [chains.avalanche]
 chain_id = 43114
 
 [chains.avalanche.rpc]
-# Local node first (unlimited). Block, receipt, and eth_getLogs reads prefer
-# it. publicnode stays in the list as the archive eth_call fallback (sAVAX
-# rate, proofs); it does not take first-try block/log traffic.
+# Local node first (unlimited). On the server:
+#   export AVAX_RPC_URL='http://127.0.0.1:9650/ext/bc/C/rpc'
+# From the laptop through Caddy (URL-encode special chars in the password):
+#   export AVAX_RPC_URL='https://mev:p%40ss@rpc.example.com/ext/bc/C/rpc'
+# The userinfo becomes an HTTP Basic auth header.
+# Historical state: Dwellir archive. It is not in the built-in endpoint
+# catalog, so it is reached via the generic fallback (pruned local node
+# fails fast on old state, then Dwellir answers). Verified at old blocks:
+# eth_call / eth_getBalance / eth_getCode / eth_getStorageAt /
+# eth_getTransactionCount / eth_getProof. NOT served there: txpool_*,
+# address-less eth_getLogs, debug_trace* — those stay on the local node.
+# No key? Use https://avalanche-c-chain.publicnode.com instead (1 RPS).
 rpc_urls = [
-  "http://127.0.0.1:9650/ext/bc/C/rpc",
-  "https://avalanche-c-chain.publicnode.com",
+  "${AVAX_RPC_URL}",
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/${DWELLIR_AVALANCHE_KEY}/ext/bc/C/rpc",
 ]
 rpc_rps = [0.0, 1.0]
 
 [discover]
 source = "onchain"
+# `source = "remote"` (TOML only, no --source flag) lists current top pools
+# from GeckoTerminal/DexScreener with no eth_getLogs / creation history.
 # Activity eth_getLogs window. Factory creation logs use a coarser window.
 batch_size = 2000
 factory_batch_size = 10000
-# Default discover window when no --days / --from-block is passed.
+# Default discover window for bare `discover` (no --days CLI flag exists).
 # A month of C-Chain is ~1.3M blocks. A fresh state-sync node does not have
 # that history — use `discover --blocks 2000` until it does. Ignored when
 # unset (public profile keeps chains.toml's 1000-block lookback).
@@ -52,3 +69,5 @@ poll_interval_ms = 500
 
 [explorer]
 confirmations = 4
+# Optional; single-chain config only (multi-chain is rejected to avoid mixing rows):
+# db_path = "/mnt/avalanche-db/mev-scout/explorer.sqlite"
