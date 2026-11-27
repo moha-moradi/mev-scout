@@ -1,14 +1,14 @@
 # Pool Discovery Redesign — Audit & Implementation Plan
 
-**Status:** Analysis/planning only. No source files were modified and nothing was committed. Implementation of Phase 2 and later is **pending approval**.
-**Repository state audited:** `a18f3e5` (`remove docs`).
+**Status:** Analysis/planning only. The Final SQL and Architecture Consistency Review has been incorporated. No application source, schema, dependency, or production database was modified, and nothing was committed. Implementation of Phase 2 and later is **pending approval**.
+**Repository source baseline:** `a18f3e5`; current documentation baseline `df5a676`. These commits differ only by this plan document, not by `core/`, `cli/`, `Cargo.toml`, or `Cargo.lock`.
 **Verification date:** 2026-11-27. Important claims are cited to source files/tests or to recorded live probes. Unverified external sources are explicitly labelled.
 
 ---
 
 ## خلاصه (فارسی)
 
-این سند نتیجهٔ بررسی کامل ماژول `core/src/pool/discovery/`، مسیر `discover` → SQLite → `PoolManager`/Live و منابع خارجی است. هدف، ساخت مجموعهٔ بزرگی از «موجودی استخرهای فعال با TVL» برای تمام زنجیره‌های پشتیبانی‌شده است که همهٔ منابع را بدون وابستگی به یک منبع، با هویت canonical، سابقهٔ منبع (provenance) و جداسازی کامل «موجودی master» از «ثبت تجاری tradable» ترکیب کند. یافتهٔ اصلی: مقدار پیشفرض `min_tvl = 25,000` و `max_pools = 1000` استخرهای با TVL ناشناخته را حذف میکند؛ هویت Uniswap V4 (poolId) ذخیره نمیشود؛ منابع رسمی DEX اصلاً متصل نیستند؛ و Live از تمام ردیفهای SQLite قدیمی بارگذاری میکند نه از نتیجهٔ رتبهبندی شده. طرح شامل فاز ۰ تا ۶، فایلهای دقیق، تستها، معیارهای پذیرش و هزینهٔ RPC است. **لطفاً قبل از اجرای فاز ۲ یا بعدتر، تأیید دهید.**
+این سند نتیجهٔ بررسی کامل ماژول `core/src/pool/discovery/`، مسیر `discover` → SQLite → `PoolManager`/Live و منابع خارجی است. هدف، ساخت مجموعهٔ بزرگی از «موجودی استخرهای فعال با TVL» برای تمام زنجیره‌های پشتیبانی‌شده است که همهٔ منابع را بدون وابستگی به یک منبع، با هویت canonical، سابقهٔ منبع (provenance) و جداسازی کامل «موجودی master» از سه سطح آمادگی Quoteable، Simulation-ready و Execution-ready ترکیب کند. DDL نهایی و تستهای آن با SQLite 3.45.0 بundleشدهٔ مخزن اعتبارسنجی شده است. یافتهٔ اصلی: مقدار پیشفرض `min_tvl = 25,000` و `max_pools = 1000` استخرهای با TVL ناشناخته را حذف میکند؛ هویت Uniswap V4 (poolId) ذخیره نمیشود؛ منابع رسمی DEX اصلاً متصل نیستند؛ و Live از تمام ردیفهای SQLite قدیمی بارگذاری میکند نه از نتیجهٔ رتبهبندی شده. طرح شامل فاز ۰ تا ۶، فایلهای دقیق، تستها، معیارهای پذیرش و هزینهٔ RPC است. **لطفاً قبل از اجرای فاز ۲ یا بعدتر، تأیید دهید.**
 
 ---
 
@@ -43,6 +43,26 @@
 | Arbitrum | 42161 | |
 | Base | 8453 | |
 | Optimism | 10 | |
+
+### 0.4 Final SQL and architecture validation
+
+The revised schema was executed as one complete SQLite fixture, including tables, indexes, composite foreign keys, compatibility/readiness views, triggers, and representative records. Validation used the repository's `rusqlite 0.31.0` bundled SQLite **3.45.0**, not the system Node/Python SQLite stack.
+
+Validated outcomes:
+
+- full schema creation and `PRAGMA integrity_check=ok`;
+- empty `PRAGMA foreign_key_check`;
+- full singleton PoolIds with the required `0x` prefix;
+- unresolved creation/remote/market observations with `pool_pk=NULL`;
+- composite evidence-to-pool and source/chain/run/window consistency;
+- scoped Live admission and scoped rank uniqueness;
+- separate Quoteable, Simulation-ready, and Execution-ready views;
+- route/amount/block-specific quote-probe invalidation;
+- read-only compatibility views using `INSTEAD OF` triggers;
+- cursor/page/snapshot scan windows without invented timestamps;
+- intentional rejection of malformed identity, cross-pool evidence, capability dependency violations, duplicate admission/rank, invalid quote probes, and archive writes.
+
+This was temporary design validation only. It did not migrate or modify any repository database.
 
 ---
 
@@ -105,7 +125,7 @@ live / explorer
 | Receipts | Shares `decode_factory_creation_log` (`mod.rs:791-854`); failed windows returned and watermark not advanced (`jobs/discover.rs:536-548`). |
 | Multi-provider shards | Only final `Vec<DiscoveredPool>` is merged; `PoolHit`/factory metadata from a shard is reconstructed from `pool_id`/`creation_block` and otherwise lost (`mod.rs:1037-1051`). |
 | Persistence | `INSERT OR REPLACE INTO pool_info` keyed by address (`cache/store/pools.rs:22-49`); schema version 13 (`cache/store/mod.rs:72-73`). |
-| Tradable graph | `max_pairs_per_token` default 50 (`pool/state/manager.rs:163`); per-token overrides `:244-254`; pairs sorted by liquidity estimate then truncated (`manager.rs:403-444`). `Metric`/`Fluid` liquidity estimate is hardcoded `0` (`manager.rs:398`), so they are pruned first. |
+| Current arbitrage graph | `max_pairs_per_token` default 50 (`pool/state/manager.rs:163`); per-token overrides `:244-254`; pairs sorted by liquidity estimate then truncated (`manager.rs:403-444`). `Metric`/`Fluid` liquidity estimate is hardcoded `0` (`manager.rs:398`), so they are pruned first. |
 | Multi-hop | Bellman-Ford over all pools (`multi_hop.rs:738-772`), caps `MAX_NEGATIVE_CYCLES=16`, `MAX_CYCLE_ATTEMPTS=64`, depth 4 (`multi_hop.rs:25-40`). BFS is compatibility-only (`:163-167`). |
 | Quote support | Exact-in math: V2, V3/V4/Infinity, Curve, Balancer, LB, Pendle; Metric/Fluid return `None` (`pool/math/core.rs:62-118`). Two-hop optimizer: LB/Pendle/Metric/Fluid are `Unsupported` (`pool/state/quoting.rs:41-53`). |
 
@@ -113,7 +133,7 @@ live / explorer
 
 | Defect | Location | Effect |
 |---|---|---|
-| `factory_pools.drain()` empties the map, then `underlying_tokens` is read from it | `mod.rs:1367` vs `1409-1411` | Metadata-derived Curve/Balancer pools always lose underlying token list. |
+| `factory_pools.drain()` empties the map, then `underlying_tokens` is read from it | `mod.rs:1367` vs `1409-1411` | The post-drain lookup is always empty. Factory rows already inserted into `resolved_addrs` keep their existing underlying tokens; the defect primarily breaks later association for metadata-only results. |
 | GT pagination evaluates “empty page” after `min_tvl` filter | `geckoterminal.rs:76,78,84-93,268-277` | A page of sub-threshold pools terminates discovery early. |
 | GT per-DEX fallback error returns empty vector | `remote/mod.rs:305-311` | One source error destroys successful chain-wide results. |
 | V4 `Initialize` decoder never sets `pool_id` | `v4.rs:60-73` | Singleton pool identity unrecoverable; health probes synthetic address. |
@@ -122,6 +142,9 @@ live / explorer
 | Solidly/Camelot have no activity classifier | `v2.rs:9-15`, `mod.rs:687-698` | Activity-only pools mislabelled `UniswapV2`, fee 30. |
 | `getLogs` watermark advanced on failed scans | `jobs/discover.rs:247-253,549-557` | Failed ranges can be permanently skipped. |
 | `pool_states` table exists but no writer found | `cache/store/mod.rs:162-167` | Ambiguous half-schema. |
+| Migration SQL strings are enumerated as versions and `schema_version` is never seeded | `cache/store/mod.rs:223-229,238-303` | A fresh database may not reach the intended v13 columns; existing databases can have different structural shapes despite the same nominal version. |
+| Balancer `pool_id` is omitted during metadata/runtime state construction | `pool/state/factory.rs:113-118`; `pipeline/runner.rs:1827-1840` | Balancer quote/execution code exists but is not reachable end-to-end. |
+| V4 state initialization reads the synthetic address; singleton-emitted swaps are filtered by emitter address | `pool/state/factory.rs:845-860`; `pool/state/apply.rs:137-208` | V4/Infinity/Balancer manager or Vault events do not reliably update address-keyed pool state. |
 
 ### 2.4 Two universes — important nuance
 
@@ -243,7 +266,7 @@ Live does not re-apply ranking; it loads all of them (`jobs/live.rs:576-581`, `p
 | Infinity on Base visible in GT curated slugs but no on-chain manager in `chains.toml` | Remote-only rows with no executable venue support, indistinguishable from supported pools. |
 | Pendle configured on 5 chains, none on AVAX/Polygon; Camelot only Arbitrum | Venue coverage depends on hand-maintained TOML edits. |
 | Ranking applied after merge, but SQLite retains pre-rank rows | Ranked outcome, SQLite registry and Live universe diverge. |
-| Master inventory and tradable registry share one `pool_info` table | Unsupported/unverified pools have nowhere to live; silently dropped or mislabelled. |
+| Master inventory and the current runtime pool set share one `pool_info` table | Unsupported/unverified pools have nowhere to live; silently dropped or mislabelled. |
 | getLogs watermark advanced on failed scans | Permanent coverage gaps. |
 | No reorg reconciliation | Discovery observations can outlive the blocks that produced them. |
 
@@ -253,12 +276,12 @@ Live does not re-apply ranking; it loads all of them (`jobs/live.rs:576-581`, `p
 
 | Problem | Code | Required correction |
 |---|---|---|
-| Unknown TVL ⇒ dropped when `min_tvl` set | `jobs/discover.rs:150-152` | Tiered ranking; unknown-TVL retained in Master, excluded from top-rank Tradable only by explicit policy. |
+| Unknown TVL ⇒ dropped when `min_tvl` set | `jobs/discover.rs:150-152` | Tiered ranking; unknown-TVL retained in Master and excluded from readiness/admission only by explicit configurable policy. |
 | Global `max_pools` truncation after TVL sort | `jobs/discover.rs:158-160` | Remove default cap; per-source/per-DEX budgets plus explicit resource caps. |
 | `$25k` default has no documented rationale in code | `settings.rs:409-411`, `jobs/discover.rs:51` | Make policy configurable and report its effect in output/benchmark. |
 | GT stops on post-filter empty page | `geckoterminal.rs:76-93` | Paginate on raw rows; filter after full page collection; record raw vs retained counts. |
 | GT per-DEX error discards chain-wide success | `remote/mod.rs:305-311` | Per-adapter result objects; failures recorded as observations, never zero out other results. |
-| Dedup key is address only | `jobs/discover.rs:129-142`, `remote/mod.rs:518-538` | Canonical identity `(chain, family, identity)`. |
+| Dedup key is address only | `jobs/discover.rs:129-142`, `remote/mod.rs:518-538` | Canonical identity `(chain_id, identity_namespace, canonical_identifier)`; family/version remain mutable classification and are never part of the unique identity. |
 | `merge_from` first-wins with no provenance | `mod.rs:295-361` | Multiple observations with source, timestamp, confidence and deterministic conflict rules. |
 | Remote-only unknown DEX fallback to V2 | `remote/mod.rs:127-133` | Keep `Unknown` + raw label; never assign quoting family without evidence. |
 | Health treats zero liquidity as `Dead` and removes | `mod.rs:2074-2097`, `factory.rs:748-759` | Separate inventory health from tradability; zero reserves ≠ delete from Master. |
@@ -282,55 +305,206 @@ Discovery Sources
         ↓ each returns SourceResult { observations[], completeness, errors[], cost }
   Normalization → CanonicalIdentity → Dedup + provenance
         ↓
-  Master Pool Inventory → verification/enrichment → Tradable Pool Registry
-        ↓
-  PoolManager / Live / detectors
+  Master Pool Inventory → verification/enrichment
+        ├─ Quoteable scopes → candidate discovery / dashboards
+        ├─ Simulation-ready scopes → replay / backtest / paper
+        └─ Execution-ready scopes → Live planner / executor
 ```
 
-### 7.1 Two datasets
+### 7.1 Inventory and readiness datasets
 
-| Dataset | Contents | Deletion policy |
+| Dataset | Contents | Deletion/suspension policy |
 |---|---|---|
-| **Master Pool Inventory** | Every unique discovered pool with canonical identity, raw labels, partial metadata, provenance, last-seen, TVL observations | Never deleted for unknown TVL, unsupported family or zero reserves; marked `inactive`/`unverified` with evidence. |
-| **Tradable Pool Registry** | Subset with verified identity, complete tokens/parameters, non-zero liquidity, quoteable state, supported execution family | Removed/refreshed on failed state init, quote failure or confirmed drained state; re-entry automatic when verification succeeds. |
+| **Master Pool Inventory** | Every unique discovered pool, including unresolved/provisional identities, partial metadata, unsupported families, zero liquidity, and unknown TVL | Never deleted for unknown TVL, unsupported family, or zero reserves. Orphaned evidence is invalidated, not the entity. |
+| **Quoteable Registry** | Verified pools with at least one valid route/amount/slippage/state-block quote probe and verified exact-quote capability | A route leaves only when its probe becomes stale/orphaned/failed or its capability is withdrawn. |
+| **Simulation-ready Registry** | Quoteable scopes plus verified state initialization and swap replay | Used for replay/backtest/paper simulation; does not imply execution support. |
+| **Execution-ready Registry** | Simulation-ready scopes plus verified execution capability and a current scoped Live admission | Used only by the Live execution planner. Suspension never removes the Master entity. |
 
-### 7.2 Schema extension (minimum)
+These are read-only projections over one authoritative inventory, not independently mutable registries.
 
-| Field group | Fields |
+### 7.2 Schema v14 contract and repository integration
+
+#### Authoritative tables
+
+| Group | Tables |
 |---|---|
-| Identity | `chain_id`, `canonical_id` (family-prefixed), `address` (nullable for singletons), `pool_id` bytes32, `factory/manager`, `family`, `raw_dex_label` |
-| Tokens | `token0`, `token1`, canonical order, full `underlying_tokens`, symbols/decimals, `hook_address`, `bin_step`, `maturity` |
-| Provenance | `discovery_sources[]`, `first_seen`, `last_seen`, `observation_block/timestamp`, `source_confidence` |
-| Liquidity | `liquidity_verified_at_block`, `reserves_nonzero`, `tvl_usd`, `tvl_source`, `tvl_observed_at`, `tvl_confidence` |
-| Activity | `volume_24h/7d/30d`, `volume_source`, `last_swap_block`, `last_swap_timestamp` |
-| Status | `metadata_complete`, `identity_verified`, `liquidity_active`, `recently_traded`, `state_init_supported`, `quote_supported`, `two_hop_supported`, `health_probe_supported`, `execution_supported`, `health_state`, `exclusion_reason` |
+| Identity/metadata | `pool_identity`, `pool_legacy`, `pool_address_role`, `pool_token`, `pool_parameter`, `pool_classification` |
+| Evidence/status | `pool_observation`, `observation_metric`, `pool_quote_probe`, `pool_status` |
+| Capability/admission | `pool_capability`, `live_admission`, `live_admission_reason` |
+| Source/scan/reorg | `discovery_source`, `source_run`, `scan_window`, `scan_attempt`, `scan_segment`, `scan_cursor`, `reorg_event` |
+| Revisioning | `registry_revision` |
 
-Storage: keep `pool_info` as legacy/tradable view; add `pool_identity`, `pool_observation`, `pool_status`, `source_run`, with schema migration (v13 → v14). Resolve the unused `pool_states` table explicitly (write it or drop it).
+Required constraints:
+
+- Canonical identity is `(chain_id, identity_namespace, canonical_identifier)`; family/version are not identity.
+- Singleton canonical identifiers include `0x` before both deployment address and full 32-byte PoolId.
+- Evidence references use composite foreign keys so an observation cannot be attached to another pool or chain.
+- Source, run, scan-window, and scan-attempt chain/source relationships are composite-FK enforced.
+- Unresolved observations may have `pool_pk=NULL`; `identity_match_state='exact'` may not.
+- `live_admission` uses `(pool_pk, policy_version, scope_key)`; rank uniqueness is `(policy_version, scope_key, rank)`.
+- Capability dependencies are trigger-enforced: exact quote requires quote math; execution requires same-scope exact quote plus state init and replay.
+- `scan_window.request_kind` supports `block_range`, `time_range`, `cursor`, and `snapshot`; cursor/snapshot requests do not require invented timestamps.
+
+#### Compatibility objects
+
+- `pool_info` becomes a **read-only, verified-only, nullable compatibility view**.
+- `pool_info_legacy_complete` exposes the old 22-column shape only when address, tokens, fee, DEX type, and creation block are all known.
+- Unknown tokens, DEX family, fee, creation block, TVL, volume, and factory remain `NULL`; manager/vault addresses are never substituted as factory.
+- View writes are rejected with `INSTEAD OF` triggers.
+- `pool_info_v13`, `pool_states_v13_archive`, and `discovery_scan_watermark_v13_archive` are immutable migration archives.
+- `pool_states` has no current reader or writer and is retired rather than revived.
+
+#### Existing Rust and SQL integration
+
+| Current integration point | Required v14 behavior |
+|---|---|
+| `cache/store/pools.rs::put_discovered_pool` | Retain the public signature as a compatibility adapter, but write identity/observation/projection transactions instead of `INSERT OR REPLACE`. Partial/zero-token input is retained as unresolved/provisional, not silently discarded. |
+| `get_discovered_pool` / `list_discovered_pools` | Continue returning legacy `PoolInfo` only from `pool_info_legacy_complete`. Add `get_pool_record` / `list_master_inventory` for full canonical records. |
+| `row_to_pool_info` | Keep positional mapping only for the complete compatibility view; do not read nullable `pool_info` directly. |
+| `persist_discovered_pools` | Use the new repository API and retain unresolved identities. Zero-token rows remain in Master with missing-metadata status. |
+| `jobs/discover.rs::persist_universe` | Replace fill-only cache merge plus REPLACE with observation-based upsert and deterministic conflict rules. |
+| `jobs/index.rs::load_pool_registry` | Read Master/classification records. Keep its existing address-based `PoolRegistry` projection for address pools; singleton support is added in Phase 5. |
+| `jobs/index.rs` derivation repair | Update classification/evidence through the repository API; never write the compatibility view. |
+| `jobs/live.rs` and `jobs/run.rs` | Stop loading raw `list_discovered_pools`. Live consumes readiness views; run/backtest consumes Simulation-ready records. |
+| `pipeline/runner.rs::init_pools` | Accept canonical records/scopes and initialize by `PoolKey`, not synthetic address. |
+| `pool_count` / `cli/src/commands/discover.rs::cache_is_populated` | Count Master entities for reporting only. Incremental/bootstrap decisions use per-source coverage and readiness, never a non-zero row count. |
+| `earliest_creation_block_by_factory` / `max_creation_block` | Derive from canonical creation observations and verified factory roles. |
+| `discovery_watermark` / `note_discovery_scan` | Replace with per-source/range APIs. Legacy read may return a span only when every required source/type proves contiguous coverage; legacy write fails closed. |
+| `list_pool_dex_names` / `pool_dex` | Keep the optional dashboard enrichment table and reader for address pools. It is not authoritative identity; singleton labels live in classification/observations. |
+| `cli/examples/cacheq.rs` | Read `pool_info_legacy_complete` for old counts or Master views for full inventory; never write `pool_info`. |
+| Test seed helpers/direct SQL fixtures using `put_discovered_pool` or `INSERT INTO pool_info` | Retain compatibility writes through the adapter, but move direct SQL fixtures to the new repository API or archive setup. Assert unresolved records through the Master API; seed verified tokens/status explicitly where hydration is required. |
+
+#### Migration safety
+
+Phase 2 must repair migration versioning before adding v14:
+
+1. Inspect actual columns with `PRAGMA table_info`; do not trust `MAX(schema_version.version)`.
+2. Add missing intended v13 columns without broadly swallowing duplicate-column errors.
+3. Seed `schema_version` with `INSERT OR IGNORE`, not `UPDATE` against an empty table.
+4. Run v14 DDL, archive renames, data import, view creation, and version stamping in one `BEGIN IMMEDIATE` transaction.
+5. Keep every legacy row linked through `pool_legacy`; ambiguous records remain unresolved/provisional.
+6. Never convert the old chain watermark into completed per-source scan windows.
+
+Migration/rollback tests must use sanitized temporary copies of real v13 databases and cover:
+
+- full 22-column v13, sparse/older structural variants, and empty `schema_version`;
+- V4/Balancer rows with full PoolIds and rows with only synthetic addresses;
+- zero-token, remote `creation_block=0`, unknown-DEX, and conflicting legacy records;
+- existing `pool_states` and watermark rows preserved in archives;
+- row-count/hash preservation, `foreign_key_check`, `integrity_check`, and old-reader smoke tests;
+- crash before commit, crash after commit, reopen/idempotency, and backup-restore rollback;
+- proof that no legacy row is auto-admitted to Live without fresh verification.
+
+Use the existing `VACUUM INTO` snapshot pattern in `core/tests/live_tag_parity.rs:134-149`; never test against a production database.
 
 ### 7.3 Canonical identity rules
 
-| Family | Canonical key |
+| Architecture | Canonical identity | Status |
+|---|---|---|
+| V2 / V3 / Algebra / Slipstream / Solidly / Camelot / Curve / LFJ LB / Pendle | `chain_id:evm_pool_address:0x<pool>` | **Confirmed.** Actual per-pool contract address is authoritative. |
+| Uniswap V4 | `chain_id:evm_singleton_pool:0x<manager>:0x<full_pool_id>` | **Confirmed.** No synthetic pool address is stored as identity. |
+| Balancer V2 | `chain_id:evm_singleton_pool:0x<vault>:0x<full_pool_id>` | **Confirmed.** Actual pool contract address may be stored separately when supplied by `PoolRegistered`. |
+| Pancake Infinity | `chain_id:evm_singleton_typed_pool:0x<deployment>:<pool_type>:0x<full_pool_id>` | **Confirmed structure.** Exact pool-type tags and manager/vault role per type require Phase 1 protocol verification. |
+| Metric | Default `chain_id:evm_pool_address:0x<pool>` provisionally; retain full `poolId` as a protocol parameter | **Unresolved whether singleton.** Do not change namespace until protocol evidence proves deployment+PoolId uniqueness. |
+| Fluid | Default `chain_id:evm_pool_address:0x<pool>` provisionally; retain full `dexId` as a protocol parameter | **Unresolved whether singleton.** Same rule as Metric. |
+| Balancer V3 | No v14 identity rule enabled | **Out of current scope.** V2 Vault+PoolId semantics must not be silently generalized. Add only with explicit V3 support and tests. |
+| Other singleton architectures | `chain_id:evm_singleton_pool:0x<deployment>:0x<native_id>` or typed form | Use only after the protocol's deployment and native identifier are verified. |
+
+Factory, manager, vault, registry, hook, router, and execution target are separate address roles. Family/version live in `pool_classification`; correcting family updates classification, parameters, capabilities, and status without changing canonical identity.
+
+Never merge different pools merely because they share a token pair; never split one pool because two sources found it.
+
+### 7.4 Capabilities and readiness scopes
+
+Capabilities are stored per pool, capability, and scope. A math arm alone is not executable support.
+
+| Family | Effective current limitation | Readiness policy |
+|---|---|---|
+| V2 / V3 / Curve / Solidly / Camelot | Existing state/quote paths | Eligible after state, replay, quote, and execution tests pass. |
+| Trader Joe LB | Two-hop optimizer unsupported; versioned router required | May be Simulation-ready and multi-hop capable; Execution-ready only for a verified router scope. |
+| Pendle | Two-hop unsupported; underlying wrap/unwrap route not modeled | PT/SY scope only unless the route is explicitly implemented and tested. |
+| Balancer V2 | `pool_id` is lost in metadata/runtime state; Vault-emitted replay is not routed | Inventory/quote-math only until Phase 4/5 fixes prove state, replay, quote, and execution. |
+| Uniswap V4 | State read uses synthetic address; singleton replay/execution unsupported | Inventory/quote-math only until manager+PoolId hydration, replay, and execution are verified. |
+| Pancake Infinity | Manager state exists, but tick map/replay/execution are incomplete | May become Quoteable after a valid probe; not Simulation-ready or Execution-ready until replay/execution pass. |
+| Metric / Fluid | Event-only; no state init, exact quote, health probe, or execution | Master only. |
+| Unknown | Fail closed | Master only. |
+
+Readiness views:
+
+- `quoteable_pool_scope`: one row per successful valid probe, including pool, scope, token direction, amount, slippage, block number, and block hash.
+- `quoteable_pool_registry`: distinct pools with at least one quoteable scope.
+- `simulation_ready_pool_scope`: quoteable scopes with verified `state_init` and `swap_replay`.
+- `simulation_ready_pool_registry`: distinct simulation-ready pools.
+- `execution_ready_pool_scope`: simulation-ready scopes with same-scope execution capability and a current admitted `live_admission` row referencing that exact probe.
+- `execution_ready_pool_registry`: distinct execution-ready pools.
+
+Consumers:
+
+| Consumer | Dataset |
 |---|---|
-| V2 / V3 / Algebra / Solidly / Camelot / Curve plain / LFJ LB | `chain_id : pool_address` |
-| Uniswap V4 | `chain_id : "v4" : poolId(bytes32)` — store full pool key (hook/fee/tickSpacing); synthetic address is derived only |
-| Pancake Infinity | `chain_id : "infinity" : poolId(bytes32)` |
-| Balancer | `chain_id : "balancer" : poolId(bytes32)` (+ vault address) |
-| Multi-token/singleton families | `chain_id : family : protocol_id` |
+| Offline candidate discovery, two-hop/multi-hop path enumeration, dashboards | Quoteable |
+| Backtest, replay, paper trading, opportunity validation | Simulation-ready |
+| Live transaction builder and executor | Execution-ready |
 
-Never merge different pools just because they share a token pair; never split one pool because two sources found it.
+A pool can be Quoteable without being Simulation-ready, or Simulation-ready without being Execution-ready.
 
-### 7.4 Capability flags (not one boolean)
+### 7.5 Status revision, quote freshness, and reorg invalidation
 
-Because support differs by detector, the Tradable Registry must track:
+- `pool_status` holds one current status row per pool and a monotonically increasing `status_revision`.
+- `live_admission` stores the exact `status_revision` and `quote_probe_id` used for the decision.
+- Any identity, token, parameter, liquidity, health, capability, or canonical-head change increments `status_revision` and marks prior admissions non-current/suspended in the same transaction.
+- A quote probe is valid only when its observation is canonical/valid, its capability remains verified, and its age is within configurable block/time freshness limits.
+- Live normally requires the probe at the current canonical head or within `quote_max_lag_blocks`; backtest requires the exact benchmark block.
+- A new direction, amount, slippage, scope, or block creates a new probe. It never overwrites the old evidence.
+- `active`, `liquidity available`, `recently traded`, `TVL verified`, `Quoteable`, `Simulation-ready`, and `Execution-ready` remain independent predicates.
 
-| Capability | Current state |
+Reorg handling:
+
+1. Detect the hash mismatch and discover the common ancestor using network calls **outside** any SQLite write transaction.
+2. In one short local transaction, re-check stored hashes, insert `reorg_event`, orphan affected observations/segments, rewind affected cursors, recompute status/admission, and bump `registry_revision`.
+3. Commit, then rescan affected ranges in separate transactions.
+4. Readiness views automatically exclude orphaned quote probes. Pool entities and historical evidence remain retained.
+
+### 7.6 Inventory writer and Live reader runtime
+
+| Role | Responsibilities |
 |---|---|
-| State init | V2/V3/V4/Infinity/Curve/Balancer/Solidly/Camelot/LB/Pendle yes; Metric/Fluid `None` (`factory.rs:936-975`) |
-| Exact-in quote | V2/V3/V4/Infinity/Curve/Balancer/LB/Pendle; Metric/Fluid `None` (`math/core.rs:62-118`) |
-| Two-hop quote | V2/V3/V4/Infinity/Curve/Balancer; LB/Pendle/Metric/Fluid `Unsupported` (`quoting.rs:41-53`) |
-| Health probe | V2/Solidly/Camelot/V3/V4/Infinity/LB/Pendle/Curve/Balancer; Metric/Fluid/Unknown none (`health.rs:24-97`) |
+| **Inventory writer** | Discovery, verification, classification, status recomputation, admission evaluation, archive/retention jobs, and dashboard enrichment that writes SQLite. Owns all authoritative writes. |
+| **Live reader** | Read-only SQLite connection. Polls `registry_revision`, loads changed records/readiness scopes, stages RPC initialization outside the manager lock, and applies atomic manager generations. Does not write inventory tables. |
 
-A pool can be in Master with `two_hop_supported=false` and still be used by multi-hop if state init succeeds.
+Live refresh:
+
+- Poll every `live_poll_ms` (existing default 2 seconds) and immediately after a new canonical head.
+- Read `registry_revision > last_applied_revision` in a consistent snapshot.
+- Deduplicate by canonical `PoolKey`, not synthetic address.
+- Reinitialize only when identity, tokens, parameters, capability scope, or state block changed.
+- Stage state fetches outside the manager lock; apply adds/removals/reinitializations as one generation.
+- Rebuild token indexes and pair graph once per generation; invalidate detector caches from older generations.
+- On DB failure, keep the last good manager marked stale. On cursor gap/restart, reconcile from the current admission snapshot.
+- A non-empty cache never suppresses discovery or refresh. Discovery cadence is independently configurable.
+
+The existing per-connection `Arc<Mutex<Connection>>` remains; WAL and short transactions handle cross-process reads. Concurrent dashboard/discovery writers must serialize through the same repository/busy-timeout policy rather than maintaining a second registry.
+
+### 7.7 Configurable policy values
+
+Tunable values must not block implementation once their semantics are fixed.
+
+| Setting | Proposed home | Default policy direction |
+|---|---|---|
+| `discover.min_tvl` | `[discover]` | Ranking/display only; never a Master deletion rule. Default `0` for persistence. |
+| `discover.max_pools` | `[discover]` | `0` means unlimited Master inventory. Per-source page/time budgets remain configurable. |
+| Source page/request/time budgets | `[discover]` | Conservative existing limits, reported whenever reached. |
+| `live.registry_refresh_ms` | `[live]` | Reuse `live_poll_ms` default 2000. |
+| Discovery cadence | `[live]` or scheduler config | Configurable; initial conservative value may be tuned after measurement. |
+| `quote_max_age_ms`, `quote_max_lag_blocks` | `[live]` / `[backtest]` | Separate Live and exact-block backtest policies. |
+| `max_live_pools`, `max_graph_edges`, `max_pools_per_token` | `[live]` | Explicit budgets; `0` may mean unlimited only where safe. |
+| `max_rpc_calls_per_refresh`, `max_refresh_ms`, `max_pending_inits` | `[live]` | Observable backpressure limits. |
+| `max_manager_memory_mb` | `[live]` | Measured guard with explicit deferral reasons. |
+| Admission weights and coverage reserves | `[live]` | Versioned policy; start simple and tune from benchmark data. |
+| Observation/archive retention | `[discover]` or cache policy | Configurable; archival precedes purge. |
+| Reorg confirmation depth | `[live]` / chain policy | Reuse existing confirmation policy where practical. |
+
+Numeric thresholds, weights, retention periods, and cadence are **configurable defaults**, not architectural blockers.
 
 ---
 
@@ -339,43 +513,93 @@ A pool can be in Master with `two_hop_supported=false` and still be used by mult
 | Rule | Implementation detail |
 |---|---|
 | Result isolation | `SourceResult` returned even on partial failure; orchestrator merges successes and records failures. No `Vec::new()` on a sibling error. |
-| Completeness flags | `complete`, `top_n_ranked`, `pagination_limited`, `unknown`, `hard_limit`; a top-N source must never be presented as full coverage. |
+| Completion key | `chain + adapter/factory/manager/vault/registry + scan_type + requested range`. No chain-level watermark is authoritative. |
+| Window states | `pending`, `running`, `complete`, `partial`, `failed`; `running` is transient. A window is complete only when every requested subrange/page succeeds without detected truncation. |
+| Coverage class | `exhaustive`, `bounded`, `provider_limited`, or `unknown`. A documented top-N request may be complete but still not prove chain-wide completeness. |
+| Remote request shape | `request_kind` is `block_range`, `time_range`, `cursor`, or `snapshot`. Cursor/page and snapshot requests do not require fabricated start/end timestamps. |
 | Budgets | Per-adapter request/page/time caps configurable; page loops driven by raw response length, not post-filter length. |
 | Provenance | Adapter name + endpoint + fetch time + block/timestamp + raw fields stored per observation. |
 | Identity resolution | Adapter emits canonical identity + raw identifiers; ambiguous label ⇒ `Unknown` in Master, never V2. |
-| Incremental / reorg-aware | Store source cursor and canonical block hash; re-fetch overlapping windows; invalidate observations whose block is no longer canonical. |
-| Failure taxonomy | `rate_limited`, `timeout`, `bad_schema`, `auth`, `unsupported_chain`; 429 must degrade gracefully (observed live). |
-| Testability | Every adapter has wiremock tests for page 1, empty page, 429, malformed row, duplicate identity, unknown TVL. |
+| Incremental / reorg-aware | Store per-source cursor and canonical block hash; re-fetch overlapping windows; invalidate observations whose block is no longer canonical. |
+| Failure taxonomy | `rate_limit`, `timeout`, `range_limit`, `auth`, `bad_schema`, `provider_error`, `cancelled`; 429 must degrade gracefully (observed live). |
+| Truncation | Explicit provider flags/errors are recorded. A silent successful `getLogs` truncation is `unknown` unless split-window or independent factory/receipt evidence corroborates completeness. |
+| Reorg boundary | Common-ancestor discovery uses network calls outside SQLite transactions. Local invalidation/cursor/status changes commit atomically; rescanning happens separately. |
+| Testability | Every adapter has wiremock tests for page 1, empty page, 429, malformed row, duplicate identity, unknown TVL, cursor continuation, snapshot requests, and partial failure isolation. |
 
 ---
 
 ## 9. Benchmark methodology
 
-### 9.1 Benchmark A — pool-universe coverage
+### 9.1 Ground Truth tiers and practical benchmark matrix
 
-For each `(chain, DEX)` build a reference inventory from its own listing interface or verifiable authoritative source with explicit snapshot block/time and eligibility rules.
+Ground Truth must be independent of the detector being measured. Use the strongest obtainable source and label its completeness explicitly.
 
-| Chain | DEX | Reference pools | Our pools | Missing | Additional | TVL coverage | Reference complete? |
-|---|---|---:|---:|---:|---:|---:|---|
+| Tier | Reference construction | Permitted claim |
+|---|---|---|
+| A | Canonical factory/registry/Vault/manager enumeration for the configured scope and frozen block range | Complete for the configured factories/registries only |
+| B | Verified official API/subgraph with recorded pagination, caps, freshness, and identity fields | Conditional on the provider's documented subset |
+| C | GeckoTerminal/DexScreener or other ranked aggregator | Candidate overlap only; never “true recall” |
+| D | Landed historical transactions/receipts | Realism/precision validation; not exhaustive missed-opportunity recall |
+
+Practical chain/DEX matrix:
+
+| Chain | Primary Ground Truth | Secondary cross-check | Expected completeness |
+|---|---|---|---|
+| Ethereum | Configured V2/V3/V4 factories, Curve registry/factories, Balancer V2 Vault | Verified native API/subgraph where available | A for configured on-chain scope; B/C elsewhere |
+| BSC | Pancake V2/V3 factories, Infinity CL manager, Metric factory | GeckoTerminal per-DEX | A for configured scope; Infinity type semantics verified in Phase 1 |
+| Polygon | QuickSwap V2/V3, Uniswap V3/V4, Balancer V2 Vault | Curve API where available | A for configured scope |
+| Avalanche | Pangolin/LFJ/Blackhole factories, Uniswap V3/V4, Balancer V2 Vault, Metric | Frozen existing benchmark range plus per-DEX aggregators | A for configured scope |
+| Arbitrum | Camelot/LFJ factories, Uniswap V3/V4, Curve, Balancer V2, Pendle, Fluid, Metric | GeckoTerminal per-DEX | A for configured scope |
+| Base | Aerodrome/Slipstream, Uniswap V2/V3/V4, Pancake V3 | GeckoTerminal per-DEX | A for configured scope; Infinity Base remains C until a manager is configured |
+| Optimism | Velodrome V2/Slipstream, Uniswap V3/V4, Curve, Balancer V2, Metric | GeckoTerminal per-DEX | A for configured scope |
+
+Benchmark windows:
+
+- default `W1`: 1,000 canonical blocks per chain;
+- Avalanche frozen regression: `99833048..99836394` with the existing 47/47 recall invariant where applicable;
+- optional `W2`: 7 days, only when the reference source can prove its coverage;
+- no 30-day run without explicit approval.
+
+Each reference artifact records chain, DEX/family, source, snapshot block/time, pagination/caps, eligibility rules, canonical identity fields, and completeness tier.
+
+### 9.2 Benchmark A — pool-universe coverage
+
+For each matrix row, compare canonical identities rather than `(chain, project, symbol)`.
+
+| Chain | DEX/family | Reference tier | Reference pools | Matched | Missing | Additional | TVL-weighted coverage | Complete for scope? |
+|---|---|---|---:|---:|---:|---:|---:|---|
 
 Metrics:
 
-- **Pool coverage** = matched eligible reference pools / all eligible reference pools.
+- **Pool recall** = matched eligible reference pools / all eligible reference pools.
 - **TVL-weighted coverage** = TVL(matched reference pools) / TVL(all eligible reference pools).
+- **Quoteable / Simulation-ready / Execution-ready coverage** are reported separately.
 - **Unique incremental yield** = new unique verified pools contributed by source *i* after sources 1..i−1.
 - **Source overlap** = pairwise Jaccard of canonical identities, per chain and family.
-- Label incomplete references explicitly (ranked subset, capped pages, missing fields).
+- **Completeness** is never inferred from raw candidate count or aggregator rank.
 
-### 9.2 Benchmark B — realized opportunity recall
+### 9.3 Benchmark B — opportunity recall and quality
 
-Same chain and block/time range; compare Current discovery vs Expanded discovery vs native references on:
+Freeze identical block ranges, state snapshots, capital assumptions, token prices, gas costs, protocol fees, slippage, detector versions, and RPC budgets for every compared version.
 
-- active pools, quoteable pools, initialized pools, pair count;
-- two-hop / triangular / multi-hop candidate counts;
-- opportunities per strategy, overlap, missed opportunities, false positives;
-- RPC cost and runtime.
+Construct the reference opportunity set with an independent path enumerator and simulator over the Tier A/B inventory. Do not define Ground Truth as the union of candidates emitted by the two detectors under test.
 
-### 9.3 Existing baseline
+Report separately:
+
+- pool recall;
+- candidate/path recall;
+- quote success rate;
+- simulation success rate;
+- profitable opportunity rate;
+- simulated net PnL and realized landed PnL;
+- false-positive rate;
+- RPC calls, bytes, retries, runtime, and peak memory;
+- Quoteable, Simulation-ready, and Execution-ready scope counts;
+- per-chain/family misses and provider-limit caveats.
+
+If only Tier C/D evidence exists, label the result “candidate overlap” or “landed-opportunity precision,” not true recall.
+
+### 9.4 Existing baseline
 
 `docs/POOL_DISCOVERY_RECEIPTS.md:106-133` and checked-in `bench/pool-discovery-M{0..5}-W1.json`:
 
@@ -400,11 +624,11 @@ This measures *method cost*, not reference coverage or opportunity recall; it ca
 |---|---|
 | Files affected | None (this document only). |
 | Design | Read-only verification of source, docs, tests, live endpoints. |
-| Tasks | Map data flow; enumerate sources/factories; probe official APIs; record defects and stale docs. |
-| Tests | None. |
-| Expected output | This document with cited findings and coverage matrix. |
-| Acceptance criteria | Every important claim cited; unverified sources labelled; no invented endpoints or counts. |
-| Performance / RPC cost | Live HTTP probes only; no chain RPC. |
+| Tasks | Map data flow; enumerate sources/factories; probe official APIs; record defects and stale docs; execute the complete proposed SQLite schema and fixture/rejection tests against bundled SQLite 3.45.0. |
+| Tests | Temporary complete-schema fixture, compatibility/readiness views, composite-FK checks, scoped admission, quote invalidation, and intentional constraint rejections. |
+| Expected output | This document with cited findings, coverage matrix, validated schema contract, and corrected implementation phases. |
+| Acceptance criteria | Every important claim cited; unverified sources labelled; complete DDL executes with `integrity_check=ok` and empty `foreign_key_check`; no repository database is migrated. |
+| Performance / RPC cost | Live HTTP probes and local in-memory SQLite only; no production chain RPC or database writes. |
 | Status | **Complete.** |
 
 ---
@@ -415,10 +639,10 @@ This measures *method cost*, not reference coverage or opportunity recall; it ca
 |---|---|
 | Files affected | New `docs/POOL_SOURCE_MATRIX.md`; new `core/examples/pool_reference_bench.rs`; new `bench/reference/*.json`; `core/src/pool/discovery/remote/mod.rs` (source metadata struct). |
 | Design | `SourceDescriptor { provider, chain, endpoint, pagination, completeness, limits, freshness_field, identity_field }`. Reference inventories are versioned by snapshot block/time and eligibility rules. |
-| Tasks | 1) Verify official API/subgraph/pool-list endpoints per chain/DEX from protocol docs or live probes. 2) Record rate limits, page sizes, hard caps, missing-field frequency, freshness. 3) Build reference inventories for every obtainable `(chain, DEX)`. 4) Implement coverage metrics from §9.1. 5) Label incomplete references. |
-| Tests | Wiremock fixtures per reference source; pagination-limit tests; fixture-based coverage calculation tests. |
-| Expected output | Per-chain/DEX table: reference pools, our pools, missing, additional, TVL coverage, completeness label; incremental-yield and overlap tables. |
-| Acceptance criteria | At least one verified native reference per major DEX where obtainable; every reference labelled complete/incomplete; no endpoint or count asserted without probe evidence. |
+| Tasks | 1) Verify official API/subgraph/pool-list endpoints per chain/DEX. 2) Record rate limits, page sizes, hard caps, missing-field frequency, freshness. 3) Verify Metric/Fluid native-ID semantics, Infinity pool-type tags/manager-vault roles, and explicitly decide whether Balancer V3 remains out of scope. 4) Build the §9.1 chain/DEX Ground Truth matrix. 5) Implement coverage metrics from §9.2. 6) Label every reference with Tier A/B/C/D completeness. |
+| Tests | Wiremock fixtures per reference source; pagination-limit tests; fixture-based coverage calculation tests; identity-resolution fixtures for Metric/Fluid/Infinity/Balancer. |
+| Expected output | Per-chain/DEX table: reference tier, reference pools, matched/missing/additional, TVL coverage, readiness coverage, completeness label; incremental-yield and overlap tables. |
+| Acceptance criteria | Every obtainable major DEX has a labelled reference; no endpoint or count is asserted without evidence; unresolved identity semantics remain provisional rather than guessed. |
 | Performance / RPC cost | HTTP only; budget 1–3 req/s per provider; GeckoTerminal observed 429 at ~7 rapid requests. |
 
 ---
@@ -427,13 +651,13 @@ This measures *method cost*, not reference coverage or opportunity recall; it ca
 
 | Item | Detail |
 |---|---|
-| Files affected | `core/src/pool/discovery/mod.rs` (schema, `merge_from`, identity), `core/src/jobs/discover.rs` (ranking/persistence), `core/src/config/settings.rs` (defaults/policy), `core/src/cache/store/mod.rs` (schema v14 migration), `core/src/cache/store/pools.rs` (observation upserts). |
-| Design | Split Master Inventory from Tradable Registry; identity-keyed tables; observation log; tiered ranking with no default global cap; provenance-aware conflict resolution. |
-| Tasks | 1) Add identity/canonical-id fields and migration. 2) Add `pool_observation` and `pool_status` tables. 3) Replace destructive `apply_explorer_ranking` with tiered ranking that retains unknown-TVL pools in Master. 4) Remove default `max_pools` cap; expose explicit budgets. 5) Fix `factory_pools.drain()` bug. 6) Retain V4 `pool_id`, Metric `poolId`, Fluid `dexId`, LFJ `bin_step`. 7) Decide `pool_states` fate. 8) Prevent `Unknown`→V2 assignment. 9) Make cache merges observation-based instead of `INSERT OR REPLACE`. |
-| Tests | Update `jobs/discover.rs:904-954` to assert unknown-TVL **retained**; new tests for identity keys, observation merging, migration round-trip, V4 poolId persistence, conflict rules. |
-| Expected output | Default run loses zero pools purely for missing TVL; singleton identities survive persistence; Master and Tradable are distinct datasets. |
-| Acceptance criteria | No pool deleted from Master for unknown TVL or unsupported family; all required identity fields round-trip; legacy cache migrates without data loss. |
-| Performance / RPC cost | No extra RPC; SQLite write volume increases with observations — batch inserts and index `(chain, canonical_id, source)`. |
+| Files affected | `core/src/cache/store/{mod,pools}.rs`; `core/src/pool/discovery/mod.rs`; `core/src/jobs/{discover,index,run}.rs`; `core/src/pipeline/runner.rs`; `core/src/config/settings.rs`; `cli/examples/cacheq.rs`; discovery/cache/e2e tests. |
+| Design | One authoritative Master Inventory with canonical identity, append-only evidence, current projections, scoped capabilities/admission, and read-only compatibility/readiness views. No default global Master cap. |
+| Tasks | 1) Repair migration versioning and structural preflight. 2) Add the §7.2 v14 tables, composite FKs, indexes, triggers, views, and archives. 3) Implement canonical `PoolKey`/`PoolRecord` and family-independent identity resolution. 4) Replace `INSERT OR REPLACE` and first-wins cache merge with observation-based transactions. 5) Retain unresolved/zero-token records instead of dropping them. 6) Implement `put_discovered_pool` as a compatibility adapter and add full Master APIs. 7) Migrate discovery/index/run readers and writers; keep `pool_dex` as optional enrichment. 8) Make `pool_info`/`pool_info_legacy_complete` read-only with `INSTEAD OF` triggers. 9) Remove default Master `max_pools` truncation; make `min_tvl` ranking-only. 10) Fix decoder identity/guard defects and the corrected `factory_pools.drain()` association bug. 11) Add configurable policy fields with conservative defaults. |
+| Tests | Complete-schema fixture/rejection suite; real v13 copy upgrades and rollback; unknown-TVL retention; singleton/full-PoolId round-trip; unresolved observation storage; cross-pool evidence rejection; compatibility view write rejection; old reader/writer smoke tests; `foreign_key_check`/`integrity_check`; crash/reopen/idempotency. |
+| Expected output | Legacy databases upgrade without data loss; every discovered entity is retained; singleton identities survive; existing address-based callers continue through compatibility APIs; Master and readiness datasets are distinct. |
+| Acceptance criteria | No Master deletion for unknown TVL, unsupported family, or zero reserves; no direct writes to compatibility views; every legacy row is archived and linked; all required identity fields round-trip; migration/rollback tests pass on sanitized v13 copies. |
+| Performance / RPC cost | No extra chain RPC. Batch observation writes; index `(chain_id, identity_namespace, canonical_identifier)`, `(source_id, dedup_key)`, evidence composite keys, and `registry_revision`. |
 
 ---
 
@@ -442,12 +666,12 @@ This measures *method cost*, not reference coverage or opportunity recall; it ca
 | Item | Detail |
 |---|---|
 | Files affected | `core/src/pool/discovery/remote/mod.rs` (trait/registry), `remote/geckoterminal.rs`, `remote/dexscreener.rs`, new `remote/official_api.rs`, `remote/subgraph.rs`, `remote/registry.rs`; `core/src/jobs/discover.rs` (watermark fix). |
-| Design | Per-adapter `SourceResult` with completeness and cost; shared rate limiter; raw-page pagination; per-source cursors; no cross-source result loss. |
-| Tasks | 1) Introduce adapter trait and registry. 2) Fix GT raw-page pagination and remove post-filter early stop. 3) Fix per-DEX fallback error discarding successes. 4) Expand DEX enumeration beyond 3 pages with budget. 5) Add DexScreener per-token/pair lookup as enrichment (not exhaustive enumeration). 6) Add verified official API/subgraph adapters from Phase 1. 7) Add DefiLlama yields as TVL/volume enrichment keyed by `(chain, project, symbol)` — never identity. 8) Fix `getLogs` watermark advancement on failed scans. 9) Add reorg-aware observation invalidation. |
-| Tests | Wiremock: page continuation past low-TVL page; 429 retry/backoff; partial failure isolation; duplicate identity across sources; malformed row; cursor resume; watermark not advanced on failure. |
-| Expected output | Union ≥ any single source; GT reaches raw exhaustion or reports hard limit; one adapter failure cannot zero others. |
-| Acceptance criteria | `discover_via_remote` never discards a successful source's results; every adapter reports completeness/limits; failed scan ranges remain uncovered. |
-| Performance / RPC cost | GT: shared limiter (observed 429 at ~7 rapid requests); per-DEX requests scale with enumerated DEX count (Avalanche observed 56+1 dexes); per-DEX cap 200; document all budgets in report. |
+| Design | Per-adapter `SourceResult` with request kind, completeness, errors, and cost; shared rate limiter; raw-page pagination; per-source/type/range cursors; no cross-source result loss. |
+| Tasks | 1) Introduce adapter trait/registry and `discovery_source`/`source_run` records. 2) Implement `scan_window`/`scan_attempt`/`scan_segment`/`scan_cursor` for block, time-range, cursor/page, and snapshot requests. 3) Fix GT raw-page pagination and per-DEX fallback result loss. 4) Expand DEX enumeration with explicit budgets. 5) Add DexScreener per-token/pair enrichment. 6) Add verified official API/subgraph adapters. 7) Add DefiLlama only as unverified/exact-match market enrichment, never identity. 8) Replace global watermark advancement with per-source contiguous complete segments. 9) Implement reorg detection with network ancestor discovery outside SQLite and short local invalidation transactions. |
+| Tests | Wiremock: low-TVL page continuation, 429/backoff, partial failure isolation, duplicate identity, malformed row, cursor resume, snapshot request, silent-truncation `unknown`, watermark not advanced on failure, and reorg transaction boundaries. |
+| Expected output | Union ≥ any single source; every requested window has a status and coverage class; one adapter failure cannot zero others; failed ranges remain retryable. |
+| Acceptance criteria | No failed/partial window is marked complete; no chain-level completion is inferred from another factory; every cursor advancement is backed by contiguous complete segments. |
+| Performance / RPC cost | Shared provider limiter; per-adapter budgets are configurable and reported. Avoid 30-day scans without explicit approval. |
 
 ---
 
@@ -455,13 +679,13 @@ This measures *method cost*, not reference coverage or opportunity recall; it ca
 
 | Item | Detail |
 |---|---|
-| Files affected | `core/src/pool/discovery/health.rs`, new `core/src/pool/discovery/validation.rs`, `core/src/pool/discovery/metadata.rs`. |
-| Design | Separate `identity_verified`, `metadata_complete`, `liquidity_active`, `tvl_verified`, `recently_traded`, `quoteable` with timestamps and sources. |
-| Tasks | 1) Protocol-correct health probes: V4 via PoolManager + poolId; Balancer via vault + poolId; add Metric/Fluid fallback probe or mark unprobeable. 2) Add on-chain liquidity verification independent of aggregator TVL. 3) Add TVL enrichment with source + observation time. 4) Add recent-activity detection from swap events/volume fields. 5) Stop deleting from Master on zero reserves; write status instead. |
-| Tests | Unit tests per family probe; tests that zero-liquidity pool stays in Master but leaves Tradable; unknown-TVL pool retained; TVL source/timestamp present. |
-| Expected output | Every reported TVL has source and timestamp; every “active” classification backed by chain state. |
-| Acceptance criteria | No Master deletion for unknown TVL, unsupported family or zero reserves; no reported TVL without provenance. |
-| Performance / RPC cost | One `eth_call` per candidate probe, batched via `Multicall3` where possible; bounded concurrency; reuse discovery cache to avoid duplicate probes at different blocks. |
+| Files affected | `core/src/pool/discovery/{health,validation,metadata}.rs`; `core/src/pool/state/{factory,pool_types}.rs`; `core/src/cache/store/{mod,pools}.rs`; protocol math/selector modules as needed. |
+| Design | Independent, evidence-backed status predicates; protocol-aware liquidity/TVL; route-specific quote probes; scoped capabilities; current `pool_status.status_revision`. |
+| Tasks | 1) Implement protocol-correct state/liquidity probes for V2, V3/V4, Curve, Balancer, LB, Infinity, Pendle; Metric/Fluid remain unsupported until verified. 2) Fix Balancer `pool_id` hydration and V4 manager+PoolId state reads. 3) Separate third-party reported TVL from on-chain calculated TVL with token price provenance/freshness. 4) Add recent-activity evidence. 5) Implement `pool_quote_probe` and quote freshness rules. 6) Compute Quoteable and Simulation-ready views; do not require execution support for either. 7) Increment status revision and suspend stale admissions atomically. 8) Keep zero-liquidity/unknown-TVL entities in Master. |
+| Tests | Per-family state/liquidity fixtures; zero-liquidity retention; TVL source/timestamp/price freshness; Balancer/V4 singleton hydration; multiple quote directions/amounts/blocks; stale/orphaned probe invalidation; status-revision admission invalidation; capability dependency tests. |
+| Expected output | Every status/TVL/quote claim has anchored evidence; Quoteable and Simulation-ready scopes are measurable independently of execution. |
+| Acceptance criteria | No generic non-zero-reserve test; no ambiguous external TVL match; no reported TVL without provenance; no global quoteability claim across unsupported routes. |
+| Performance / RPC cost | Batch `eth_call` through Multicall3 where possible; bound concurrency; reuse canonical state observations; quote cadence/freshness are configurable. |
 
 ---
 
@@ -469,13 +693,13 @@ This measures *method cost*, not reference coverage or opportunity recall; it ca
 
 | Item | Detail |
 |---|---|
-| Files affected | `core/src/pipeline/runner.rs`, `core/src/pool/state/manager.rs`, `core/src/pool/state/factory.rs`, `core/src/jobs/index.rs`, `core/src/jobs/live.rs`, `cli/src/commands/live.rs`, `core/src/mev/detectors/{two_hop,multi_hop}.rs`. |
-| Design | Tradable Registry selected by capability flags; no auto-V2 fallback; fail-closed `Unknown` everywhere; separate budgets for two-hop and multi-hop; reorg invalidation. |
-| Tasks | 1) Load tradable subset by identity rather than raw `address` key. 2) Preserve fail-closed `Unknown` from discovery through quoting. 3) Add capability flags per §7.4; allow multi-hop-only pools. 4) Separate `max_pairs_per_token` (two-hop) from multi-hop negative-cycle caps; report candidate counts and prune reasons. 5) Let Live bootstrap expand a non-empty but incomplete cache. 6) Avoid dropping pools merely because metadata repair fails — move them to Master with exclusion reason. 7) Add canonical-hash checks for cached blocks used by Live. |
-| Tests | Pair generation with large universes; `Unknown`/unsupported excluded from quotes but present in Master; Live bootstrap with partial cache; reorg invalidation; per-detector budget reporting. |
-| Expected output | Newly verified pools enter Live without manual factory-list edits; unsupported families never quoted; pair explosion controlled and reported. |
-| Acceptance criteria | Inventory coverage and trading support reported separately; no unsupported pool is quoted; two-hop and multi-hop candidate counts explained. |
-| Performance / RPC cost | State init scales with tradable pool count; use existing concurrency cap and `creation_block` filter; do not initialize Metric/Fluid as quotes unless implemented. |
+| Files affected | `core/src/pipeline/runner.rs`; `core/src/pool/state/{manager,factory,pool_types,apply}.rs`; `core/src/jobs/{index,live,run}.rs`; `cli/src/commands/live.rs`; `core/src/mev/detectors/{two_hop,multi_hop}.rs`; `core/src/types/opportunity.rs`. |
+| Design | One inventory writer and a read-only Live reader. Live refreshes from `registry_revision`, initializes canonical `PoolKey` records incrementally, and consumes Execution-ready scopes only for order building. |
+| Tasks | 1) Replace address-only manager/pair/opportunity keys with canonical pool references while preserving legacy address serialization. 2) Route V4/Balancer/Infinity singleton-emitted logs by full PoolId. 3) Implement scoped capability and admission evaluation with explicit deferral reasons. 4) Add Live registry polling on `live_poll_ms` and canonical-head triggers. 5) Stage RPC initialization outside the manager lock; apply atomic manager generations and graph rebuilds. 6) Deduplicate initialized pools by canonical key/state revision. 7) Suspend drained/invalid/orphaned scopes and automatically re-admit after fresh verification. 8) Remove the non-empty-cache bootstrap guard; discovery cadence is configurable. 9) Separate two-hop pool limits from multi-hop graph/cycle budgets and report all pruning. 10) Enforce configurable RPC, memory, graph, and refresh budgets without silent truncation. |
+| Tests | Live refresh with a non-empty stale cache; incremental add/update/remove; restart/cursor-gap recovery; singleton replay; scoped admission changes; quote/status/reorg invalidation; manager generation/cache invalidation; budget/deferral reporting; large-universe pair graph tests. |
+| Expected output | Newly verified pools enter a running Live process without restart; unsupported pools remain in Master but never execute; every deferred scope has a reason. |
+| Acceptance criteria | Quoteable/Simulation-ready/Execution-ready counts are reported separately; no unsupported pool reaches the executor; Live performs no authoritative SQLite writes; refresh survives partial failures. |
+| Performance / RPC cost | State initialization is bounded by admitted scopes and configurable concurrency. Reuse canonical state observations and avoid reinitializing unchanged pools. |
 
 ---
 
@@ -484,12 +708,12 @@ This measures *method cost*, not reference coverage or opportunity recall; it ca
 | Item | Detail |
 |---|---|
 | Files affected | `core/examples/pool_discovery_bench.rs`, new `core/examples/opportunity_recall_bench.rs`, new `docs/benchmarks/pool-coverage-*.md`, new `docs/benchmarks/opportunity-recall-*.md`. |
-| Design | Benchmark A (pool universe) and Benchmark B (realized opportunity recall) as defined in §9, with identical blocks/time range and explicit snapshots. |
-| Tasks | 1) Extend harness to ingest reference inventories and diff by canonical identity. 2) Compute coverage, TVL-weighted coverage, incremental yield, overlap. 3) Add opportunity-recall harness comparing current vs expanded vs reference. 4) Record RPC bytes/calls/runtime. 5) Add missing regression tests: CLI→SQLite→Live coverage; scanner/Live reorg; failed-getLogs watermark; singleton identity end-to-end; Master retention vs Tradable removal. |
-| Tests | Full discovery/job/state test suite; new integration tests above; before/after JSON artifacts. |
-| Expected output | Before/after tables for both benchmarks, with provider-limit caveats. |
-| Acceptance criteria | Coverage ≥ each obtainable native reference (or gap explained by provider limits); realized opportunity recall non-decreasing; no unexplained runtime/RPC regression. |
-| Performance / RPC cost | Document exact budgets. Do not run 30-day receipt scans without explicit approval — docs estimate 4–6 h at concurrency 8 (`POOL_DISCOVERY_RECEIPTS.md:129-133`). |
+| Design | Benchmark A (pool universe/readiness coverage) and Benchmark B (opportunity recall/quality) as defined in §9, using identical frozen snapshots and independent Ground Truth. |
+| Tasks | 1) Ingest Tier A/B/C/D reference inventories and diff by canonical identity. 2) Compute pool, TVL-weighted, Quoteable, Simulation-ready, and Execution-ready coverage. 3) Compute incremental yield and source overlap. 4) Add independent reference path enumeration/simulation for opportunity recall. 5) Record quote/simulation success, profitable rate, net PnL, false positives, RPC calls/bytes/retries, runtime, and memory. 6) Add regressions for CLI→SQLite→Live, migration/rollback, scanner/Live reorg, failed-getLogs coverage, singleton identity, compatibility APIs, and Master retention versus readiness removal. |
+| Tests | Full discovery/job/state test suite; frozen AVAX regression; before/after JSON artifacts; reference completeness and metric-denominator tests. |
+| Expected output | Before/after tables for both benchmarks, with reference tier and provider-limit caveats. |
+| Acceptance criteria | Coverage meets each obtainable reference scope or explains the gap; opportunity recall is non-decreasing within the declared Ground Truth; false positives and resource regressions are explained. |
+| Performance / RPC cost | Document exact budgets. Default W1 is 1,000 blocks; no 30-day receipt scan without explicit approval. |
 
 ---
 
@@ -509,6 +733,9 @@ This measures *method cost*, not reference coverage or opportunity recall; it ca
 | `pipeline/runner.rs:1039`: multi-hop BFS depth 4 | Production uses Bellman-Ford negative cycles; BFS compatibility-only (`multi_hop.rs:163-167`). |
 | `pool/state/pool_types.rs:76-79`: `PoolInfo` from `eth_getLogs` only | Also remote, receipts, hybrid merge, cache-first merge. |
 | `pool/state/pool_types.rs:455`: “DODO pools” above `TraderJoeLB` | Copy/paste error; variant is Trader Joe LB. |
+| `cache/store/mod.rs` migration comments imply 13 logical versions | SQL strings are enumerated individually and `schema_version` is never seeded; structural preflight is required. |
+| `cli/examples/cacheq.rs` reads `pool_info` directly | v14 must read `pool_info_legacy_complete` or Master views; `pool_info` may contain NULLs. |
+| `pool/state/factory.rs:936-975` implies Balancer/V4 state init is generally available | Balancer loses `pool_id`; V4 reads a synthetic address. Effective capability remains false until fixed. |
 
 ### 11.2 Existing tests that pin current behaviour
 
@@ -518,14 +745,22 @@ This measures *method cost*, not reference coverage or opportunity recall; it ca
 - `remote/geckoterminal.rs:440-763`: parse, min-TVL, network slug, token order, sort param, TVL sort, unknown-TVL retention, dex classification.
 - `remote/dexscreener.rs:250-342`: hub profile, filter/canonicalize, label precedence, Infinity mapping, wiremock fetch.
 - `core/tests/receipts_batch.rs:65-167`: batched receipts, provider pinning, `failed_windows`.
+- `core/src/cache/store/pools.rs:274-332`: positional pool round-trip and sparse merge expectations.
+- `core/tests/e2e.rs`: `put_discovered_pool`/`list_discovered_pools` persistence and per-chain DB isolation.
+- `core/tests/live_tag_parity.rs:134-197`: `VACUUM INTO` snapshot and registry seeding through compatibility APIs.
+- `cli/examples/cacheq.rs`: direct SQL counts over `pool_info`.
 
-### 11.3 Test gaps to close in Phase 6
+### 11.3 Test gaps to close in Phases 2–6
 
-- No end-to-end CLI `discover` → SQLite → Live `PoolManager` coverage test.
-- No scanner/Live reorg integration test.
-- No test that a failed `getLogs` window leaves watermark unchanged.
-- No identity-keyed pool (V4 poolId / Balancer poolId) survival test through dedup, persistence and Live init.
-- No test distinguishing Master retention from Tradable removal.
+- No v13-copy migration/rollback suite covering structural variants, data preservation, crash recovery, and archive integrity.
+- No compatibility-view/API suite proving old address-based readers still work without writing `pool_info`.
+- No end-to-end CLI `discover` → SQLite → readiness views → Live `PoolManager` test.
+- No scanner/Live reorg integration test with network/local transaction separation.
+- No test that a failed `getLogs` window leaves per-source coverage unchanged.
+- No identity-keyed V4/Balancer/Infinity survival test through dedup, persistence, replay, and Live init.
+- No test distinguishing Master retention from Quoteable, Simulation-ready, and Execution-ready removal.
+- No scoped admission/rank/status-revision/quote-probe invalidation suite.
+- No resource-budget/deferral observability test.
 
 ---
 
@@ -537,8 +772,29 @@ The final system provides the broadest practically obtainable inventory of uniqu
 - expands beyond them through independent sources;
 - preserves canonical identity, multiple source observations, TVL source/timestamp and explicit provenance;
 - never deletes a discovered pool from the Master Inventory because TVL is unknown or execution is unsupported;
-- keeps an accurately scoped Tradable Registry aligned with actual state-init and quoting capabilities;
+- migrates existing v13 databases without data loss and keeps legacy readers working through explicit compatibility APIs;
+- reports Quoteable, Simulation-ready, and Execution-ready scopes separately and aligns each with actual evidence/capabilities;
+- refreshes a running Live process incrementally without treating a non-empty cache as complete;
+- makes admission, retention, cadence, freshness, and resource budgets configurable and observable;
 - demonstrably increases genuine arbitrage opportunity recall in Benchmark B, not just theoretical pair counts.
+
+### 12.1 Approval gates versus configurable defaults
+
+**Structural decisions requiring explicit approval:**
+
+1. Approve read-only `pool_info` plus `pool_info_legacy_complete` as the compatibility contract, with all writers migrated in the same change.
+2. Approve one authoritative inventory writer and a read-only Live process; concurrent dashboard enrichment must serialize through the same writer policy.
+3. Confirm Balancer V3 remains out of scope until separately designed and tested.
+4. Approve the default Ground Truth matrix and any provider/API-key access needed for Tier B references.
+
+**Safe defaults that do not block implementation:**
+
+- Metric/Fluid remain provisional address identities with native IDs retained until Phase 1 proves singleton semantics.
+- Admission weights/thresholds, discovery cadence, quote freshness, retention, page budgets, RPC limits, graph limits, and memory budgets are configurable and tunable after measurement.
+- Infinity uses the typed singleton structure now; exact pool-type tags are filled after Phase 1 verification.
+- Historical backfill starts from the configured lookback; the legacy watermark is never treated as proof of completeness.
+
+**Recommendation:** the plan is ready for Phase 2 implementation once the four structural choices above are approved. Tunable policy values should not delay the schema/identity/migration work.
 
 ---
 
@@ -549,5 +805,6 @@ The final system provides the broadest practically obtainable inventory of uniqu
 | 2026-11-27 | Audit and plan delivered in chat; no files changed. |
 | 2026-11-27 | Addendum delivered after jobs/integration audit; no files changed. |
 | 2026-11-27 | This document created at user request. **Implementation of Phase 2+ still awaits approval.** |
+| 2026-11-27 | Final SQL/architecture consistency review incorporated: complete DDL validated on bundled SQLite 3.45.0; compatibility, migration, scoped readiness, runtime, Ground Truth, and configuration corrections folded into the existing phases. Documentation only; no application/schema/database changes or commits. |
 
-**Next action:** approve Phase 2, or specify a different starting phase.
+**Next action:** approve the four structural choices in §12.1 and authorize Phase 2, or specify a different starting phase.
