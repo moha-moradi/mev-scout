@@ -1,14 +1,14 @@
 # Pool Discovery Redesign — Audit & Implementation Plan
 
-**Status:** Analysis/planning only. The Final SQL and Architecture Consistency Review has been incorporated. No application source, schema, dependency, or production database was modified, and nothing was committed. Implementation of Phase 2 and later is **pending approval**.
+**Status:** Analysis/planning only. The Final SQL and Architecture Consistency Review and the on-chain-first / external-assisted discovery addendum (§0.5–§0.7, §7.0, §9.5, revised §10) have been incorporated. No application source, schema, dependency, or production database was modified, and nothing was committed. Implementation of Phase 1 prototypes and Phase 2 and later is **pending approval**.
 **Repository source baseline:** `a18f3e5`; current documentation baseline `df5a676`. These commits differ only by this plan document, not by `core/`, `cli/`, `Cargo.toml`, or `Cargo.lock`.
-**Verification date:** 2026-11-27. Important claims are cited to source files/tests or to recorded live probes. Unverified external sources are explicitly labelled.
+**Verification date:** 2026-11-27. **Architecture preference addendum:** 2026-11-28. Important claims are cited to source files/tests or to recorded live probes. Unverified external sources and unmeasured acquisition backends are explicitly labelled.
 
 ---
 
 ## خلاصه (فارسی)
 
-این سند نتیجهٔ بررسی کامل ماژول `core/src/pool/discovery/`، مسیر `discover` → SQLite → `PoolManager`/Live و منابع خارجی است. هدف، ساخت مجموعهٔ بزرگی از «موجودی استخرهای فعال با TVL» برای تمام زنجیره‌های پشتیبانی‌شده است که همهٔ منابع را بدون وابستگی به یک منبع، با هویت canonical، سابقهٔ منبع (provenance) و جداسازی کامل «موجودی master» از سه سطح آمادگی Quoteable، Simulation-ready و Execution-ready ترکیب کند. DDL نهایی و تستهای آن با SQLite 3.45.0 بundleشدهٔ مخزن اعتبارسنجی شده است. یافتهٔ اصلی: مقدار پیشفرض `min_tvl = 25,000` و `max_pools = 1000` استخرهای با TVL ناشناخته را حذف میکند؛ هویت Uniswap V4 (poolId) ذخیره نمیشود؛ منابع رسمی DEX اصلاً متصل نیستند؛ و Live از تمام ردیفهای SQLite قدیمی بارگذاری میکند نه از نتیجهٔ رتبهبندی شده. طرح شامل فاز ۰ تا ۶، فایلهای دقیق، تستها، معیارهای پذیرش و هزینهٔ RPC است. **لطفاً قبل از اجرای فاز ۲ یا بعدتر، تأیید دهید.**
+این سند نتیجهٔ بررسی کامل ماژول `core/src/pool/discovery/`، مسیر `discover` → SQLite → `PoolManager`/Live و منابع خارجی است. هدف، ساخت مجموعهٔ بزرگی از «موجودی استخرهای فعال با TVL» برای تمام زنجیره‌های پشتیبانی‌شده است که همهٔ منابع را بدون وابستگی به یک منبع، با هویت canonical، سابقهٔ منبع (provenance) و جداسازی کامل «موجودی master» از سه سطح آمادگی Quoteable، Simulation-ready و Execution-ready ترکیب کند. DDL نهایی و تستهای آن با SQLite 3.45.0 بundleشدهٔ مخزن اعتبارسنجی شده است. یافتهٔ اصلی: مقدار پیشفرض `min_tvl = 25,000` و `max_pools = 1000` استخرهای با TVL ناشناخته را حذف میکند؛ هویت Uniswap V4 (poolId) ذخیره نمیشود؛ منابع رسمی DEX اصلاً متصل نیستند؛ و Live از تمام ردیفهای SQLite قدیمی بارگذاری میکند نه از نتیجهٔ رتبهبندی شده. طرح شامل فاز ۰ تا ۶، فایلهای دقیق، تستها، معیارهای پذیرش و هزینهٔ RPC است. اصل معماری اصلاحشده «اول زنجیره، کمکگرفتن از منابع خارجی» است: منابع خارجی صرفاً برای bootstrap، کشف پروتکلهای ناشناخته و غنیسازی TVL/حجم بهکار میروند و هیچگاه برای کارکرد مداوم لازم نیستند. کشف و نگهداری موجودی پس از راهاندازی مستقیماً از رویدادهای on-chain نود محلی (newHeads یا polling به همراه receipts) انجام میشود و هرگز منتظر انتشار استخر توسط indexer خارجی نمیماند. روشهای جایگزین `eth_getLogs` نیز اندازهگیری و مقایسه میشوند. **لطفاً قبل از اجرای فاز ۱ (پروتوتایپ/بنچمارک) یا فاز ۲ و بعدتر، تأیید دهید.**
 
 ---
 
@@ -29,6 +29,7 @@
 
 - No `cargo check`, `cargo test`, or benchmark run (they write build artifacts).
 - No endpoint is claimed as an official source unless a live probe or documentation fetch succeeded. Where access was blocked, the source is marked **unverified** and deferred to Phase 1.
+- No local-node capability probe and no acquisition-backend benchmark (§0.7, §9.5) has been run. Backend comparisons are design proposals until Phase 1 measures them on the target chains/node setup.
 
 ### 0.3 Supported chains
 
@@ -63,6 +64,42 @@ Validated outcomes:
 - intentional rejection of malformed identity, cross-pool evidence, capability dependency violations, duplicate admission/rank, invalid quote probes, and archive writes.
 
 This was temporary design validation only. It did not migrate or modify any repository database.
+
+### 0.5 Core principle — on-chain-first, external-assisted discovery
+
+Our own local EVM nodes and on-chain data are the authoritative basis for pool discovery and continuous updates. On-chain evidence governs pool identity, deployment, contract state, and execution capability. External sources (GeckoTerminal, DexScreener, official APIs, subgraphs, third-party registries) are considered primarily to **avoid starting from zero**, and remain useful for:
+
+- bootstrapping a large initial pool inventory quickly;
+- discovering DEXes, factories, managers, vaults, registries, and pools absent from the current configuration;
+- filling historical coverage gaps and cross-checking on-chain results;
+- enriching market metadata such as reported TVL and volume.
+
+External sources accelerate discovery; they must never be required for continuous operation. This does not discard them — they retain the roles above, but no external indexer is on the critical path for new-pool discovery after bootstrap.
+
+### 0.6 Bootstrap / initial inventory vs continuous discovery
+
+| Aspect | Bootstrap / Initial Inventory | Continuous Discovery |
+|---|---|---|
+| Inputs | External sources + protocol-native registries + on-chain factory enumeration | New blocks from the local node via WebSocket `newHeads` subscription or polling |
+| Verification | Validate candidates against on-chain contracts and protocol-specific identity rules; unverified candidates remain **provisional** in Master | Decode pool creation / initialization / registration events directly from on-chain receipts and apply protocol identity rules |
+| Timing | One-time or periodic backfill; external sources need not stay available afterward | Update Master Inventory as soon as the relevant block is available and processed |
+| Authority | External evidence is candidate/enrichment evidence only | On-chain evidence is authoritative; **never wait** for GeckoTerminal, DexScreener, or any other external indexer to publish a newly created pool |
+
+Both paths emit the same provenance-bearing `SourceResult` / observation model (§7.2, §8), so records from any acquisition method merge safely. Provisional external-only candidates never become authoritative without on-chain verification.
+
+### 0.7 Local-node acquisition methods to prototype and benchmark
+
+Reduce dependence on expensive or heavily rate-limited `eth_getLogs` calls, especially on our own node, by investigating, prototyping, and benchmarking all of the following. These are candidates, not decisions; historical backfill and continuous monitoring may use different backends.
+
+| Method | Question to answer | Constraint / note |
+|---|---|---|
+| A. `eth_getBlockReceipts` | Can all receipts for a block be fetched in one request, with logs filtered and decoded locally (factory, manager, vault, singleton pool events)? Suitable for continuous per-block discovery? | Availability depends on the node client; detect at runtime. |
+| B. Block-header / bloom pre-filtering | Can block `logsBloom` safely skip blocks before fetching all receipts? | Must be **no-false-negative**; false-positive candidate blocks are acceptable. |
+| C. Protocol-native factory enumeration | Which DEXes expose complete enumerable registries via `eth_call` (`allPairsLength`/`allPairs`, `getPool`, registries, equivalents)? | Do not assume every protocol supports this; record per-protocol support. |
+| D. Existing local `eth_getLogs` | What is its real local CPU, disk, latency, and throughput cost? | Keep as a candidate, especially for historical filtered backfills; do not treat as inherently undesirable or remove before measurement. |
+| E. Fallback receipt retrieval | How do batched `eth_getTransactionReceipt` calls compare when block-level receipt retrieval is unavailable? | Explicit fallback only, not the default path. |
+
+Every backend is gated by runtime capability detection on each chain/node client, including `eth_getBlockReceipts`; never assume uniform RPC method support. Measurement methodology is in §9.5, and prototypes belong to Phase 1. No backend is implemented by this documentation change.
 
 ---
 
@@ -295,21 +332,37 @@ Live does not re-apply ranking; it loads all of them (`jobs/live.rs:576-581`, `p
 
 ```
 Discovery Sources
-  ├─ OnChainFactoryAdapter   (existing scanners)
-  ├─ ReceiptAdapter          (existing receipts path)
-  ├─ GeckoTerminalAdapter    (chain-wide + per-DEX + dex enumeration)
-  ├─ DexScreenerAdapter      (hub + per-token + pair lookup)
-  ├─ OfficialApiAdapter      (per-protocol REST/GraphQL)
-  ├─ SubgraphAdapter         (per-protocol GraphQL, key/budget config)
-  └─ RegistryAdapter         (factory enumeration / protocol registries)
-        ↓ each returns SourceResult { observations[], completeness, errors[], cost }
-  Normalization → CanonicalIdentity → Dedup + provenance
-        ↓
-  Master Pool Inventory → verification/enrichment
-        ├─ Quoteable scopes → candidate discovery / dashboards
-        ├─ Simulation-ready scopes → replay / backtest / paper
-        └─ Execution-ready scopes → Live planner / executor
+  ├─ Continuous on-chain (authoritative; local nodes)
+  │    ├─ LocalBlockReceiptAdapter (newHeads/polling + eth_getBlockReceipts;
+  │    │                           receipt fallback; local log decoding)
+  │    ├─ LocalEventLogAdapter     (eth_getLogs; historical filtered backfill)
+  │    ├─ FactoryEnumerationAdapter(allPairs/allPairsLength/getPool/registries)
+  │    └─ BloomPreFilter           (no-false-negative block pre-selection)
+  └─ Bootstrap / enrichment (non-authoritative; never required for continuous operation)
+       ├─ GeckoTerminalAdapter    (chain-wide + per-DEX + dex enumeration)
+       ├─ DexScreenerAdapter      (hub + per-token + pair lookup)
+       ├─ OfficialApiAdapter      (per-protocol REST/GraphQL)
+       ├─ SubgraphAdapter         (per-protocol GraphQL, key/budget config)
+       └─ ProtocolRegistryAdapter (external protocol-native registries)
+             ↓ each returns SourceResult { observations[], completeness, errors[], cost }
+       Normalization → CanonicalIdentity → Dedup + provenance
+             ↓
+       Master Pool Inventory → on-chain verification / external enrichment
+             ├─ Quoteable scopes → candidate discovery / dashboards
+             ├─ Simulation-ready scopes → replay / backtest / paper
+             └─ Execution-ready scopes → Live planner / executor
 ```
+
+External adapters may seed candidates and enrich metadata, but only on-chain evidence resolves canonical identity, deployment, state, and readiness.
+
+### 7.0 Workload separation and backend selection
+
+- Historical backfill and continuous monitoring are separate workloads with independently selectable backends (§0.7, §9.5); neither backend is mandated by this plan.
+- Runtime capability detection per chain/node client decides which local-node backends are available, including `eth_getBlockReceipts`; fallback order is explicit and observable.
+- Continuous discovery consumes canonical new-head blocks, decodes receipts locally, and commits verified observations without consulting external APIs.
+- External sources remain for bootstrap, enrichment, discovering previously unknown protocol deployments, and cross-checks. Their outage degrades metadata/coverage reporting, never continuous discovery.
+- All backends emit the same provenance-bearing `SourceResult`, preserving canonical identity, provenance, source coverage, cursor safety, and reorg correctness.
+- Unknown or externally reported pools remain provisional until on-chain verification; on-chain state is authoritative for identity, deployment, contract state, and execution capabilities.
 
 ### 7.1 Inventory and readiness datasets
 
@@ -614,6 +667,25 @@ If only Tier C/D evidence exists, label the result “candidate overlap” or �
 
 This measures *method cost*, not reference coverage or opportunity recall; it cannot be used as a coverage claim. Bench settings intentionally neutralize filters: `min_tvl = 0`, `max_pools = 100_000`, `health_check = false`, `resolve_remote_metadata = false`, `factory_batch_size = 10000` (`core/examples/pool_discovery_bench.rs:207-296`).
 
+### 9.5 Benchmark C — discovery backend / acquisition method
+
+Run on the actual target chains and local node setup, comparing methods A–E from §0.7 for **historical backfill** and **continuous monitoring** as separate workloads. Record runtime RPC capability support per run (especially `eth_getBlockReceipts`); an unavailable method is reported as unsupported, not as a zero-throughput failure. Do not assume one method is best for every workload.
+
+| Backend | Workload | Blocks/s | Pools/s | RPC calls/block | Response bytes | Local CPU / disk I/O | Discovery latency (p50/p99) | Peak memory | Missed-event rate | Notes |
+|---|---|---:|---:|---:|---:|---|---|---:|---:|---|
+
+Measurements required:
+
+- blocks processed per second and pools discovered per second;
+- RPC calls per block, response bytes, and local CPU/disk I/O;
+- end-to-end discovery latency from canonical block availability to committed Master observation;
+- memory usage (peak and steady state);
+- completeness and missed-event rate against Tier A Ground Truth for the configured factories/registries (§9.1);
+- recovery after downtime and reorg handling, including cursor rewind and rescan cost;
+- historical backfill throughput versus continuous monitoring throughput.
+
+Backend selection is then configurable per workload using measured evidence; `eth_getLogs` is retained until alternatives prove superior for the given workload.
+
 ---
 
 ## 10. Phase-by-phase implementation plan
@@ -633,17 +705,17 @@ This measures *method cost*, not reference coverage or opportunity recall; it ca
 
 ---
 
-### Phase 1 — DEX/source coverage matrix and reference benchmark
+### Phase 1 — DEX/source coverage, local-node capabilities, and acquisition benchmark
 
 | Item | Detail |
 |---|---|
-| Files affected | New `docs/POOL_SOURCE_MATRIX.md`; new `core/examples/pool_reference_bench.rs`; new `bench/reference/*.json`; `core/src/pool/discovery/remote/mod.rs` (source metadata struct). |
-| Design | `SourceDescriptor { provider, chain, endpoint, pagination, completeness, limits, freshness_field, identity_field }`. Reference inventories are versioned by snapshot block/time and eligibility rules. |
-| Tasks | 1) Verify official API/subgraph/pool-list endpoints per chain/DEX. 2) Record rate limits, page sizes, hard caps, missing-field frequency, freshness. 3) Verify Metric/Fluid native-ID semantics, Infinity pool-type tags/manager-vault roles, and explicitly decide whether Balancer V3 remains out of scope. 4) Build the §9.1 chain/DEX Ground Truth matrix. 5) Implement coverage metrics from §9.2. 6) Label every reference with Tier A/B/C/D completeness. |
-| Tests | Wiremock fixtures per reference source; pagination-limit tests; fixture-based coverage calculation tests; identity-resolution fixtures for Metric/Fluid/Infinity/Balancer. |
-| Expected output | Per-chain/DEX table: reference tier, reference pools, matched/missing/additional, TVL coverage, readiness coverage, completeness label; incremental-yield and overlap tables. |
-| Acceptance criteria | Every obtainable major DEX has a labelled reference; no endpoint or count is asserted without evidence; unresolved identity semantics remain provisional rather than guessed. |
-| Performance / RPC cost | HTTP only; budget 1–3 req/s per provider; GeckoTerminal observed 429 at ~7 rapid requests. |
+| Files affected | New `docs/POOL_SOURCE_MATRIX.md`; new `docs/POOL_DISCOVERY_BACKENDS.md`; new `core/examples/pool_reference_bench.rs`; new `core/examples/discovery_backend_bench.rs`; new `bench/reference/*.json`, `bench/acquisition/*.json`; `core/src/pool/discovery/remote/mod.rs` (source metadata struct). |
+| Design | `SourceDescriptor { provider, chain, endpoint, pagination, completeness, limits, freshness_field, identity_field }` plus `BackendCapability` / backend benchmark records. Reference inventories are versioned by snapshot block/time and eligibility rules. Local-node capability detection is runtime-based, including `eth_getBlockReceipts`. |
+| Tasks | 1) Verify official API/subgraph/pool-list endpoints per chain/DEX. 2) Record rate limits, page sizes, hard caps, missing-field frequency, freshness. 3) Verify Metric/Fluid native-ID semantics, Infinity pool-type tags/manager-vault roles, and explicitly decide whether Balancer V3 remains out of scope. 4) Build the §9.1 chain/DEX Ground Truth matrix. 5) Implement coverage metrics from §9.2. 6) Label every reference with Tier A/B/C/D completeness. 7) Detect local-node RPC capabilities per chain/client at runtime (`eth_getBlockReceipts`, receipt batching, `eth_getLogs` range limits). 8) Prototype methods A–E from §0.7 and run Benchmark C (§9.5) for both backfill and continuous workloads. 9) Record which factory/registry protocols expose enumerable on-chain pools. |
+| Tests | Wiremock fixtures per reference source; pagination-limit tests; fixture-based coverage calculation tests; identity-resolution fixtures for Metric/Fluid/Infinity/Balancer; local-node/backend fixtures for receipts, bloom pre-filtering, factory enumeration, `getLogs`, and receipt fallback; no-false-negative bloom test; capability-absence tests. |
+| Expected output | Per-chain/DEX table: reference tier, reference pools, matched/missing/additional, TVL coverage, readiness coverage, completeness label; incremental-yield and overlap tables; backend capability matrix and Benchmark C results with separate backfill/continuous recommendations. |
+| Acceptance criteria | Every obtainable major DEX has a labelled reference; no endpoint or count is asserted without evidence; unresolved identity semantics remain provisional rather than guessed; every backend comparison is measured on the target node setup with completeness and missed-event rates reported; no `eth_getLogs` removal before measurement. |
+| Performance / RPC cost | HTTP probes 1–3 req/s per provider (GeckoTerminal observed 429 at ~7 rapid requests); local-node benchmark budgets recorded per backend and workload. |
 
 ---
 
@@ -652,67 +724,67 @@ This measures *method cost*, not reference coverage or opportunity recall; it ca
 | Item | Detail |
 |---|---|
 | Files affected | `core/src/cache/store/{mod,pools}.rs`; `core/src/pool/discovery/mod.rs`; `core/src/jobs/{discover,index,run}.rs`; `core/src/pipeline/runner.rs`; `core/src/config/settings.rs`; `cli/examples/cacheq.rs`; discovery/cache/e2e tests. |
-| Design | One authoritative Master Inventory with canonical identity, append-only evidence, current projections, scoped capabilities/admission, and read-only compatibility/readiness views. No default global Master cap. |
-| Tasks | 1) Repair migration versioning and structural preflight. 2) Add the §7.2 v14 tables, composite FKs, indexes, triggers, views, and archives. 3) Implement canonical `PoolKey`/`PoolRecord` and family-independent identity resolution. 4) Replace `INSERT OR REPLACE` and first-wins cache merge with observation-based transactions. 5) Retain unresolved/zero-token records instead of dropping them. 6) Implement `put_discovered_pool` as a compatibility adapter and add full Master APIs. 7) Migrate discovery/index/run readers and writers; keep `pool_dex` as optional enrichment. 8) Make `pool_info`/`pool_info_legacy_complete` read-only with `INSTEAD OF` triggers. 9) Remove default Master `max_pools` truncation; make `min_tvl` ranking-only. 10) Fix decoder identity/guard defects and the corrected `factory_pools.drain()` association bug. 11) Add configurable policy fields with conservative defaults. |
+| Design | One authoritative Master Inventory with canonical identity, append-only evidence, current projections, scoped capabilities/admission, and read-only compatibility/readiness views. No default global Master cap. The inventory and provenance model is source-independent: on-chain events, factory enumeration, external bootstrap sources, and enrichment all merge through the same observation path. |
+| Tasks | 1) Repair migration versioning and structural preflight. 2) Add the §7.2 v14 tables, composite FKs, indexes, triggers, views, and archives. 3) Implement canonical `PoolKey`/`PoolRecord` and family-independent identity resolution. 4) Replace `INSERT OR REPLACE` and first-wins cache merge with observation-based transactions. 5) Retain unresolved/zero-token records instead of dropping them. 6) Implement `put_discovered_pool` as a compatibility adapter and add full Master APIs. 7) Migrate discovery/index/run readers and writers; keep `pool_dex` as optional enrichment. 8) Make `pool_info`/`pool_info_legacy_complete` read-only with `INSTEAD OF` triggers. 9) Remove default Master `max_pools` truncation; make `min_tvl` ranking-only. 10) Fix decoder identity/guard defects and the corrected `factory_pools.drain()` association bug. 11) Add configurable policy fields with conservative defaults. 12) Define the source-independent `SourceResult`/observation and provenance fields so records from every acquisition method merge safely; mark unverified external-only candidates provisional. |
 | Tests | Complete-schema fixture/rejection suite; real v13 copy upgrades and rollback; unknown-TVL retention; singleton/full-PoolId round-trip; unresolved observation storage; cross-pool evidence rejection; compatibility view write rejection; old reader/writer smoke tests; `foreign_key_check`/`integrity_check`; crash/reopen/idempotency. |
 | Expected output | Legacy databases upgrade without data loss; every discovered entity is retained; singleton identities survive; existing address-based callers continue through compatibility APIs; Master and readiness datasets are distinct. |
-| Acceptance criteria | No Master deletion for unknown TVL, unsupported family, or zero reserves; no direct writes to compatibility views; every legacy row is archived and linked; all required identity fields round-trip; migration/rollback tests pass on sanitized v13 copies. |
+| Acceptance criteria | No Master deletion for unknown TVL, unsupported family, or zero reserves; no direct writes to compatibility views; every legacy row is archived and linked; all required identity fields round-trip; migration/rollback tests pass on sanitized v13 copies; records from every acquisition method merge safely and external-only candidates remain provisional until on-chain verification. |
 | Performance / RPC cost | No extra chain RPC. Batch observation writes; index `(chain_id, identity_namespace, canonical_identifier)`, `(source_id, dedup_key)`, evidence composite keys, and `registry_revision`. |
 
 ---
 
-### Phase 3 — New source adapters and pagination
+### Phase 3 — Local stream / factory-enumeration adapters and external bootstrap sources
 
 | Item | Detail |
 |---|---|
-| Files affected | `core/src/pool/discovery/remote/mod.rs` (trait/registry), `remote/geckoterminal.rs`, `remote/dexscreener.rs`, new `remote/official_api.rs`, `remote/subgraph.rs`, `remote/registry.rs`; `core/src/jobs/discover.rs` (watermark fix). |
-| Design | Per-adapter `SourceResult` with request kind, completeness, errors, and cost; shared rate limiter; raw-page pagination; per-source/type/range cursors; no cross-source result loss. |
-| Tasks | 1) Introduce adapter trait/registry and `discovery_source`/`source_run` records. 2) Implement `scan_window`/`scan_attempt`/`scan_segment`/`scan_cursor` for block, time-range, cursor/page, and snapshot requests. 3) Fix GT raw-page pagination and per-DEX fallback result loss. 4) Expand DEX enumeration with explicit budgets. 5) Add DexScreener per-token/pair enrichment. 6) Add verified official API/subgraph adapters. 7) Add DefiLlama only as unverified/exact-match market enrichment, never identity. 8) Replace global watermark advancement with per-source contiguous complete segments. 9) Implement reorg detection with network ancestor discovery outside SQLite and short local invalidation transactions. |
-| Tests | Wiremock: low-TVL page continuation, 429/backoff, partial failure isolation, duplicate identity, malformed row, cursor resume, snapshot request, silent-truncation `unknown`, watermark not advanced on failure, and reorg transaction boundaries. |
-| Expected output | Union ≥ any single source; every requested window has a status and coverage class; one adapter failure cannot zero others; failed ranges remain retryable. |
-| Acceptance criteria | No failed/partial window is marked complete; no chain-level completion is inferred from another factory; every cursor advancement is backed by contiguous complete segments. |
-| Performance / RPC cost | Shared provider limiter; per-adapter budgets are configurable and reported. Avoid 30-day scans without explicit approval. |
+| Files affected | New local on-chain adapter modules under `core/src/pool/discovery/` (block/receipt stream, factory enumeration, bloom pre-filter, backend capability detection); `core/src/pool/discovery/remote/mod.rs` (trait/registry), `remote/geckoterminal.rs`, `remote/dexscreener.rs`, new `remote/official_api.rs`, `remote/subgraph.rs`, `remote/registry.rs`; `core/src/jobs/discover.rs` (watermark fix). |
+| Design | Per-adapter `SourceResult` with request kind, completeness, errors, and cost; shared rate limiter; raw-page pagination; per-source/type/range cursors; no cross-source result loss. Continuous on-chain discovery is authoritative; external sources are retained for bootstrap and enrichment only. Historical backfill and continuous monitoring have independently selectable backends chosen from Phase 1 measurements. |
+| Tasks | 1) Introduce adapter trait/registry and `discovery_source`/`source_run` records. 2) Implement `scan_window`/`scan_attempt`/`scan_segment`/`scan_cursor` for block, time-range, cursor/page, and snapshot requests. 3) Add the local block/receipt-stream adapter: `newHeads` or polling, `eth_getBlockReceipts` with local log decoding, no-false-negative bloom pre-filter, and batched `eth_getTransactionReceipt` fallback; select backend by runtime capability and §9.5 results. 4) Add the factory-enumeration adapter (`allPairsLength`/`allPairs`, `getPool`, registry enumeration) with an explicit per-protocol support matrix. 5) Fix GT raw-page pagination and per-DEX fallback result loss; expand DEX enumeration with explicit budgets; add DexScreener per-token/pair enrichment; add verified official API/subgraph adapters. 6) Add DefiLlama only as market enrichment, never identity. 7) Keep external sources strictly bootstrap/enrichment: no continuous path may wait for them. 8) Replace global watermark advancement with per-source contiguous complete segments. 9) Implement reorg detection with network ancestor discovery outside SQLite and short local invalidation transactions. |
+| Tests | Wiremock: low-TVL page continuation, 429/backoff, partial failure isolation, duplicate identity, malformed row, cursor resume, snapshot request, silent-truncation `unknown`, watermark not advanced on failure, reorg transaction boundaries; local-node tests for receipts/bloom/`getLogs`/receipt-fallback/event equivalence, enumeration completeness, capability absence, and continuous discovery with all external adapters disabled. |
+| Expected output | Union ≥ any single source; every requested window has a status and coverage class; one adapter failure cannot zero others; failed ranges remain retryable; new pools enter Master from local on-chain events without external indexer publication. |
+| Acceptance criteria | No failed/partial window is marked complete; no chain-level completion is inferred from another factory; every cursor advancement is backed by contiguous complete segments; continuous discovery completes with every external adapter disabled. |
+| Performance / RPC cost | Shared provider limiter; per-adapter budgets are configurable and reported. Backfill and continuous backends are measured separately (§9.5). Avoid 30-day scans without explicit approval. |
 
 ---
 
-### Phase 4 — Active / liquidity / TVL validation
+### Phase 4 — On-chain validation of all discovered pools, liquidity, and TVL
 
 | Item | Detail |
 |---|---|
 | Files affected | `core/src/pool/discovery/{health,validation,metadata}.rs`; `core/src/pool/state/{factory,pool_types}.rs`; `core/src/cache/store/{mod,pools}.rs`; protocol math/selector modules as needed. |
-| Design | Independent, evidence-backed status predicates; protocol-aware liquidity/TVL; route-specific quote probes; scoped capabilities; current `pool_status.status_revision`. |
-| Tasks | 1) Implement protocol-correct state/liquidity probes for V2, V3/V4, Curve, Balancer, LB, Infinity, Pendle; Metric/Fluid remain unsupported until verified. 2) Fix Balancer `pool_id` hydration and V4 manager+PoolId state reads. 3) Separate third-party reported TVL from on-chain calculated TVL with token price provenance/freshness. 4) Add recent-activity evidence. 5) Implement `pool_quote_probe` and quote freshness rules. 6) Compute Quoteable and Simulation-ready views; do not require execution support for either. 7) Increment status revision and suspend stale admissions atomically. 8) Keep zero-liquidity/unknown-TVL entities in Master. |
+| Design | Independent, evidence-backed status predicates; protocol-aware liquidity/TVL; route-specific quote probes; scoped capabilities; current `pool_status.status_revision`. Every discovered pool is validated against on-chain contracts and protocol-specific identity rules; externally reported pools stay provisional until validated. |
+| Tasks | 1) Validate every discovered pool against on-chain contracts and protocol identity rules, including bootstrap candidates from external sources. 2) Implement protocol-correct state/liquidity probes for V2, V3/V4, Curve, Balancer, LB, Infinity, Pendle; Metric/Fluid remain unsupported until verified. 3) Fix Balancer `pool_id` hydration and V4 manager+PoolId state reads. 4) Separate third-party reported TVL from on-chain calculated TVL with token price provenance/freshness. 5) Add recent-activity evidence. 6) Implement `pool_quote_probe` and quote freshness rules. 7) Compute Quoteable and Simulation-ready views; do not require execution support for either. 8) Increment status revision and suspend stale admissions atomically. 9) Keep zero-liquidity/unknown-TVL entities in Master. |
 | Tests | Per-family state/liquidity fixtures; zero-liquidity retention; TVL source/timestamp/price freshness; Balancer/V4 singleton hydration; multiple quote directions/amounts/blocks; stale/orphaned probe invalidation; status-revision admission invalidation; capability dependency tests. |
 | Expected output | Every status/TVL/quote claim has anchored evidence; Quoteable and Simulation-ready scopes are measurable independently of execution. |
-| Acceptance criteria | No generic non-zero-reserve test; no ambiguous external TVL match; no reported TVL without provenance; no global quoteability claim across unsupported routes. |
+| Acceptance criteria | No generic non-zero-reserve test; no ambiguous external TVL match; no reported TVL without provenance; no global quoteability claim across unsupported routes; no externally sourced pool is treated as verified without on-chain evidence. |
 | Performance / RPC cost | Batch `eth_call` through Multicall3 where possible; bound concurrency; reuse canonical state observations; quote cadence/freshness are configurable. |
 
 ---
 
-### Phase 5 — Live and PoolManager integration
+### Phase 5 — Live and PoolManager integration with continuous on-chain updates
 
 | Item | Detail |
 |---|---|
 | Files affected | `core/src/pipeline/runner.rs`; `core/src/pool/state/{manager,factory,pool_types,apply}.rs`; `core/src/jobs/{index,live,run}.rs`; `cli/src/commands/live.rs`; `core/src/mev/detectors/{two_hop,multi_hop}.rs`; `core/src/types/opportunity.rs`. |
-| Design | One inventory writer and a read-only Live reader. Live refreshes from `registry_revision`, initializes canonical `PoolKey` records incrementally, and consumes Execution-ready scopes only for order building. |
-| Tasks | 1) Replace address-only manager/pair/opportunity keys with canonical pool references while preserving legacy address serialization. 2) Route V4/Balancer/Infinity singleton-emitted logs by full PoolId. 3) Implement scoped capability and admission evaluation with explicit deferral reasons. 4) Add Live registry polling on `live_poll_ms` and canonical-head triggers. 5) Stage RPC initialization outside the manager lock; apply atomic manager generations and graph rebuilds. 6) Deduplicate initialized pools by canonical key/state revision. 7) Suspend drained/invalid/orphaned scopes and automatically re-admit after fresh verification. 8) Remove the non-empty-cache bootstrap guard; discovery cadence is configurable. 9) Separate two-hop pool limits from multi-hop graph/cycle budgets and report all pruning. 10) Enforce configurable RPC, memory, graph, and refresh budgets without silent truncation. |
+| Design | One inventory writer and a read-only Live reader. Live refreshes from `registry_revision`, initializes canonical `PoolKey` records incrementally, and consumes Execution-ready scopes only for order building. Continuous on-chain findings flow into this existing refresh architecture as soon as their block is processed; no external indexer is involved. |
+| Tasks | 1) Replace address-only manager/pair/opportunity keys with canonical pool references while preserving legacy address serialization. 2) Route V4/Balancer/Infinity singleton-emitted logs by full PoolId. 3) Implement scoped capability and admission evaluation with explicit deferral reasons. 4) Add Live registry polling on `live_poll_ms` and canonical-head triggers. 5) Stage RPC initialization outside the manager lock; apply atomic manager generations and graph rebuilds. 6) Deduplicate initialized pools by canonical key/state revision. 7) Suspend drained/invalid/orphaned scopes and automatically re-admit after fresh verification. 8) Remove the non-empty-cache bootstrap guard; discovery cadence is configurable. 9) Separate two-hop pool limits from multi-hop graph/cycle budgets and report all pruning. 10) Enforce configurable RPC, memory, graph, and refresh budgets without silent truncation. 11) Wire the local block/receipt stream to the inventory writer so newly created pools are committed as soon as the relevant block is processed; Live observes them through `registry_revision` with no external-source wait. |
 | Tests | Live refresh with a non-empty stale cache; incremental add/update/remove; restart/cursor-gap recovery; singleton replay; scoped admission changes; quote/status/reorg invalidation; manager generation/cache invalidation; budget/deferral reporting; large-universe pair graph tests. |
 | Expected output | Newly verified pools enter a running Live process without restart; unsupported pools remain in Master but never execute; every deferred scope has a reason. |
-| Acceptance criteria | Quoteable/Simulation-ready/Execution-ready counts are reported separately; no unsupported pool reaches the executor; Live performs no authoritative SQLite writes; refresh survives partial failures. |
+| Acceptance criteria | Quoteable/Simulation-ready/Execution-ready counts are reported separately; no unsupported pool reaches the executor; Live performs no authoritative SQLite writes; refresh survives partial failures; a new on-chain pool is reflected in a running Live process without waiting for any external indexer. |
 | Performance / RPC cost | State initialization is bounded by admitted scopes and configurable concurrency. Reuse canonical state observations and avoid reinitializing unchanged pools. |
 
 ---
 
-### Phase 6 — Controlled benchmark and regression testing
+### Phase 6 — Bootstrap coverage, continuous-discovery benchmark, and regression testing
 
 | Item | Detail |
 |---|---|
-| Files affected | `core/examples/pool_discovery_bench.rs`, new `core/examples/opportunity_recall_bench.rs`, new `docs/benchmarks/pool-coverage-*.md`, new `docs/benchmarks/opportunity-recall-*.md`. |
-| Design | Benchmark A (pool universe/readiness coverage) and Benchmark B (opportunity recall/quality) as defined in §9, using identical frozen snapshots and independent Ground Truth. |
-| Tasks | 1) Ingest Tier A/B/C/D reference inventories and diff by canonical identity. 2) Compute pool, TVL-weighted, Quoteable, Simulation-ready, and Execution-ready coverage. 3) Compute incremental yield and source overlap. 4) Add independent reference path enumeration/simulation for opportunity recall. 5) Record quote/simulation success, profitable rate, net PnL, false positives, RPC calls/bytes/retries, runtime, and memory. 6) Add regressions for CLI→SQLite→Live, migration/rollback, scanner/Live reorg, failed-getLogs coverage, singleton identity, compatibility APIs, and Master retention versus readiness removal. |
-| Tests | Full discovery/job/state test suite; frozen AVAX regression; before/after JSON artifacts; reference completeness and metric-denominator tests. |
-| Expected output | Before/after tables for both benchmarks, with reference tier and provider-limit caveats. |
-| Acceptance criteria | Coverage meets each obtainable reference scope or explains the gap; opportunity recall is non-decreasing within the declared Ground Truth; false positives and resource regressions are explained. |
+| Files affected | `core/examples/pool_discovery_bench.rs`, `core/examples/discovery_backend_bench.rs`, new `core/examples/opportunity_recall_bench.rs`, new `docs/benchmarks/pool-coverage-*.md`, new `docs/benchmarks/opportunity-recall-*.md`, new `docs/benchmarks/discovery-backends-*.md`. |
+| Design | Benchmark A (pool universe/readiness coverage), Benchmark B (opportunity recall/quality), and Benchmark C (discovery backend cost/latency/completeness from §9.5), using identical frozen snapshots and independent Ground Truth. Bootstrap coverage and continuous discovery latency/completeness are reported separately. |
+| Tasks | 1) Ingest Tier A/B/C/D reference inventories and diff by canonical identity. 2) Compute pool, TVL-weighted, Quoteable, Simulation-ready, and Execution-ready coverage. 3) Compute incremental yield and source overlap. 4) Add independent reference path enumeration/simulation for opportunity recall. 5) Record quote/simulation success, profitable rate, net PnL, false positives, RPC calls/bytes/retries, runtime, and memory. 6) Benchmark bootstrap coverage (external + registries + on-chain enumeration) and continuous on-chain discovery (block-to-Master latency, completeness, missed events, downtime/reorg recovery), comparing backfill vs continuous backends. 7) Add regressions for CLI→SQLite→Live, migration/rollback, scanner/Live reorg, failed-getLogs coverage, singleton identity, compatibility APIs, Master retention versus readiness removal, and continuous discovery with external sources disabled. |
+| Tests | Full discovery/job/state test suite; frozen AVAX regression; before/after JSON artifacts; reference completeness and metric-denominator tests; backend equivalence, missed-event, and downtime/reorg recovery tests. |
+| Expected output | Before/after tables for all three benchmarks, with reference tier and provider-limit caveats, plus separate backfill/continuous backend recommendations. |
+| Acceptance criteria | Coverage meets each obtainable reference scope or explains the gap; opportunity recall is non-decreasing within the declared Ground Truth; false positives and resource regressions are explained; continuous discovery completeness and latency are measured with external sources disabled. |
 | Performance / RPC cost | Document exact budgets. Default W1 is 1,000 blocks; no 30-day receipt scan without explicit approval. |
 
 ---
@@ -770,6 +842,8 @@ The final system provides the broadest practically obtainable inventory of uniqu
 
 - matches or exceeds the eligible pools exposed by DEX-native reference sources (or explicitly documents provider-imposed limits);
 - expands beyond them through independent sources;
+- discovers and maintains new pools from local-node on-chain events without depending on any external indexer; external sources remain bounded to bootstrap, enrichment, and unknown-protocol discovery;
+- selects backfill and continuous discovery backends from measured Benchmark C results, with runtime RPC capability detection and no `eth_getLogs` removal before measurement;
 - preserves canonical identity, multiple source observations, TVL source/timestamp and explicit provenance;
 - never deletes a discovered pool from the Master Inventory because TVL is unknown or execution is unsupported;
 - migrates existing v13 databases without data loss and keeps legacy readers working through explicit compatibility APIs;
@@ -786,6 +860,7 @@ The final system provides the broadest practically obtainable inventory of uniqu
 2. Approve one authoritative inventory writer and a read-only Live process; concurrent dashboard enrichment must serialize through the same writer policy.
 3. Confirm Balancer V3 remains out of scope until separately designed and tested.
 4. Approve the default Ground Truth matrix and any provider/API-key access needed for Tier B references.
+5. Approve the on-chain-first boundary: external sources are bootstrap/enrichment only, and continuous discovery must work with all external adapters disabled; backfill and continuous backends remain independently selectable.
 
 **Safe defaults that do not block implementation:**
 
@@ -793,8 +868,9 @@ The final system provides the broadest practically obtainable inventory of uniqu
 - Admission weights/thresholds, discovery cadence, quote freshness, retention, page budgets, RPC limits, graph limits, and memory budgets are configurable and tunable after measurement.
 - Infinity uses the typed singleton structure now; exact pool-type tags are filled after Phase 1 verification.
 - Historical backfill starts from the configured lookback; the legacy watermark is never treated as proof of completeness.
+- Acquisition backend choice per workload is configurable after Benchmark C; no backend is mandated by this plan, and `eth_getLogs` is retained until alternatives are measured.
 
-**Recommendation:** the plan is ready for Phase 2 implementation once the four structural choices above are approved. Tunable policy values should not delay the schema/identity/migration work.
+**Recommendation:** the plan is ready for Phase 1 prototypes/benchmarks and Phase 2 implementation once the five structural choices above are approved. Tunable policy values should not delay the schema/identity/migration work.
 
 ---
 
@@ -806,5 +882,6 @@ The final system provides the broadest practically obtainable inventory of uniqu
 | 2026-11-27 | Addendum delivered after jobs/integration audit; no files changed. |
 | 2026-11-27 | This document created at user request. **Implementation of Phase 2+ still awaits approval.** |
 | 2026-11-27 | Final SQL/architecture consistency review incorporated: complete DDL validated on bundled SQLite 3.45.0; compatibility, migration, scoped readiness, runtime, Ground Truth, and configuration corrections folded into the existing phases. Documentation only; no application/schema/database changes or commits. |
+| 2026-11-28 | On-chain-first / external-assisted discovery addendum incorporated: bootstrap vs continuous split (§0.6), acquisition methods A–E (§0.7), backend separation (§7.0), Benchmark C (§9.5), and revised Phase 1–6 plan. Documentation only; no application/schema/dependency/database changes or commits. |
 
-**Next action:** approve the four structural choices in §12.1 and authorize Phase 2, or specify a different starting phase.
+**Next action:** approve the five structural choices in §12.1 and authorize the Phase 1 capability probe/benchmarks and Phase 2, or specify a different starting phase.
