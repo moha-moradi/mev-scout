@@ -11,7 +11,9 @@ use alloy::rpc::types::Filter;
 /// Trader Joe / LFJ V2 activity: LBPair contracts are per-pool and emit their
 /// own Swap events.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
-    let t0 = log.topics()[0];
+    let Some(t0) = super::topic0(log) else {
+        return None;
+    };
     if t0 == *topics::TRADER_JOE_LB_SWAP || t0 == *topics::TRADER_JOE_LB_SWAP_LEGACY {
         Some(PoolHitCandidate::simple(DexType::TraderJoeLB))
     } else {

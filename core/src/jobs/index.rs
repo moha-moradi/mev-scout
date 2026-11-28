@@ -135,6 +135,7 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
     let mut stale: Vec<(Address, DexType, DexType)> = Vec::new();
     match SqliteStore::open(config.effective_db_path(chain)) {
         Ok(cache) => {
+            let _ = cache.set_chain_id(chain.chain_id());
             match cache.list_discovered_pools() {
                 Ok(pools) => {
                     for mut p in pools {
@@ -158,7 +159,12 @@ pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
                                             }
                                             p.dex_type = derived;
                                             p.derivation_version = Some(POOL_DERIVATION_VERSION);
-                                            match cache.put_discovered_pool(&p) {
+                                            match cache.put_discovered_pool_with_source(
+                                                &p,
+                                                "registry",
+                                                "rederive",
+                                                "enrichment",
+                                            ) {
                                                 Ok(()) => health.repaired += 1,
                                                 Err(e) => tracing::warn!(
                                                     pool = %p.address,

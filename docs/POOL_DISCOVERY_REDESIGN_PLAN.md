@@ -1,7 +1,8 @@
 # Pool Discovery Redesign — Audit & Implementation Plan
 
-**Status:** Analysis/planning only. The Final SQL and Architecture Consistency Review and the on-chain-first / external-assisted discovery addendum (§0.5–§0.7, §7.0, §9.5, revised §10) have been incorporated. No application source, schema, dependency, or production database was modified, and nothing was committed. Implementation of Phase 1 prototypes and Phase 2 and later is **pending approval**.
+**Status:** Stage 1 acquisition measurements are complete and recorded in `docs/benchmarks/avalanche-backfill-pilot.md`; PublicNode batched `eth_getBlockReceipts` is the selected backend (30-day run deferred). Stage 2 is approved and implemented per `docs/POOL_DISCOVERY_STAGE2_DESIGN.md`. Stage 3 and Stage 4 remain unstarted. No commit has been made for the current work; all changes are uncommitted.
 **Repository source baseline:** `a18f3e5`; current documentation baseline `df5a676`. These commits differ only by this plan document, not by `core/`, `cli/`, `Cargo.toml`, or `Cargo.lock`.
+**Approved reduced-scope mapping:** Stage 1 = acquisition benchmark (Phase 1 subset); Stage 2 = canonical Master Inventory and safe v13→v14 migration (Phase 2 subset). The Stage 2 contract is `docs/POOL_DISCOVERY_STAGE2_DESIGN.md` §10. Stages 3 and 4 are deferred; no 30-day backfill has been run.
 **Verification date:** 2026-11-27. **Architecture preference addendum:** 2026-11-28. Important claims are cited to source files/tests or to recorded live probes. Unverified external sources and unmeasured acquisition backends are explicitly labelled.
 
 ---
@@ -884,4 +885,8 @@ The final system provides the broadest practically obtainable inventory of uniqu
 | 2026-11-27 | Final SQL/architecture consistency review incorporated: complete DDL validated on bundled SQLite 3.45.0; compatibility, migration, scoped readiness, runtime, Ground Truth, and configuration corrections folded into the existing phases. Documentation only; no application/schema/database changes or commits. |
 | 2026-11-28 | On-chain-first / external-assisted discovery addendum incorporated: bootstrap vs continuous split (§0.6), acquisition methods A–E (§0.7), backend separation (§7.0), Benchmark C (§9.5), and revised Phase 1–6 plan. Documentation only; no application/schema/dependency/database changes or commits. |
 
-**Next action:** approve the five structural choices in §12.1 and authorize the Phase 1 capability probe/benchmarks and Phase 2, or specify a different starting phase.
+| 2026-11-28 | Stage 1 acquisition benchmark executed (1,000 and 10,000 blocks); PublicNode batched `eth_getBlockReceipts` selected. Report: `docs/benchmarks/avalanche-backfill-pilot.md`. The 30-day run was not executed. |
+| 2026-11-28 | User selected "only Stage 2". The five Stage 2 decisions in `docs/POOL_DISCOVERY_STAGE2_DESIGN.md` §10 were approved, including the §7 correctness fixes. |
+| 2026-11-28 | Stage 2 implemented: canonical `PoolKey`, v14 Master Inventory, atomic v13 import with read-only legacy views, observation/window/reorg APIs, source-aware adapters, revision bumps on reorg and status upgrades, and targeted decoder/retention/cap fixes. Acceptance suite: `core/tests/stage2_inventory.rs` (13 tests). No commit made. |
+
+**Next action:** none inside the approved scope. Stage 3/4 and the full 30-day backfill require a new explicit decision; no commit has been made.

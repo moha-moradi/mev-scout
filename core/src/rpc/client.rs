@@ -47,6 +47,9 @@ pub struct RpcMetricsSnapshot {
     pub bytes: u64,
     pub p50_ms: u64,
     pub p95_ms: u64,
+    /// Tail latency used by the Stage 1 acquisition benchmark. Existing
+    /// consumers can ignore this additional metrics-only field.
+    pub p99_ms: u64,
 }
 
 impl RpcMetrics {
@@ -79,15 +82,17 @@ impl RpcMetrics {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        let (p50_ms, p95_ms) = if latencies.is_empty() {
-            (0, 0)
+        let (p50_ms, p95_ms, p99_ms) = if latencies.is_empty() {
+            (0, 0, 0)
         } else {
             latencies.sort_unstable();
             let p50 = (latencies.len() * 50) / 100;
             let p95 = (latencies.len() * 95) / 100;
+            let p99 = (latencies.len() * 99) / 100;
             (
                 latencies[p50.min(latencies.len() - 1)],
                 latencies[p95.min(latencies.len() - 1)],
+                latencies[p99.min(latencies.len() - 1)],
             )
         };
         RpcMetricsSnapshot {
@@ -97,6 +102,7 @@ impl RpcMetrics {
             bytes: self.bytes.load(Ordering::Relaxed),
             p50_ms,
             p95_ms,
+            p99_ms,
         }
     }
 }
@@ -1484,16 +1490,18 @@ impl RpcClient {
                     }
                 }
                 let mid = block_numbers.len() / 2;
-                let mut left = Box::pin(self.get_blocks_and_receipts_batch_for_many(
-                    provider_idx,
-                    &block_numbers[..mid],
-                ))
-                .await?;
-                let right = Box::pin(self.get_blocks_and_receipts_batch_for_many(
-                    provider_idx,
-                    &block_numbers[mid..],
-                ))
-                .await?;
+                let mut left =
+                    Box::pin(self.get_blocks_and_receipts_batch_for_many(
+                        provider_idx,
+                        &block_numbers[..mid],
+                    ))
+                    .await?;
+                let right =
+                    Box::pin(self.get_blocks_and_receipts_batch_for_many(
+                        provider_idx,
+                        &block_numbers[mid..],
+                    ))
+                    .await?;
                 left.extend(right);
                 Ok(left)
             }

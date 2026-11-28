@@ -1,0 +1,275 @@
+{
+  "method": "logs_publicnode",
+  "range": "10000",
+  "repeats": 3,
+  "median_elapsed_ms": 8387,
+  "canonical_head_number": 101615050,
+  "canonical_head_hash": "0x2802ae50693c2959dc8034abfe5e3bcb43c337a90030dcbe79dc65227468b0c1",
+  "accounting_note": "Credits/units are provider-accounting inputs, not client-observable values. Pass --credits-used and --quota-tier from the provider dashboard.",
+  "runs": [
+    {
+      "method": "logs_publicnode",
+      "kind": "filtered_logs",
+      "provider": "publicnode",
+      "range": "10000",
+      "iteration": 1,
+      "status": "ok",
+      "source": "filtered_logs",
+      "endpoint": "https://avalanche-c-chain.publicnode.com",
+      "canonical_head_number": 101615050,
+      "canonical_head_hash": "0x2802ae50693c2959dc8034abfe5e3bcb43c337a90030dcbe79dc65227468b0c1",
+      "from_block": 101605051,
+      "to_block": 101615050,
+      "blocks": 10000,
+      "elapsed_ms": 7224,
+      "blocks_per_sec": 1384.2746400885935,
+      "pools_total": 0,
+      "dex_families": [],
+      "addresses": [],
+      "capability": {
+        "filtered_logs_one_block": {
+          "supported": true,
+          "detail": "0 matching log(s) in one block; probe chunk 10 address(es)"
+        },
+        "filtered_logs_range": {
+          "supported": true,
+          "detail": "0 matching log(s) in 10000 blocks; probe chunk 10 address(es)"
+        },
+        "block_receipts": {
+          "supported": true,
+          "detail": "block 101615050 with 1 receipt(s)"
+        }
+      },
+      "accounting": {
+        "provider": "publicnode",
+        "endpoint": "https://avalanche-c-chain.publicnode.com",
+        "quota_tier": null,
+        "credits_used": null,
+        "rps_limit": 0.0,
+        "log_filter_chunks": 2,
+        "http_requests": 20,
+        "json_rpc_calls": 20,
+        "json_rpc_calls_inside_batches": 0,
+        "response_bytes": null,
+        "batch_accounting_note": "RpcClient rate limit is applied per HTTP POST. Verify whether the provider counts individual JSON-RPC calls inside batches; 20 RPS is not assumed to mean 20 HTTP batch requests/sec."
+      },
+      "rpc": {
+        "requests": 20,
+        "errors": 0,
+        "retryable_errors": 0,
+        "bytes": 0,
+        "p50_ms": 112,
+        "p95_ms": 4935,
+        "p99_ms": 4935
+      },
+      "errors": {
+        "total": 0,
+        "rate_limit": 0,
+        "http_403": 0,
+        "getlogs_unsupported": 0,
+        "null_receipts": 0,
+        "failed_window_lines": 0,
+        "failed_window_count": 0
+      },
+      "failed_windows": [],
+      "logs": [
+        "getLogs chunk 1 101605051..101606050: 0 log(s)",
+        "getLogs chunk 1 101606051..101607050: 0 log(s)",
+        "getLogs chunk 1 101607051..101608050: 0 log(s)",
+        "getLogs chunk 1 101608051..101609050: 0 log(s)",
+        "getLogs chunk 1 101609051..101610050: 0 log(s)",
+        "getLogs chunk 1 101610051..101611050: 0 log(s)",
+        "getLogs chunk 1 101611051..101612050: 0 log(s)",
+        "getLogs chunk 1 101612051..101613050: 0 log(s)",
+        "getLogs chunk 1 101613051..101614050: 0 log(s)",
+        "getLogs chunk 1 101614051..101615050: 0 log(s)",
+        "getLogs chunk 2 101605051..101606050: 0 log(s)",
+        "getLogs chunk 2 101606051..101607050: 0 log(s)",
+        "getLogs chunk 2 101607051..101608050: 0 log(s)",
+        "getLogs chunk 2 101608051..101609050: 0 log(s)",
+        "getLogs chunk 2 101609051..101610050: 0 log(s)",
+        "getLogs chunk 2 101610051..101611050: 0 log(s)",
+        "getLogs chunk 2 101611051..101612050: 0 log(s)",
+        "getLogs chunk 2 101612051..101613050: 0 log(s)",
+        "getLogs chunk 2 101613051..101614050: 0 log(s)",
+        "getLogs chunk 2 101614051..101615050: 0 log(s)"
+      ]
+    },
+    {
+      "method": "logs_publicnode",
+      "kind": "filtered_logs",
+      "provider": "publicnode",
+      "range": "10000",
+      "iteration": 2,
+      "status": "ok",
+      "source": "filtered_logs",
+      "endpoint": "https://avalanche-c-chain.publicnode.com",
+      "canonical_head_number": 101615050,
+      "canonical_head_hash": "0x2802ae50693c2959dc8034abfe5e3bcb43c337a90030dcbe79dc65227468b0c1",
+      "from_block": 101605051,
+      "to_block": 101615050,
+      "blocks": 10000,
+      "elapsed_ms": 8387,
+      "blocks_per_sec": 1192.321449862883,
+      "pools_total": 0,
+      "dex_families": [],
+      "addresses": [],
+      "capability": {
+        "filtered_logs_one_block": {
+          "supported": true,
+          "detail": "0 matching log(s) in one block; probe chunk 10 address(es)"
+        },
+        "filtered_logs_range": {
+          "supported": true,
+          "detail": "0 matching log(s) in 10000 blocks; probe chunk 10 address(es)"
+        },
+        "block_receipts": {
+          "supported": true,
+          "detail": "block 101615050 with 1 receipt(s)"
+        }
+      },
+      "accounting": {
+        "provider": "publicnode",
+        "endpoint": "https://avalanche-c-chain.publicnode.com",
+        "quota_tier": null,
+        "credits_used": null,
+        "rps_limit": 0.0,
+        "log_filter_chunks": 2,
+        "http_requests": 20,
+        "json_rpc_calls": 20,
+        "json_rpc_calls_inside_batches": 0,
+        "response_bytes": null,
+        "batch_accounting_note": "RpcClient rate limit is applied per HTTP POST. Verify whether the provider counts individual JSON-RPC calls inside batches; 20 RPS is not assumed to mean 20 HTTP batch requests/sec."
+      },
+      "rpc": {
+        "requests": 20,
+        "errors": 0,
+        "retryable_errors": 0,
+        "bytes": 0,
+        "p50_ms": 146,
+        "p95_ms": 5240,
+        "p99_ms": 5240
+      },
+      "errors": {
+        "total": 0,
+        "rate_limit": 0,
+        "http_403": 0,
+        "getlogs_unsupported": 0,
+        "null_receipts": 0,
+        "failed_window_lines": 0,
+        "failed_window_count": 0
+      },
+      "failed_windows": [],
+      "logs": [
+        "getLogs chunk 1 101605051..101606050: 0 log(s)",
+        "getLogs chunk 1 101606051..101607050: 0 log(s)",
+        "getLogs chunk 1 101607051..101608050: 0 log(s)",
+        "getLogs chunk 1 101608051..101609050: 0 log(s)",
+        "getLogs chunk 1 101609051..101610050: 0 log(s)",
+        "getLogs chunk 1 101610051..101611050: 0 log(s)",
+        "getLogs chunk 1 101611051..101612050: 0 log(s)",
+        "getLogs chunk 1 101612051..101613050: 0 log(s)",
+        "getLogs chunk 1 101613051..101614050: 0 log(s)",
+        "getLogs chunk 1 101614051..101615050: 0 log(s)",
+        "getLogs chunk 2 101605051..101606050: 0 log(s)",
+        "getLogs chunk 2 101606051..101607050: 0 log(s)",
+        "getLogs chunk 2 101607051..101608050: 0 log(s)",
+        "getLogs chunk 2 101608051..101609050: 0 log(s)",
+        "getLogs chunk 2 101609051..101610050: 0 log(s)",
+        "getLogs chunk 2 101610051..101611050: 0 log(s)",
+        "getLogs chunk 2 101611051..101612050: 0 log(s)",
+        "getLogs chunk 2 101612051..101613050: 0 log(s)",
+        "getLogs chunk 2 101613051..101614050: 0 log(s)",
+        "getLogs chunk 2 101614051..101615050: 0 log(s)"
+      ]
+    },
+    {
+      "method": "logs_publicnode",
+      "kind": "filtered_logs",
+      "provider": "publicnode",
+      "range": "10000",
+      "iteration": 3,
+      "status": "ok",
+      "source": "filtered_logs",
+      "endpoint": "https://avalanche-c-chain.publicnode.com",
+      "canonical_head_number": 101615050,
+      "canonical_head_hash": "0x2802ae50693c2959dc8034abfe5e3bcb43c337a90030dcbe79dc65227468b0c1",
+      "from_block": 101605051,
+      "to_block": 101615050,
+      "blocks": 10000,
+      "elapsed_ms": 12609,
+      "blocks_per_sec": 793.0843048616068,
+      "pools_total": 0,
+      "dex_families": [],
+      "addresses": [],
+      "capability": {
+        "filtered_logs_one_block": {
+          "supported": true,
+          "detail": "0 matching log(s) in one block; probe chunk 10 address(es)"
+        },
+        "filtered_logs_range": {
+          "supported": true,
+          "detail": "0 matching log(s) in 10000 blocks; probe chunk 10 address(es)"
+        },
+        "block_receipts": {
+          "supported": true,
+          "detail": "block 101615050 with 1 receipt(s)"
+        }
+      },
+      "accounting": {
+        "provider": "publicnode",
+        "endpoint": "https://avalanche-c-chain.publicnode.com",
+        "quota_tier": null,
+        "credits_used": null,
+        "rps_limit": 0.0,
+        "log_filter_chunks": 2,
+        "http_requests": 20,
+        "json_rpc_calls": 20,
+        "json_rpc_calls_inside_batches": 0,
+        "response_bytes": null,
+        "batch_accounting_note": "RpcClient rate limit is applied per HTTP POST. Verify whether the provider counts individual JSON-RPC calls inside batches; 20 RPS is not assumed to mean 20 HTTP batch requests/sec."
+      },
+      "rpc": {
+        "requests": 20,
+        "errors": 0,
+        "retryable_errors": 0,
+        "bytes": 0,
+        "p50_ms": 146,
+        "p95_ms": 9284,
+        "p99_ms": 9284
+      },
+      "errors": {
+        "total": 0,
+        "rate_limit": 0,
+        "http_403": 0,
+        "getlogs_unsupported": 0,
+        "null_receipts": 0,
+        "failed_window_lines": 0,
+        "failed_window_count": 0
+      },
+      "failed_windows": [],
+      "logs": [
+        "getLogs chunk 1 101605051..101606050: 0 log(s)",
+        "getLogs chunk 1 101606051..101607050: 0 log(s)",
+        "getLogs chunk 1 101607051..101608050: 0 log(s)",
+        "getLogs chunk 1 101608051..101609050: 0 log(s)",
+        "getLogs chunk 1 101609051..101610050: 0 log(s)",
+        "getLogs chunk 1 101610051..101611050: 0 log(s)",
+        "getLogs chunk 1 101611051..101612050: 0 log(s)",
+        "getLogs chunk 1 101612051..101613050: 0 log(s)",
+        "getLogs chunk 1 101613051..101614050: 0 log(s)",
+        "getLogs chunk 1 101614051..101615050: 0 log(s)",
+        "getLogs chunk 2 101605051..101606050: 0 log(s)",
+        "getLogs chunk 2 101606051..101607050: 0 log(s)",
+        "getLogs chunk 2 101607051..101608050: 0 log(s)",
+        "getLogs chunk 2 101608051..101609050: 0 log(s)",
+        "getLogs chunk 2 101609051..101610050: 0 log(s)",
+        "getLogs chunk 2 101610051..101611050: 0 log(s)",
+        "getLogs chunk 2 101611051..101612050: 0 log(s)",
+        "getLogs chunk 2 101612051..101613050: 0 log(s)",
+        "getLogs chunk 2 101613051..101614050: 0 log(s)",
+        "getLogs chunk 2 101614051..101615050: 0 log(s)"
+      ]
+    }
+  ]
+}

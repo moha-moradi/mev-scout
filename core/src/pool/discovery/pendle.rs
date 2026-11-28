@@ -10,7 +10,9 @@ use alloy::rpc::types::Filter;
 /// Pendle activity: markets are per-market contracts emitting their own Swap
 /// events; router-level PT/YT swaps carry the market as topics[2].
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
-    let t0 = log.topics()[0];
+    let Some(t0) = super::topic0(log) else {
+        return None;
+    };
     if t0 == *topics::PENDLE_MARKET_SWAP {
         return Some(PoolHitCandidate::simple(DexType::Pendle));
     }

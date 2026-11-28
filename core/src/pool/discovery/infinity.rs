@@ -9,7 +9,10 @@ use alloy::rpc::types::Filter;
 /// Pancake Infinity CL activity: same singleton scheme as V4 — the CLSwap
 /// event's topics[1] poolId derives the synthetic pool key.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
-    if log.topics()[0] != *topics::INF_CL_SWAP {
+    let Some(t0) = super::topic0(log) else {
+        return None;
+    };
+    if t0 != *topics::INF_CL_SWAP {
         return None;
     }
     let t = log.topics();
@@ -60,6 +63,7 @@ pub(super) fn decode_infinity_initialize(
     fb[3] = log_data.data[63];
     let fee = u32::from_be_bytes(fb);
     let hook_address = abi_decode_address(&log_data.data, 0).filter(|a| !a.is_zero());
+    let parameters = format!("0x{}", hex::encode(&log_data.data[64..96]));
     let creation_block = log.block_number.unwrap_or(0);
     Some((
         pool_addr,
@@ -73,7 +77,11 @@ pub(super) fn decode_infinity_initialize(
         )
         .with_pool_id(Some(pool_id))
         .with_factory(Some(pool_manager))
-        .with_hook_address(hook_address),
+        .with_hook_address(hook_address)
+        .with_protocol_params(serde_json::json!({
+            "parameters": parameters,
+            "pool_id": format!("0x{}", hex::encode(pool_id)),
+        })),
     ))
 }
 

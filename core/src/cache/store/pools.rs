@@ -3,53 +3,6 @@ use alloy::primitives::Address;
 use crate::pool::state::PoolInfo;
 
 impl super::SqliteStore {
-    pub fn put_discovered_pool(&self, pool: &PoolInfo) -> anyhow::Result<()> {
-        let conn = self.conn();
-        let pool_id_blob = pool.pool_id.map(|id| id.to_vec());
-        let factory_blob = pool.factory.map(|f| f.to_vec());
-        let is_stable_int: Option<i64> = pool.is_stable.map(|b| b as i64);
-        let underlying_json: Option<String> = pool.underlying_tokens.as_ref().map(|tokens| {
-            let hexes: Vec<String> = tokens.iter().map(|a| format!("{a}")).collect();
-            serde_json::to_string(&hexes).unwrap_or_default()
-        });
-        let balancer_type_int: Option<i64> = pool.balancer_pool_type.map(|v| v as i64);
-        let hook_blob = pool.hook_address.map(|f| f.to_vec());
-        let bin_step_int: Option<i64> = pool.bin_step.map(|v| v as i64);
-        let maturity_ts_int: Option<i64> = pool.maturity_timestamp.map(|v| v as i64);
-        let dex_name = pool.dex_name.as_deref();
-        let token0_symbol = pool.token0_symbol.as_deref();
-        let token1_symbol = pool.token1_symbol.as_deref();
-        conn.execute(
-            "INSERT OR REPLACE INTO pool_info (address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol, tvl_usd, volume_usd_24h, volume_usd_30d, derivation_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
-            rusqlite::params![
-                super::SqliteStore::addr_to_blob(&pool.address),
-                super::SqliteStore::addr_to_blob(&pool.token0),
-                super::SqliteStore::addr_to_blob(&pool.token1),
-                pool.fee as i64,
-                pool.dex_type as i64,
-                pool.tick_spacing,
-                pool.creation_block as i64,
-                pool_id_blob,
-                factory_blob,
-                is_stable_int,
-                underlying_json,
-                balancer_type_int,
-                hook_blob,
-                bin_step_int,
-                maturity_ts_int,
-                dex_name,
-                token0_symbol,
-                token1_symbol,
-                pool.tvl_usd,
-                pool.volume_usd_24h,
-                pool.volume_usd_30d,
-                pool.derivation_version,
-            ],
-        )?;
-        Ok(())
-    }
-
     pub fn get_discovered_pool(&self, address: &Address) -> anyhow::Result<Option<PoolInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -201,37 +154,31 @@ mod tests {
 
     #[test]
     fn earliest_creation_block_groups_by_factory() {
+        use crate::dex_type::DexType;
+        use crate::pool::state::PoolInfo;
+
         let store = SqliteStore::open(":memory:").unwrap();
-        {
-            let conn = store.conn();
-            for (i, block, factory) in [
-                (1u8, 5000i64, 4u8),
-                (2u8, 7000i64, 4u8),
-                (3u8, 6000i64, 5u8),
-            ] {
-                let mut addr = [0u8; 20];
-                addr[0] = i;
-                let mut t0 = [0u8; 20];
-                t0[0] = i + 10;
-                let mut t1 = [0u8; 20];
-                t1[0] = i + 20;
-                let mut fac = [0u8; 20];
-                fac[0] = factory;
-                conn.execute(
-                    "INSERT INTO pool_info (address, token0, token1, fee, dex_type, creation_block, factory)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    rusqlite::params![
-                        addr.to_vec(),
-                        t0.to_vec(),
-                        t1.to_vec(),
-                        3000i64,
-                        1i64,
-                        block,
-                        Some(fac.to_vec()),
-                    ],
-                )
+        for (i, block, factory) in [(1u8, 5000u64, 4u8), (2u8, 7000, 4), (3u8, 6000, 5)] {
+            let mut addr = [0u8; 20];
+            addr[0] = i;
+            let mut t0 = [0u8; 20];
+            t0[0] = i + 10;
+            let mut t1 = [0u8; 20];
+            t1[0] = i + 20;
+            let mut fac = [0u8; 20];
+            fac[0] = factory;
+            store
+                .put_discovered_pool(&PoolInfo {
+                    address: Address::from_slice(&addr),
+                    token0: Address::from_slice(&t0),
+                    token1: Address::from_slice(&t1),
+                    fee: 3000,
+                    dex_type: DexType::UniswapV3,
+                    creation_block: block,
+                    factory: Some(Address::from_slice(&fac)),
+                    ..Default::default()
+                })
                 .unwrap();
-            }
         }
         let by_factory = store.earliest_creation_block_by_factory().unwrap();
         assert_eq!(by_factory.len(), 2);
@@ -245,26 +192,25 @@ mod tests {
 
     #[test]
     fn earliest_creation_block_ignores_remote_rows() {
+        use crate::dex_type::DexType;
+        use crate::pool::state::PoolInfo;
+
         let store = SqliteStore::open(":memory:").unwrap();
-        {
-            let conn = store.conn();
-            let mut addr = [9u8; 20];
-            addr[0] = 1;
-            conn.execute(
-                "INSERT INTO pool_info (address, token0, token1, fee, dex_type, creation_block, factory)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![
-                    addr.to_vec(),
-                    vec![2u8; 20],
-                    vec![3u8; 20],
-                    3000i64,
-                    1i64,
-                    0i64,
-                    Some(vec![4u8; 20]), // creation_block 0 ⇒ remote-sourced ⇒ ignored
-                ],
-            )
+        let mut addr = [9u8; 20];
+        addr[0] = 1;
+        store
+            .put_discovered_pool(&PoolInfo {
+                address: Address::from_slice(&addr),
+                token0: Address::repeat_byte(2),
+                token1: Address::repeat_byte(3),
+                fee: 3000,
+                dex_type: DexType::UniswapV3,
+                // creation_block 0 ⇒ remote-sourced ⇒ ignored
+                creation_block: 0,
+                factory: Some(Address::repeat_byte(4)),
+                ..Default::default()
+            })
             .unwrap();
-        }
         assert!(store
             .earliest_creation_block_by_factory()
             .unwrap()

@@ -141,23 +141,20 @@ fn dedup_by_address(pools: Vec<DiscoveredPool>) -> Vec<DiscoveredPool> {
     out
 }
 
-/// Explorer-style ranking: drop below `min_tvl`, sort by TVL desc, cap length.
+/// Ranking for display only. Master Inventory persistence never drops rows:
+/// `min_tvl` / `max_pools` are explorer presentation settings, not retention
+/// policy. Unknown TVL sorts last but remains in the inventory.
 fn apply_explorer_ranking(
     mut pools: Vec<DiscoveredPool>,
-    min_tvl: Option<f64>,
-    max_pools: usize,
+    _min_tvl: Option<f64>,
+    _max_pools: usize,
 ) -> Vec<DiscoveredPool> {
-    if let Some(min) = min_tvl {
-        pools.retain(|p| p.tvl_usd.is_some_and(|v| v >= min));
-    }
-    pools.sort_by(|a, b| {
-        b.tvl_usd
-            .partial_cmp(&a.tvl_usd)
-            .unwrap_or(std::cmp::Ordering::Equal)
+    pools.sort_by(|a, b| match (a.tvl_usd, b.tvl_usd) {
+        (Some(a), Some(b)) => b.partial_cmp(&a).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
     });
-    if max_pools > 0 && pools.len() > max_pools {
-        pools.truncate(max_pools);
-    }
     pools
 }
 
@@ -189,17 +186,37 @@ fn cached_to_discovered(existing: PoolInfo) -> DiscoveredPool {
 }
 
 fn persist_universe(cache: &SqliteStore, pools: &[DiscoveredPool]) -> usize {
+    persist_universe_with_source(cache, pools, "discovery", "factory_scan", "onchain")
+}
+
+/// Remote/external observations are appended separately so explorer-sourced
+/// TVL and volume never inherit `onchain` authority from a merged row.
+fn persist_remote_observations(cache: &SqliteStore, pools: &[DiscoveredPool]) -> usize {
+    persist_universe_with_source(cache, pools, "remote", "remote_enrich", "external")
+}
+
+fn persist_universe_with_source(
+    cache: &SqliteStore,
+    pools: &[DiscoveredPool],
+    source: &str,
+    method: &str,
+    authority: &str,
+) -> usize {
     let mut persisted = 0usize;
     for p in pools {
-        if p.token0.is_zero() || p.token1.is_zero() {
-            continue;
-        }
+        // Zero-token rows stay in the Master Inventory as provisional; they
+        // are only excluded from quoting, never from discovery persistence.
         let mut merged = p.clone();
         if let Ok(Some(existing)) = cache.get_discovered_pool(&p.address) {
             merged.merge_from(&cached_to_discovered(existing));
         }
-        let info: PoolInfo = merged.into();
-        match cache.put_discovered_pool(&info) {
+        match cache.record_discovered_pool(
+            &merged,
+            source,
+            method,
+            authority,
+            Some(merged.creation_block),
+        ) {
             Ok(()) => persisted += 1,
             Err(e) => tracing::warn!("Failed to cache pool {}: {e:#}", p.address),
         }
@@ -315,7 +332,10 @@ pub async fn job_discover(
 
     let source = opts.source.clone();
     anyhow::ensure!(
-        matches!(source.as_str(), "onchain" | "remote" | "hybrid" | "receipts"),
+        matches!(
+            source.as_str(),
+            "onchain" | "remote" | "hybrid" | "receipts"
+        ),
         "unknown discover source '{source}' (expected onchain|remote|hybrid|receipts)"
     );
     let is_remote_only = source == "remote";
@@ -358,6 +378,7 @@ pub async fn job_discover(
 
     let cache_path = config.effective_db_path(&chain_name);
     let cache = SqliteStore::open(&cache_path)?;
+    cache.set_chain_id(chain_id)?;
 
     let mut token_cache = TokenCache::warm(chain_id);
     match TokenCache::load(&cache) {
@@ -479,9 +500,7 @@ pub async fn job_discover(
         let batches = scan_blocks / opts.receipt_batch_blocks
             + u64::from(scan_blocks % opts.receipt_batch_blocks != 0);
         // Public peers measured ~0.37 s per 4-block receipt batch in Phase 0.
-        let approx_hours = (batches as f64 * 0.37)
-            / (opts.rpc_concurrency.max(1) as f64)
-            / 3600.0;
+        let approx_hours = (batches as f64 * 0.37) / (opts.rpc_concurrency.max(1) as f64) / 3600.0;
         progress.log(&format!(
             "Receipt discovery cost estimate: {scan_blocks} blocks ≈ {batches} batch POSTs \
              (≈ {approx_hours:.1} h on public peers at concurrency {}); use a short --blocks range first",
@@ -568,6 +587,11 @@ pub async fn job_discover(
             "Remote pool sources: {} pool(s)",
             remote_pools.len()
         ));
+        // Append source-attributed evidence before the vector is merged into
+        // the on-chain universe (remote-only mode records it once as primary).
+        if !is_remote_only {
+            let _ = persist_remote_observations(&cache, &remote_pools);
+        }
     }
 
     let mut pools: Vec<DiscoveredPool> = dedup_by_address(all_pools);
@@ -580,19 +604,15 @@ pub async fn job_discover(
         enrich_from_remote(&mut pools, &remote_pools);
     }
 
-    // Explorer-like ranking for any path that pulled aggregator TVL.
+    // Explorer-like ordering for display. Inventory rows are never dropped.
     if should_fetch_remote {
-        let before = pools.len();
         pools = apply_explorer_ranking(pools, min_tvl_opt, max_pools_opt);
-        if pools.len() != before {
-            progress.log(&format!(
-                "Explorer ranking: {} → {} pool(s) (min_tvl={:?}, max_pools={})",
-                before,
-                pools.len(),
-                min_tvl_opt,
-                max_pools_opt
-            ));
-        }
+        progress.log(&format!(
+            "Explorer display order: {} pool(s) (min_tvl={:?}, max_pools={}); inventory unchanged",
+            pools.len(),
+            min_tvl_opt,
+            max_pools_opt
+        ));
     }
 
     // resolve missing CL metadata (opt-in).
@@ -661,8 +681,13 @@ pub async fn job_discover(
         pools = checked;
     }
 
-    // persist merged universe.
-    let persisted = persist_universe(&cache, &pools);
+    // Persist the authoritative universe, then append external evidence with
+    // its own (lower) authority. Both paths go through the inventory writer.
+    let persisted = if is_remote_only {
+        persist_universe_with_source(&cache, &pools, "remote", "remote_scan", "external")
+    } else {
+        persist_universe(&cache, &pools)
+    };
     if persisted > 0 {
         progress.log(&format!("Cached {persisted} pool(s) to {cache_path}"));
     }
@@ -852,7 +877,7 @@ mod tests {
         ];
 
         let persisted = persist_universe(&store, &pools);
-        assert_eq!(persisted, 3, "zero-token entry must not be persisted");
+        assert_eq!(persisted, 4, "zero-token rows stay in the Master Inventory");
         drop(store);
 
         let store = SqliteStore::open(&path).unwrap();
@@ -867,10 +892,11 @@ mod tests {
             assert_eq!(got.token1, p.token1);
             assert_eq!(got.tvl_usd, p.tvl_usd);
         }
-        assert!(store
+        let provisional = store
             .get_discovered_pool(&address!("4444444444444444444444444444444444444444"))
             .unwrap()
-            .is_none());
+            .expect("zero-token pool is retained as provisional");
+        assert_eq!(provisional.token0, Address::ZERO);
     }
 
     #[test]
@@ -901,7 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn explorer_ranking_filters_sorts_and_caps() {
+    fn explorer_ranking_sorts_without_dropping_rows() {
         let t0 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let t1 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let pools = vec![
@@ -942,7 +968,7 @@ mod tests {
             ),
         ];
         let ranked = apply_explorer_ranking(pools, Some(25_000.0), 2);
-        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked.len(), 4, "ranking is display-only, never a cap");
         assert_eq!(
             ranked[0].address,
             address!("2222222222222222222222222222222222222222")
@@ -950,6 +976,14 @@ mod tests {
         assert_eq!(
             ranked[1].address,
             address!("3333333333333333333333333333333333333333")
+        );
+        assert_eq!(
+            ranked[2].address,
+            address!("1111111111111111111111111111111111111111")
+        );
+        assert_eq!(
+            ranked[3].address,
+            address!("4444444444444444444444444444444444444444")
         );
     }
 }

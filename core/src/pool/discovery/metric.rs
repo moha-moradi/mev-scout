@@ -8,7 +8,10 @@ use alloy::primitives::Address;
 
 /// Metric V2 activity: per-pool contracts emit Swap from the pool address.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
-    if log.topics()[0] == *topics::METRIC_SWAP {
+    let Some(t0) = super::topic0(log) else {
+        return None;
+    };
+    if t0 == *topics::METRIC_SWAP {
         Some(PoolHitCandidate::simple(DexType::Metric))
     } else {
         None
@@ -30,6 +33,9 @@ pub(super) fn decode_metric_pool_created(
     let pool_addr = abi_word_address(&log_data.data, 0);
     let token0 = topic_address(topics[1]);
     let token1 = topic_address(topics[2]);
+    // Data word 1 is the bytes32 `poolId`; keep it even though quoting is
+    // disabled so canonical identity can distinguish Metric pools later.
+    let pool_id = format!("0x{}", hex::encode(&log_data.data[32..64]));
     let creation_block = log.block_number.unwrap_or(0);
     Some((
         pool_addr,
@@ -41,7 +47,8 @@ pub(super) fn decode_metric_pool_created(
             DexType::Metric,
             creation_block,
         )
-        .with_factory(Some(log.address())),
+        .with_factory(Some(log.address()))
+        .with_protocol_params(serde_json::json!({ "pool_id": pool_id })),
     ))
 }
 

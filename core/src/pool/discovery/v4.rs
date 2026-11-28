@@ -9,7 +9,10 @@ use alloy::rpc::types::Filter;
 /// V4 activity: swaps emit from the singleton PoolManager with a bytes32
 /// poolId in topics[1]; the synthetic pool key is the poolId's last 20 bytes.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
-    if log.topics()[0] != *topics::V4_SWAP {
+    let Some(t0) = super::topic0(log) else {
+        return None;
+    };
+    if t0 != *topics::V4_SWAP {
         return None;
     }
     let t = log.topics();
@@ -57,6 +60,8 @@ pub(super) fn decode_v4_initialize(
     let Some(pool_addr) = abi_decode_address(topics[1].as_slice(), 0) else {
         return None;
     };
+    let mut pool_id = [0u8; 32];
+    pool_id.copy_from_slice(topics[1].as_slice());
     Some((
         pool_addr,
         DiscoveredPool::new(
@@ -69,7 +74,8 @@ pub(super) fn decode_v4_initialize(
         )
         .with_tick_spacing(Some(tick_spacing))
         .with_factory(Some(pool_manager))
-        .with_hook_address(hook_address),
+        .with_hook_address(hook_address)
+        .with_pool_id(Some(pool_id)),
     ))
 }
 

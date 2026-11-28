@@ -12,7 +12,9 @@ use std::sync::LazyLock;
 /// Curve activity: per-pool contracts emit TokenExchange variants from the
 /// pool address.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
-    let t0 = log.topics()[0];
+    let Some(t0) = super::topic0(log) else {
+        return None;
+    };
     if t0 == *topics::CURVE_TOKEN_EXCHANGE
         || t0 == *topics::CURVE_V2_TOKEN_EXCHANGE
         || t0 == *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING
@@ -96,7 +98,8 @@ pub(crate) async fn scan_curve_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
     for (topic, decode) in [
         (
             &CURVE_POOL_ADDED_TOPIC as &LazyLock<B256>,
-            decode_curve_pool_added as fn(&alloy::rpc::types::Log) -> Option<(Address, DiscoveredPool)>,
+            decode_curve_pool_added
+                as fn(&alloy::rpc::types::Log) -> Option<(Address, DiscoveredPool)>,
         ),
         (&CURVE_POOL_DEPLOYED_TOPIC, decode_curve_pool_deployed),
     ] {

@@ -8,15 +8,17 @@
 pub(crate) mod accounts;
 pub(crate) mod blocks;
 pub(crate) mod integrity;
+pub(crate) mod inventory;
 pub(crate) mod manifests;
 pub(crate) mod pools;
 pub(crate) mod ticks;
+pub(crate) mod v14;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use alloy::primitives::{Address, B256, U256};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::pool::state::PoolInfo;
@@ -55,6 +57,13 @@ impl SqliteStore {
     pub(super) fn conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
+
+    /// Read-only test hook for Stage 2 migration/compatibility assertions.
+    /// Production code must keep using the store methods above.
+    #[doc(hidden)]
+    pub fn raw_connection_for_test(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+        self.conn()
+    }
 }
 
 impl SqliteStore {
@@ -70,7 +79,7 @@ impl SqliteStore {
     }
 
     /// Current schema version. Increment when adding a migration below.
-    const SCHEMA_VERSION: u64 = 13;
+    const SCHEMA_VERSION: u64 = 14;
 
     /// Create the SQLite schema if it does not exist.
     fn initialize_tables(&self) -> anyhow::Result<()> {
@@ -146,6 +155,8 @@ impl SqliteStore {
                 code       BLOB NOT NULL
             );
 
+            -- Base v0 shape; v1-v13 migrations add the remaining columns before
+            -- the v14 importer renames this table to `pool_info_v13_archive`.
             CREATE TABLE IF NOT EXISTS pool_info (
                 address    BLOB PRIMARY KEY,
                 token0     BLOB NOT NULL,
@@ -153,10 +164,7 @@ impl SqliteStore {
                 fee        INTEGER NOT NULL,
                 dex_type   INTEGER NOT NULL,
                 tick_spacing INTEGER,
-                creation_block INTEGER NOT NULL,
-                pool_id    BLOB,
-                factory    BLOB,
-                is_stable  INTEGER
+                creation_block INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS pool_states (
@@ -220,23 +228,66 @@ impl SqliteStore {
             ",
         )?;
 
-        let current_version: u64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-                [],
-                |row| row.get::<_, i64>(0).map(|v| v as u64),
-            )
-            .unwrap_or(0);
+        let mut current_version = self.detect_schema_version(&conn)?;
+
+        // Old databases can have all v13 columns but an empty/unseeded
+        // schema_version. Normalize them before the v14 import instead of
+        // trusting MAX(version).
+        if current_version < 13 && v14::table_exists(&conn, "pool_info")? {
+            self.run_legacy_migrations(&conn, current_version)?;
+            current_version = self.detect_schema_version(&conn)?;
+        }
 
         if current_version < Self::SCHEMA_VERSION {
-            self.run_migrations(&conn, current_version)?;
+            if v14::table_exists(&conn, "pool_info")? {
+                // A pre-seeded chain id (written by an earlier writer) keeps
+                // migrated identities in the correct namespace. Legacy files
+                // without that metadata stay in namespace 0 until rewritten.
+                let chain_id: u64 = if v14::table_exists(&conn, "registry_meta")? {
+                    let value: Option<String> = conn
+                        .query_row(
+                            "SELECT value FROM registry_meta WHERE key = 'chain_id'",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    value.and_then(|v| v.parse().ok()).unwrap_or(0)
+                } else {
+                    0
+                };
+                v14::migrate_v13_to_v14(&conn, chain_id)?;
+            } else {
+                v14::create_schema(&conn)?;
+            }
+            self.set_schema_version(&conn, Self::SCHEMA_VERSION)?;
+        } else {
+            // Idempotent: ensures views/triggers exist after an older v14 file.
+            v14::create_schema(&conn)?;
         }
 
         Ok(())
     }
 
-    /// Apply pending SQLite schema migrations in order.
-    fn run_migrations(&self, conn: &Connection, from: u64) -> anyhow::Result<()> {
+    fn detect_schema_version(&self, conn: &Connection) -> anyhow::Result<u64> {
+        let version: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(version.max(0) as u64)
+    }
+
+    fn set_schema_version(&self, conn: &Connection, version: u64) -> anyhow::Result<()> {
+        conn.execute_batch("DELETE FROM schema_version;")?;
+        conn.execute(
+            "INSERT INTO schema_version(version) VALUES (?1)",
+            rusqlite::params![version as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Apply legacy v1–v13 SQLite schema migrations in order.
+    fn run_legacy_migrations(&self, conn: &Connection, from: u64) -> anyhow::Result<()> {
         let migrations: Vec<&str> = vec![
             // v1: tx_type column (EIP-7702 support)
             "ALTER TABLE transactions ADD COLUMN tx_type INTEGER NOT NULL DEFAULT 0",

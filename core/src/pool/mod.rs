@@ -1,5 +1,6 @@
 pub mod decoders;
 pub mod discovery;
+pub mod identity;
 pub mod math;
 pub(crate) mod selectors;
 pub mod state;
@@ -7,6 +8,7 @@ pub mod state;
 pub use crate::dex_type::DexType;
 pub use decoders::{BalancerSwapDecoded, CurveSwapDecoded, V3MintBurnDecoded, V3SwapDecoded};
 pub use discovery::DiscoveredPool;
+pub use identity::PoolKey;
 pub use math::{
     balancer_output_amount, balancer_quote_exact_in, balancer_stable_output_amount,
     constant_product_output_amount, curve_cryptoswap_output_amount, curve_output_amount,

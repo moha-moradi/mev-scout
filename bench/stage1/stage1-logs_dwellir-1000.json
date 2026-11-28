@@ -1,0 +1,89 @@
+{
+  "method": "logs_dwellir",
+  "range": "1000",
+  "repeats": 1,
+  "median_elapsed_ms": 773,
+  "canonical_head_number": 101614239,
+  "canonical_head_hash": "0x20156c09ee00085c17bdbd970a2ad2de11cf5f0c11fb3856d2006f4a46a2aa25",
+  "accounting_note": "Credits/units are provider-accounting inputs, not client-observable values. Pass --credits-used and --quota-tier from the provider dashboard.",
+  "runs": [
+    {
+      "method": "logs_dwellir",
+      "kind": "filtered_logs",
+      "provider": "dwellir",
+      "range": "1000",
+      "iteration": 1,
+      "status": "ok",
+      "source": "filtered_logs",
+      "endpoint": "https://api-avalanche-mainnet-archive.n.dwellir.com/<redacted>/ext/bc/C/rpc",
+      "canonical_head_number": 101614239,
+      "canonical_head_hash": "0x20156c09ee00085c17bdbd970a2ad2de11cf5f0c11fb3856d2006f4a46a2aa25",
+      "from_block": 101613240,
+      "to_block": 101614239,
+      "blocks": 1000,
+      "elapsed_ms": 773,
+      "blocks_per_sec": 1293.6610608020699,
+      "pools_total": 0,
+      "dex_families": [],
+      "addresses": [],
+      "capability": {
+        "filtered_logs_one_block": {
+          "supported": false,
+          "detail": "HTTP error 403 with body: Your current plan does not support the eth_getLogs method. Please upgrade to a paid plan at dashboard.dwellir.com.\n"
+        },
+        "filtered_logs_range": {
+          "supported": false,
+          "detail": "HTTP error 403 with body: Your current plan does not support the eth_getLogs method. Please upgrade to a paid plan at dashboard.dwellir.com.\n"
+        },
+        "block_receipts": {
+          "supported": true,
+          "detail": "block 101614239 with 2 receipt(s)"
+        }
+      },
+      "accounting": {
+        "provider": "dwellir",
+        "endpoint": "https://api-avalanche-mainnet-archive.n.dwellir.com/<redacted>/ext/bc/C/rpc",
+        "quota_tier": "configured-dwellir-20-rps",
+        "credits_used": null,
+        "rps_limit": 20.0,
+        "log_filter_chunks": 2,
+        "http_requests": 2,
+        "json_rpc_calls": 2,
+        "json_rpc_calls_inside_batches": 0,
+        "response_bytes": null,
+        "batch_accounting_note": "RpcClient rate limit is applied per HTTP POST. Verify whether the provider counts individual JSON-RPC calls inside batches; 20 RPS is not assumed to mean 20 HTTP batch requests/sec."
+      },
+      "rpc": {
+        "requests": 2,
+        "errors": 2,
+        "retryable_errors": 0,
+        "bytes": 0,
+        "p50_ms": 0,
+        "p95_ms": 0,
+        "p99_ms": 0
+      },
+      "errors": {
+        "total": 2,
+        "rate_limit": 0,
+        "http_403": 2,
+        "getlogs_unsupported": 0,
+        "null_receipts": 0,
+        "failed_windows": 2
+      },
+      "failed_windows": [
+        [
+          101613240,
+          101614239
+        ],
+        [
+          101613240,
+          101614239
+        ]
+      ],
+      "logs": [
+        "getLogs chunk 1 101613240..101614239 failed: HTTP error 403 with body: Your current plan does not support the eth_getLogs method. Please upgrade to a paid plan at dashboard.dwellir.com.\n",
+        "getLogs chunk 2 101613240..101614239 failed: HTTP error 403 with body: Your current plan does not support the eth_getLogs method. Please upgrade to a paid plan at dashboard.dwellir.com.\n"
+      ]
+    }
+  ]
+}

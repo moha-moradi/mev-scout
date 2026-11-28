@@ -9,7 +9,10 @@ use alloy::primitives::Address;
 /// Fluid DEX activity: per-pool contracts emit Swap from the pool address;
 /// tokens come from token0/token1 metadata fetch or the SQLite cache.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
-    if log.topics()[0] == *topics::FLUID_SWAP {
+    let Some(t0) = super::topic0(log) else {
+        return None;
+    };
+    if t0 == *topics::FLUID_SWAP {
         Some(PoolHitCandidate::simple(DexType::Fluid))
     } else {
         None
@@ -21,10 +24,11 @@ pub(super) fn decode_fluid_dex_deployed(
     log: &alloy::rpc::types::Log,
 ) -> Option<(Address, DiscoveredPool)> {
     let topics = log.topics();
-    if topics.len() < 2 {
+    if topics.len() < 3 {
         return None;
     }
     let pool_addr = topic_address(topics[1]);
+    let dex_id = format!("0x{}", hex::encode(topics[2].as_slice()));
     let creation_block = log.block_number.unwrap_or(0);
     Some((
         pool_addr,
@@ -36,7 +40,8 @@ pub(super) fn decode_fluid_dex_deployed(
             DexType::Fluid,
             creation_block,
         )
-        .with_factory(Some(log.address())),
+        .with_factory(Some(log.address()))
+        .with_protocol_params(serde_json::json!({ "dex_id": dex_id })),
     ))
 }
 

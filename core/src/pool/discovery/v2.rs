@@ -7,7 +7,10 @@ use crate::utils::{abi_word_address, topic_address};
 use alloy::primitives::Address;
 /// V2 activity: per-pool Pair contracts emit Swap/Sync from the pool address.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
-    if log.topics()[0] == topics::V2_SWAP || log.topics()[0] == topics::V2_SYNC {
+    let Some(t0) = super::topic0(log) else {
+        return None;
+    };
+    if t0 == topics::V2_SWAP || t0 == topics::V2_SYNC {
         Some(PoolHitCandidate::simple(DexType::UniswapV2))
     } else {
         None
@@ -35,9 +38,16 @@ pub(super) fn decode_v2_pair_created(
     let factory = log.address();
     Some((
         addr,
-        DiscoveredPool::new(addr, token0, token1, fee, DexType::UniswapV2, creation_block)
-            .with_factory(Some(factory))
-            .with_dex_name(Some(resolve_dex_name(Some(factory), "UniswapV2"))),
+        DiscoveredPool::new(
+            addr,
+            token0,
+            token1,
+            fee,
+            DexType::UniswapV2,
+            creation_block,
+        )
+        .with_factory(Some(factory))
+        .with_dex_name(Some(resolve_dex_name(Some(factory), "UniswapV2"))),
     ))
 }
 

@@ -125,6 +125,7 @@ fn test_discover_v3_pipeline() {
         tvl_usd: None,
         volume_usd_24h: None,
         volume_usd_30d: None,
+        protocol_params: None,
     };
 
     let info: PoolInfo = dp.into();

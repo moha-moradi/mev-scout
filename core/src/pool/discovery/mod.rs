@@ -17,8 +17,8 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use alloy::primitives::{keccak256, Address, Bytes, B256, U256};
-use futures::{stream, StreamExt};
 use alloy::rpc::types::Filter;
+use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use crate::cache::SqliteStore;
@@ -133,6 +133,37 @@ pub(crate) static METRIC_POOL_CREATED_TOPIC: LazyLock<B256> =
 pub(crate) static FLUID_DEX_DEPLOYED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"LogDexDeployed(address,uint256)"));
 
+/// Safe topic0 accessor: malformed logs with no topics must return `None`
+/// rather than panic when a decoder classifies them.
+pub(super) fn topic0(log: &alloy::rpc::types::Log) -> Option<B256> {
+    log.topics().first().copied()
+}
+
+/// Topic0 values for every pool-creation event the on-chain scanners recognize.
+///
+/// Exposed for the Stage 1 capacity benchmark so its address/topic-filtered
+/// `eth_getLogs` probe stays in sync with the decoders used by discovery.
+/// This is read-only metadata; discovery behavior is unchanged.
+pub fn creation_event_topics() -> Vec<B256> {
+    vec![
+        *V2_PAIR_CREATED_TOPIC,
+        *V3_POOL_CREATED_TOPIC,
+        *ALGEBRA_POOL_CREATED_TOPIC,
+        *SLIPSTREAM_POOL_CREATED_TOPIC,
+        *BALANCER_POOL_REGISTERED_TOPIC,
+        *CURVE_POOL_ADDED_TOPIC,
+        *CURVE_POOL_DEPLOYED_TOPIC,
+        *SOLIDLY_PAIR_CREATED_TOPIC,
+        *CAMELOT_PAIR_CREATED_TOPIC,
+        *V4_INITIALIZE_TOPIC,
+        *INF_CL_INITIALIZE_TOPIC,
+        *LB_PAIR_CREATED_TOPIC,
+        *PENDLE_NEW_MARKET_TOPIC,
+        *METRIC_POOL_CREATED_TOPIC,
+        *FLUID_DEX_DEPLOYED_TOPIC,
+    ]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredPool {
     pub address: Address,
@@ -187,6 +218,10 @@ pub struct DiscoveredPool {
     /// Rolling 30d USD volume from remote sources.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume_usd_30d: Option<f64>,
+    /// Protocol-specific identifiers retained for canonical identity
+    /// (Metric `poolId`, Fluid `dexId`, Infinity `parameters`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_params: Option<serde_json::Value>,
 }
 
 macro_rules! merge_option {
@@ -228,6 +263,7 @@ impl DiscoveredPool {
             tvl_usd: None,
             volume_usd_24h: None,
             volume_usd_30d: None,
+            protocol_params: None,
         }
     }
 
@@ -289,6 +325,10 @@ impl DiscoveredPool {
     }
     pub fn with_volume_usd_30d(mut self, v: Option<f64>) -> Self {
         self.volume_usd_30d = v;
+        self
+    }
+    pub fn with_protocol_params(mut self, v: serde_json::Value) -> Self {
+        self.protocol_params = Some(v);
         self
     }
 
@@ -358,6 +398,7 @@ impl DiscoveredPool {
         merge_option!(self, other, tvl_usd);
         merge_option!(self, other, volume_usd_24h);
         merge_option!(self, other, volume_usd_30d);
+        merge_option!(self, other, protocol_params);
     }
 }
 
@@ -788,7 +829,7 @@ async fn scan_factory_creation_events_pinned(
 /// see *every* log in the block, so the same address gating is applied locally
 /// here. Keeping the gating in one place means a log decoded from receipts is
 /// identical to one decoded from `getLogs`.
-pub(super) fn decode_factory_creation_log(
+pub fn decode_factory_creation_log(
     log: &alloy::rpc::types::Log,
     config: &DiscoveryConfig<'_>,
 ) -> Option<(Address, DiscoveredPool)> {
@@ -1364,7 +1405,10 @@ fn build_discovery_output(
         }
     }
 
-    for (_, mut dp) in factory_pools.drain() {
+    // Keep the map intact: the metadata-result path below still needs the
+    // factory entries to recover `underlying_tokens`.
+    for (_, dp) in factory_pools.iter() {
+        let mut dp = dp.clone();
         if dp.dex_name.is_none() {
             dp.dex_name = Some(resolve_dex_name(dp.factory, &dp.dex_type.to_string()));
         }
@@ -1745,17 +1789,20 @@ pub fn persist_discovered_pools(
 
     let pool_count = pools.len();
     let mut persisted = 0usize;
-    let mut skipped_zero = 0usize;
+    let mut provisional = 0usize;
     for pool in pools {
-        // Zero-token entries (e.g. V4 activity hits without an Initialize/cache
-        // match, or Curve/Balancer hits whose tokens could not be resolved)
-        // would poison the pool universe downstream — never persist them.
+        // Zero-token rows remain in the Master Inventory as provisional
+        // observations. They are never auto-admitted to quoting or Live.
         if pool.token0.is_zero() || pool.token1.is_zero() {
-            skipped_zero += 1;
-            continue;
+            provisional += 1;
         }
-        let info: PoolInfo = pool.clone().into();
-        if let Err(e) = cache.put_discovered_pool(&info) {
+        if let Err(e) = cache.record_discovered_pool(
+            pool,
+            "discovery",
+            "scan",
+            "onchain",
+            Some(pool.creation_block),
+        ) {
             tracing::warn!("Failed to cache pool {}: {}", pool.address, e);
         } else {
             persisted += 1;
@@ -1764,11 +1811,9 @@ pub fn persist_discovered_pools(
     if persisted > 0 {
         tracing::info!("Cached {persisted}/{pool_count} pools from discovery");
     }
-    if skipped_zero > 0 {
-        // Observable signal for a flaky RPC or hit-to-metadata gap: these
-        // pools were silently dropped rather than corrupting the universe.
+    if provisional > 0 {
         tracing::warn!(
-            "Discovery: {skipped_zero}/{pool_count} pools skipped (unresolved/zero tokens) — check RPC health"
+            "Discovery: {provisional}/{pool_count} pools have unresolved/zero tokens and stay provisional"
         );
     }
 }
@@ -1784,10 +1829,7 @@ fn receipt_log_to_rpc_log(
     alloy::rpc::types::Log {
         inner: alloy::primitives::Log {
             address: log.address,
-            data: alloy::primitives::LogData::new_unchecked(
-                log.topics.clone(),
-                log.data.clone(),
-            ),
+            data: alloy::primitives::LogData::new_unchecked(log.topics.clone(), log.data.clone()),
         },
         block_number: Some(block_number),
         block_hash: None,
@@ -1854,90 +1896,90 @@ pub async fn discover_pools_from_receipts(
     let on_window = opts.on_window;
     let concurrency = opts.concurrency.max(1);
 
-    let outcomes: Vec<anyhow::Result<WindowOutcome>> = stream::iter(block_windows(
-        from_block,
-        to_block,
-        batch_blocks,
-    ))
-    .map(|(from, to)| {
-        let rpc = rpc;
-        let cache = cache;
-        let config = config;
-        async move {
-            if let Some(cb) = on_window {
-                if !cb() {
-                    anyhow::bail!("job cancelled");
-                }
-            }
-
-            let blocks: Vec<u64> = (from..=to).collect();
-            let provider_idx = pinned.or_else(|| {
-                mixed_recent.map(|(recent_blocks, recent_idx, old_idx)| {
-                    let cutoff = to_block.saturating_sub(recent_blocks);
-                    if to >= cutoff {
-                        recent_idx
-                    } else {
-                        old_idx
+    let outcomes: Vec<anyhow::Result<WindowOutcome>> =
+        stream::iter(block_windows(from_block, to_block, batch_blocks))
+            .map(|(from, to)| {
+                let rpc = rpc;
+                let cache = cache;
+                let config = config;
+                async move {
+                    if let Some(cb) = on_window {
+                        if !cb() {
+                            anyhow::bail!("job cancelled");
+                        }
                     }
-                })
-            });
-            let bundles = match provider_idx {
-                Some(idx) => rpc.get_blocks_and_receipts_batch_for_many(idx, &blocks).await,
-                None => rpc.get_blocks_and_receipts_batch(&blocks).await,
-            };
 
-            let bundles = match bundles {
-                Ok(rows) => rows,
-                Err(e) => {
-                    tracing::warn!("Receipt scan failed for {from}..{to}: {e:#}");
-                    return Ok(WindowOutcome {
+                    let blocks: Vec<u64> = (from..=to).collect();
+                    let provider_idx = pinned.or_else(|| {
+                        mixed_recent.map(|(recent_blocks, recent_idx, old_idx)| {
+                            let cutoff = to_block.saturating_sub(recent_blocks);
+                            if to >= cutoff {
+                                recent_idx
+                            } else {
+                                old_idx
+                            }
+                        })
+                    });
+                    let bundles = match provider_idx {
+                        Some(idx) => {
+                            rpc.get_blocks_and_receipts_batch_for_many(idx, &blocks)
+                                .await
+                        }
+                        None => rpc.get_blocks_and_receipts_batch(&blocks).await,
+                    };
+
+                    let bundles = match bundles {
+                        Ok(rows) => rows,
+                        Err(e) => {
+                            tracing::warn!("Receipt scan failed for {from}..{to}: {e:#}");
+                            return Ok(WindowOutcome {
+                                from,
+                                to,
+                                batch: ScanBatchResult::default(),
+                                failed: true,
+                            });
+                        }
+                    };
+
+                    let mut batch = ScanBatchResult::default();
+                    for (block, _txs, receipts) in &bundles {
+                        let block_num = block.number;
+                        for receipt in receipts {
+                            for (log_idx, log) in receipt.logs.iter().enumerate() {
+                                let rpc_log = receipt_log_to_rpc_log(
+                                    log,
+                                    block_num,
+                                    receipt.tx_index,
+                                    log.log_index.unwrap_or(log_idx as u64),
+                                );
+                                absorb_receipt_log(&rpc_log, config, &mut batch);
+                            }
+                        }
+                    }
+
+                    if cache_blocks {
+                        let cache_rows: Vec<_> = bundles
+                            .iter()
+                            .map(|(block, txs, receipts)| {
+                                (block.number, block.clone(), txs.clone(), receipts.clone())
+                            })
+                            .collect();
+                        if let Err(e) = cache.put_block_data_batch(&cache_rows, None, None) {
+                            tracing::warn!("Failed to cache receipt bundles {from}..{to}: {e:#}");
+                        }
+                    }
+
+                    Ok(WindowOutcome {
                         from,
                         to,
-                        batch: ScanBatchResult::default(),
-                        failed: true,
-                    });
-                }
-            };
-
-            let mut batch = ScanBatchResult::default();
-            for (block, _txs, receipts) in &bundles {
-                let block_num = block.number;
-                for receipt in receipts {
-                    for (log_idx, log) in receipt.logs.iter().enumerate() {
-                        let rpc_log = receipt_log_to_rpc_log(
-                            log,
-                            block_num,
-                            receipt.tx_index,
-                            log.log_index.unwrap_or(log_idx as u64),
-                        );
-                        absorb_receipt_log(&rpc_log, config, &mut batch);
-                    }
-                }
-            }
-
-            if cache_blocks {
-                let cache_rows: Vec<_> = bundles
-                    .iter()
-                    .map(|(block, txs, receipts)| {
-                        (block.number, block.clone(), txs.clone(), receipts.clone())
+                        batch,
+                        failed: false,
                     })
-                    .collect();
-                if let Err(e) = cache.put_block_data_batch(&cache_rows, None, None) {
-                    tracing::warn!("Failed to cache receipt bundles {from}..{to}: {e:#}");
                 }
-            }
-
-            Ok(WindowOutcome {
-                from,
-                to,
-                batch,
-                failed: false,
             })
-        }
-    })
-    .buffered(concurrency)
-    .collect()
-    .await;
+            .buffered(concurrency)
+            .collect()
+            .await;
 
     let mut active_blocks = HashSet::new();
     let mut pool_hits: PoolHits = HashMap::new();
@@ -2368,7 +2410,12 @@ mod tests {
             (
                 make_log(
                     factory,
-                    vec![*V3_POOL_CREATED_TOPIC, word(token0), word(token1), fee_topic],
+                    vec![
+                        *V3_POOL_CREATED_TOPIC,
+                        word(token0),
+                        word(token1),
+                        fee_topic,
+                    ],
                     {
                         let mut data = vec![0u8; 64];
                         data[28..32].copy_from_slice(&60i32.to_be_bytes());
@@ -2414,7 +2461,11 @@ mod tests {
                 pool,
             ),
             (
-                make_log(factory, vec![*CURVE_POOL_DEPLOYED_TOPIC], word(pool).to_vec()),
+                make_log(
+                    factory,
+                    vec![*CURVE_POOL_DEPLOYED_TOPIC],
+                    word(pool).to_vec(),
+                ),
                 pool,
             ),
             (
@@ -2433,7 +2484,12 @@ mod tests {
             (
                 make_log(
                     factory,
-                    vec![*LB_PAIR_CREATED_TOPIC, word(pool), word(token0), word(token1)],
+                    vec![
+                        *LB_PAIR_CREATED_TOPIC,
+                        word(pool),
+                        word(token0),
+                        word(token1),
+                    ],
                     vec![0u8; 64],
                 ),
                 pool,
@@ -2470,25 +2526,161 @@ mod tests {
             (
                 make_log(
                     factory,
-                    vec![*METRIC_POOL_CREATED_TOPIC, word(token0), word(token1), B256::ZERO],
+                    vec![
+                        *METRIC_POOL_CREATED_TOPIC,
+                        word(token0),
+                        word(token1),
+                        B256::ZERO,
+                    ],
                     [word(pool).as_slice(), &[0u8; 32][..]].concat(),
                 ),
                 pool,
             ),
             (
-                make_log(factory, vec![*FLUID_DEX_DEPLOYED_TOPIC, word(pool)], vec![0u8; 32]),
+                make_log(
+                    factory,
+                    vec![*FLUID_DEX_DEPLOYED_TOPIC, word(pool), word(token0)],
+                    vec![0u8; 32],
+                ),
                 pool,
             ),
         ];
 
         for (idx, (log, expected)) in cases.into_iter().enumerate() {
             let (addr, decoded) = decode_factory_creation_log(&log, &cfg).unwrap_or_else(|| {
-                panic!("case {idx}: missing decoder for topic {:?}", log.topics()[0])
+                panic!(
+                    "case {idx}: missing decoder for topic {:?}",
+                    log.topics().first()
+                )
             });
             assert_eq!(addr, expected);
             assert_eq!(decoded.creation_block, 1000);
             assert_eq!(decoded.factory, Some(factory));
         }
+    }
+
+    /// Stage 2: draining the factory map must not lose multi-token metadata.
+    #[test]
+    fn factory_pool_underlying_tokens_survive_output_merge() {
+        let pool_addr = address!("7777777777777777777777777777777777777777");
+        let token0 = address!("aaaa000000000000000000000000000000000001");
+        let token1 = address!("bbbb000000000000000000000000000000000001");
+        let third = address!("cccc000000000000000000000000000000000001");
+        let underlying = vec![token0, token1, third];
+        let pool_id = [0x33u8; 32];
+
+        let mut factory_pools = std::collections::HashMap::new();
+        factory_pools.insert(
+            pool_addr,
+            DiscoveredPool::new(pool_addr, token0, token1, 0, DexType::Balancer, 5)
+                .with_pool_id(Some(pool_id))
+                .with_underlying_tokens(Some(underlying.clone())),
+        );
+        let mut pool_hits = PoolHits::new();
+        pool_hits.insert(
+            pool_addr,
+            PoolHit {
+                dex_type: DexType::Balancer,
+                pool_id: Some(pool_id),
+                tokens: None,
+                first_seen_block: 5,
+            },
+        );
+        let results = vec![metadata::PoolMetadataFetch {
+            addr: pool_addr,
+            dex_type: DexType::Balancer,
+            token0: Some(token0),
+            token1: Some(token1),
+            fee: Some(0),
+            tick_spacing: None,
+            first_seen_block: 7,
+        }];
+
+        let out = build_discovery_output(
+            &all_factory_config(),
+            &pool_hits,
+            factory_pools,
+            results,
+            std::collections::HashMap::new(),
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].underlying_tokens, Some(underlying));
+        assert_eq!(out[0].pool_id, Some(pool_id));
+        assert_eq!(out[0].creation_block, 5);
+    }
+
+    /// Stage 2: malformed logs must return `None`, never panic on topic indexing.
+    #[test]
+    fn malformed_logs_return_none_without_panic() {
+        let log = make_log(Address::ZERO, vec![], vec![]);
+        let cfg = all_factory_config();
+        assert!(decode_factory_creation_log(&log, &cfg).is_none());
+        assert!(v2::classify_activity(&log).is_none());
+        assert!(v3::classify_activity(&log).is_none());
+        assert!(v4::classify_activity(&log).is_none());
+        assert!(balancer::classify_activity(&log).is_none());
+        assert!(curve::classify_activity(&log).is_none());
+        assert!(fluid::classify_activity(&log).is_none());
+        assert!(infinity::classify_activity(&log).is_none());
+        assert!(metric::classify_activity(&log).is_none());
+        assert!(pendle::classify_activity(&log).is_none());
+        assert!(trader_joe::classify_activity(&log).is_none());
+    }
+
+    /// Stage 2: protocol identifiers survive decoding for canonical identity.
+    #[test]
+    fn protocol_identifiers_survive_decoding() {
+        let token0 = word(address!("aaaa000000000000000000000000000000000001"));
+        let token1 = word(address!("bbbb000000000000000000000000000000000001"));
+        let pool = address!("cccc000000000000000000000000000000000001");
+        let pool_id = [0x77u8; 32];
+
+        let v4_log = make_log(
+            Address::ZERO,
+            vec![*V4_INITIALIZE_TOPIC, B256::from(pool_id), token0, token1],
+            vec![0u8; 160],
+        );
+        let (_, v4_pool) = v4::decode_v4_initialize(&v4_log, Address::ZERO).unwrap();
+        assert_eq!(v4_pool.pool_id, Some(pool_id));
+        assert_ne!(v4_pool.address, Address::ZERO);
+
+        let infinity_log = make_log(
+            Address::ZERO,
+            vec![
+                *INF_CL_INITIALIZE_TOPIC,
+                B256::from(pool_id),
+                token0,
+                token1,
+            ],
+            vec![0u8; 160],
+        );
+        let (_, inf_pool) =
+            infinity::decode_infinity_initialize(&infinity_log, Address::ZERO).unwrap();
+        assert_eq!(inf_pool.pool_id, Some(pool_id));
+        let params = inf_pool.protocol_params.unwrap();
+        assert!(params["parameters"].as_str().unwrap().starts_with("0x"));
+
+        let metric_log = make_log(
+            Address::ZERO,
+            vec![*METRIC_POOL_CREATED_TOPIC, token0, token1, B256::ZERO],
+            [word(pool).as_slice(), &pool_id[..]].concat(),
+        );
+        let (_, metric_pool) = metric::decode_metric_pool_created(&metric_log).unwrap();
+        assert_eq!(
+            metric_pool.protocol_params.unwrap()["pool_id"],
+            serde_json::json!(format!("0x{}", hex::encode(pool_id)))
+        );
+
+        let fluid_log = make_log(
+            Address::ZERO,
+            vec![*FLUID_DEX_DEPLOYED_TOPIC, word(pool), B256::from(pool_id)],
+            vec![0u8; 32],
+        );
+        let (_, fluid_pool) = fluid::decode_fluid_dex_deployed(&fluid_log).unwrap();
+        assert_eq!(
+            fluid_pool.protocol_params.unwrap()["dex_id"],
+            serde_json::json!(format!("0x{}", hex::encode(pool_id)))
+        );
     }
 
     #[test]

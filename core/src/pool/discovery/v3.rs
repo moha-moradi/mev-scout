@@ -8,7 +8,9 @@ use alloy::primitives::Address;
 
 /// V3 activity: per-pool contracts emit Swap/Mint/Burn from the pool address.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
-    let t0 = log.topics()[0];
+    let Some(t0) = super::topic0(log) else {
+        return None;
+    };
     if t0 == topics::V3_SWAP || t0 == topics::V3_MINT || t0 == topics::V3_BURN {
         Some(PoolHitCandidate::simple(DexType::UniswapV3))
     } else {
@@ -28,12 +30,7 @@ pub(super) fn decode_v3_pool_created(
     let pool_addr = abi_word_address(&log_data.data, 1);
     let token0 = topic_address(topics[1]);
     let token1 = topic_address(topics[2]);
-    let fee = u32::from_be_bytes([
-        topics[3][28],
-        topics[3][29],
-        topics[3][30],
-        topics[3][31],
-    ]);
+    let fee = u32::from_be_bytes([topics[3][28], topics[3][29], topics[3][30], topics[3][31]]);
     let mut ts_bytes = [0u8; 4];
     ts_bytes.copy_from_slice(&log_data.data[28..32]);
     let tick_spacing = i32::from_be_bytes(ts_bytes);

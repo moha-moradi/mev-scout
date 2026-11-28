@@ -12,7 +12,10 @@ use alloy::rpc::types::Filter;
 /// topics[1] encodes the pool address (top 20 bytes). The token pair is
 /// indexed as topics[2]/topics[3] when the event carries non-empty slots.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
-    if log.topics()[0] != *topics::BALANCER_SWAP {
+    let Some(t0) = super::topic0(log) else {
+        return None;
+    };
+    if t0 != *topics::BALANCER_SWAP {
         return None;
     }
     let t = log.topics();
